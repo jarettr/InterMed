@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "org.intermed.core.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "mixins": [
+    "RegistryInjectorMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

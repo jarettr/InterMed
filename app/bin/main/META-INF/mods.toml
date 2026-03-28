@@ -1,0 +1,10 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="InterMed License"
+
+[[mods]]
+modId="intermed"
+version="1.0.0"
+displayName="InterMed Hypervisor"
+authors="Mak & AI"
+description="Universal Translation Layer between Fabric and Forge"

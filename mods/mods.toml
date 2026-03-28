@@ -1,0 +1,8 @@
+[[mods]]
+modId = "epic_forge_mod"
+version = "2.0.0"
+
+[[mods.dependencies]]
+modId = "forge-api"
+mandatory = true
+versionRange = "47.1.0"
