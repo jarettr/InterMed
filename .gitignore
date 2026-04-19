@@ -6,6 +6,7 @@ build/
 .idea/
 *.iml
 .vscode/
+.codex
 
 # InterMed Runtime (Кэш и моды)
 .intermed/
