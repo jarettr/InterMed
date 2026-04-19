@@ -13,15 +13,17 @@ public class InterMedJitMerger {
         System.out.println("\033[1;36m[Fusion Engine] Initializing Deep Mappings (Intermediary -> SRG/Mojang)...\033[0m");
 
         Map<String, String> obfToMojClass = new HashMap<>(32000);
-        // Формат: "класс:метод" -> "маппинг"
+        // Key: "obfClassName:obfMemberName" -> mojang member name
         Map<String, String> obfToMojMember = new HashMap<>(300000);
 
-        // 1. Читаем официальные маппинги (client.txt)
+        // 1. Parse Mojang official mappings (client.txt / ProGuard format)
         try (BufferedReader reader = Files.newBufferedReader(mojangClientTxtPath)) {
-            String line; String currentObf = null;
+            String line;
+            String currentObf = null;
             while ((line = reader.readLine()) != null) {
                 if (line.isEmpty() || line.startsWith("#")) continue;
                 if (!line.startsWith(" ")) {
+                    // Class mapping: "net.minecraft.Foo -> a:"
                     int arrow = line.indexOf(" -> ");
                     if (arrow == -1) continue;
                     String moj = line.substring(0, arrow).trim().replace('.', '/');
@@ -30,47 +32,64 @@ public class InterMedJitMerger {
                     currentObf = obf.replace('.', '/');
                     obfToMojClass.put(currentObf, moj);
                 } else if (currentObf != null) {
-                    // Читаем методы и поля (сохраняем оригинальные имена, чтобы потом сопоставить)
+                    // Member mapping: "    int tick() -> a" or "    int field -> b"
                     String[] parts = line.trim().split(" -> ");
                     if (parts.length == 2) {
-                        String left = parts[0];
-                        String obf = parts[1];
+                        String left   = parts[0].trim();
+                        String obfMem = parts[1].trim();
+                        // Strip return type and line numbers: "int tick()" -> "tick"
                         String clean = left.contains(":") ? left.substring(left.lastIndexOf(':') + 1) : left;
                         clean = clean.contains(" ") ? clean.substring(clean.lastIndexOf(' ') + 1) : clean;
                         if (clean.contains("(")) clean = clean.substring(0, clean.indexOf('('));
-                        
-                        obfToMojMember.put(currentObf + ":" + obf, clean);
+                        obfToMojMember.put(currentObf + ":" + obfMem, clean);
                     }
                 }
             }
-        } catch (Exception e) { e.printStackTrace(); }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
 
-        // 2. Создаем провайдер маппингов на основе TinyUtils (Fabric)
-        IMappingProvider intermediaryProvider = TinyUtils.createTinyMappingProvider(fabricTinyPath, "intermediary", "official");
+        // 2. Fabric Tiny provider: intermediary -> official (obfuscated)
+        IMappingProvider intermediaryProvider =
+            TinyUtils.createTinyMappingProvider(fabricTinyPath, "intermediary", "official");
 
-        // 3. Возвращаем гибридный провайдер
+        // Mutable map populated during acceptClass so acceptMethod/acceptField can
+        // resolve the obfuscated owner from the intermediary owner name.
+        Map<String, String> intermediaryToObfClass = new HashMap<>(32000);
+
+        // 3. Hybrid provider: intermediary -> Mojang (deobfuscated)
         return acceptor -> intermediaryProvider.load(new IMappingProvider.MappingAcceptor() {
+
             @Override
             public void acceptClass(String srcName, String dstName) {
-                // dstName здесь - это обфусцированное имя (a, b, c). Ищем его в словаре Mojang.
-                String mapped = obfToMojClass.getOrDefault(dstName, dstName);
-                acceptor.acceptClass(srcName, mapped);
+                // srcName = intermediary ("net/minecraft/class_1234")
+                // dstName = obfuscated  ("abc")
+                intermediaryToObfClass.put(srcName, dstName);
+                String mojName = obfToMojClass.getOrDefault(dstName, dstName);
+                acceptor.acceptClass(srcName, mojName);
             }
 
             @Override
             public void acceptMethod(IMappingProvider.Member method, String dstName) {
-                // Переводим методы!
-                String clazzObf = dstName; // В реальности здесь сложнее, но для базы оставим прямую передачу 
-                acceptor.acceptMethod(method, dstName); 
+                // method.owner = intermediary class, dstName = obfuscated method name
+                String obfOwner = intermediaryToObfClass.getOrDefault(method.owner, method.owner);
+                String mojName  = obfToMojMember.getOrDefault(obfOwner + ":" + dstName, dstName);
+                acceptor.acceptMethod(method, mojName);
             }
 
             @Override
             public void acceptField(IMappingProvider.Member field, String dstName) {
-                acceptor.acceptField(field, dstName);
+                // field.owner = intermediary class, dstName = obfuscated field name
+                String obfOwner = intermediaryToObfClass.getOrDefault(field.owner, field.owner);
+                String mojName  = obfToMojMember.getOrDefault(obfOwner + ":" + dstName, dstName);
+                acceptor.acceptField(field, mojName);
             }
 
-            @Override public void acceptMethodArg(IMappingProvider.Member m, int i, String d) {}
-            @Override public void acceptMethodVar(IMappingProvider.Member m, int i, int s, int e, String d) {}
+            @Override
+            public void acceptMethodArg(IMappingProvider.Member m, int i, String d) {}
+
+            @Override
+            public void acceptMethodVar(IMappingProvider.Member m, int i, int s, int e, String d) {}
         });
     }
 }

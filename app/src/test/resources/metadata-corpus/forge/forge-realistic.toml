@@ -1,0 +1,33 @@
+modLoader = "javafml"
+loaderVersion = "[47,)"
+license = "MIT"
+issueTrackerURL = "https://example.invalid/issues"
+
+[[mods]]
+modId = "forge_corpus_mod"
+version = "5.4.3"
+displayName = "Forge Corpus"
+description = '''
+Representative Forge manifest corpus fixture.
+'''
+
+[[mods.dependencies]]
+modId = "forge"
+mandatory = true
+versionRange = "[47,)"
+ordering = "NONE"
+side = "BOTH"
+
+[[mods.dependencies]]
+modId = "minecraft"
+mandatory = true
+versionRange = "[1.20.1]"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies."forge_corpus_mod"]]
+modId = "java"
+mandatory = true
+versionRange = "[21,)"
+ordering = "NONE"
+side = "BOTH"

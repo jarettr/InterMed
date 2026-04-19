@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "fabric_corpus_mod",
+  "version": "1.0.0",
+  "name": "Fabric Corpus Mod",
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "fabric-api": {
+      "version": ">=0.90.7+1.20.1",
+      "reexport": true
+    },
+    "minecraft": "1.20.1",
+    "java": ">=21"
+  },
+  "entrypoints": {
+    "main": [
+      "demo.fabric.CorpusEntry"
+    ]
+  },
+  "mixins": [
+    "fabric_corpus.mixins.json"
+  ]
+}

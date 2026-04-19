@@ -1,0 +1,70 @@
+name: Performance regression
+description: Report startup, TPS, heap, GC, or hot-path overhead issues.
+title: "[Perf]: "
+labels: ["needs:triage", "type:performance"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Performance claims require comparison. Please include native-loader
+        baseline numbers where possible. In-repo microbenchmarks alone do not
+        prove the public `10-15%` overhead target.
+  - type: input
+    id: intermed_version
+    attributes:
+      label: InterMed build or commit
+      placeholder: v8.0-alpha-snapshot / commit abc1234
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: Java 21.0.4, OS, CPU, RAM, JVM flags
+    validations:
+      required: true
+  - type: dropdown
+    id: metric
+    attributes:
+      label: Affected metric
+      options:
+        - Startup time
+        - TPS / tick time
+        - Heap / metaspace
+        - GC pause / allocation rate
+        - Registry hot path
+        - Event bus hot path
+        - Remapping / reflection
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: intermed_numbers
+    attributes:
+      label: InterMed measurement
+      placeholder: Include cold/warm cache distinction, p95/p99 if available, and report paths.
+    validations:
+      required: true
+  - type: textarea
+    id: native_baseline
+    attributes:
+      label: Native-loader baseline
+      placeholder: Same pack on Fabric/Forge/NeoForge, same JVM, same flags.
+    validations:
+      required: true
+  - type: textarea
+    id: artifacts
+    attributes:
+      label: Artifacts
+      placeholder: Attach diagnostics bundle, JFR, metrics json, microbench report, or logs.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I included whether AOT cache was cold or warm.
+          required: true
+        - label: I included enough information to compare against a native-loader baseline.
+          required: true

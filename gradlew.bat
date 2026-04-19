@@ -33,6 +33,9 @@ set APP_HOME=%DIRNAME%
 @rem Resolve any "." and ".." in APP_HOME to make it shorter.
 for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi
 
+@rem InterMed override: allow an explicit Java 21 home for Gradle.
+if defined INTERMED_JAVA_HOME set JAVA_HOME=%INTERMED_JAVA_HOME%
+
 @rem Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
 set DEFAULT_JVM_OPTS="-Xmx64m" "-Xms64m"
 
@@ -70,6 +73,12 @@ goto fail
 
 set CLASSPATH=%APP_HOME%\gradle\wrapper\gradle-wrapper.jar
 
+@rem InterMed Java 21 guard (skip with INTERMED_SKIP_JAVA_GUARD=1)
+if "%INTERMED_SKIP_JAVA_GUARD%"=="1" goto runGradle
+call :checkJavaVersion
+if %ERRORLEVEL% neq 0 goto fail
+
+:runGradle
 
 @rem Execute Gradle
 "%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" org.gradle.wrapper.GradleWrapperMain %*
@@ -90,3 +99,17 @@ exit /b %EXIT_CODE%
 if "%OS%"=="Windows_NT" endlocal
 
 :omega
+
+:checkJavaVersion
+set JAVA_VERSION=
+set JAVA_MAJOR=
+for /f "tokens=2 delims=\" %%v in ('"%JAVA_EXE%" -version 2^>^&1 ^| findstr /i "version"') do set JAVA_VERSION=%%v
+for /f "tokens=1 delims=." %%m in ("%JAVA_VERSION%") do set JAVA_MAJOR=%%m
+if "%JAVA_MAJOR%"=="21" exit /b 0
+echo.
+echo ERROR: InterMed build requires Java 21 to run Gradle.
+echo Detected: %JAVA_VERSION%
+echo.
+echo Set JAVA_HOME (or INTERMED_JAVA_HOME) to a Java 21 installation and retry.
+echo To bypass this guard for local diagnostics only, set INTERMED_SKIP_JAVA_GUARD=1.
+exit /b 1

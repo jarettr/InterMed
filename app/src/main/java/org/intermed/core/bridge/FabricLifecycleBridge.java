@@ -1,143 +1,181 @@
 package org.intermed.core.bridge;
 
-import org.intermed.core.boot.FabricBootstrapper;
-import org.intermed.core.classloader.InterMedClassLoader;
-import java.io.*;
-import java.lang.instrument.Instrumentation;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
-import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.level.LevelEvent;
+import net.minecraftforge.event.server.ServerStartedEvent;
+import net.minecraftforge.event.server.ServerStartingEvent;
+import net.minecraftforge.event.server.ServerStoppedEvent;
+import net.minecraftforge.event.server.ServerStoppingEvent;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
+import org.intermed.core.lifecycle.LifecycleManager;
 
+import java.lang.reflect.Method;
+
+/**
+ * Forge-hosted bridge that translates Forge/NeoForge server lifecycle events
+ * into the corresponding Fabric event callbacks.
+ *
+ * <h3>Event mapping</h3>
+ * <table>
+ *   <tr><th>Forge event</th><th>Fabric event</th></tr>
+ *   <tr><td>{@code ServerStartingEvent}</td><td>{@link ServerLifecycleEvents#SERVER_STARTING}</td></tr>
+ *   <tr><td>{@code ServerStartedEvent}</td><td>{@link ServerLifecycleEvents#SERVER_STARTED}</td></tr>
+ *   <tr><td>{@code ServerStoppingEvent}</td><td>{@link ServerLifecycleEvents#SERVER_STOPPING}</td></tr>
+ *   <tr><td>{@code ServerStoppedEvent}</td><td>{@link ServerLifecycleEvents#SERVER_STOPPED}</td></tr>
+ *   <tr><td>{@code LevelEvent.Load}</td><td>{@link ServerWorldEvents#LOAD}</td></tr>
+ *   <tr><td>{@code LevelEvent.Unload}</td><td>{@link ServerWorldEvents#UNLOAD}</td></tr>
+ * </table>
+ *
+ * <p>Registered on the Forge <em>game</em> event bus (not the mod bus) via
+ * {@link MinecraftForge#EVENT_BUS} so that it receives events from all phases.
+ *
+ * <p>Each Fabric callback invocation is guarded by a try-catch so a misbehaving
+ * listener never prevents remaining listeners or the server from proceeding.
+ */
 public class FabricLifecycleBridge {
-    private static InterMedClassLoader dagLoader;
-    private static final Path TEMP_DIR = Paths.get("intermed_cache/unpacked_jars");
+
+    private static volatile boolean registered = false;
+
+    /**
+     * Registers this bridge on the Forge game event bus.  Idempotent — calling
+     * multiple times is safe.  Should be called from the mod constructor or
+     * {@code FMLCommonSetupEvent}.
+     */
+    public static void register() {
+        if (registered) return;
+        registered = true;
+        MinecraftForge.EVENT_BUS.register(new FabricLifecycleBridge());
+        System.out.println("[FabricLifecycleBridge] Registered on Forge event bus.");
+    }
+
+    // ── Convenience boot methods (kept for callers that use them) ─────────────
 
     public static void bootMainEntrypoints() {
-        if (dagLoader != null) return;
-        
+        LifecycleManager.startPhase0_Preloader();
+        LifecycleManager.startPhase1_BackgroundAssembly();
+    }
+
+    public static void bootSynchronously() {
+        LifecycleManager.startPhase0_Preloader();
+        LifecycleManager.assembleNow();
+    }
+
+    public static int dispatchPendingMainThreadTasks() {
+        return LifecycleManager.dispatchMainThreadTasks();
+    }
+
+    // ── Forge → Fabric lifecycle event translations ───────────────────────────
+
+    @SubscribeEvent
+    public void onServerStarting(ServerStartingEvent event) {
+        Object server = extractServer(event);
+        System.out.println("[FabricLifecycleBridge] SERVER_STARTING");
+        safeInvoke(() ->
+            ServerLifecycleEvents.SERVER_STARTING.invoker().onServerStarting(server));
+    }
+
+    @SubscribeEvent
+    public void onServerStarted(ServerStartedEvent event) {
+        Object server = extractServer(event);
+        System.out.println("[FabricLifecycleBridge] SERVER_STARTED");
+        safeInvoke(() ->
+            ServerLifecycleEvents.SERVER_STARTED.invoker().onServerStarted(server));
+        // Signal the boot barrier so InterMed knows the server is fully up
+        org.intermed.core.InterMedKernel.BOOT_BARRIER.countDown();
+    }
+
+    @SubscribeEvent
+    public void onServerStopping(ServerStoppingEvent event) {
+        Object server = extractServer(event);
+        System.out.println("[FabricLifecycleBridge] SERVER_STOPPING");
+        safeInvoke(() ->
+            ServerLifecycleEvents.SERVER_STOPPING.invoker().onServerStopping(server));
+    }
+
+    @SubscribeEvent
+    public void onServerStopped(ServerStoppedEvent event) {
+        Object server = extractServer(event);
+        System.out.println("[FabricLifecycleBridge] SERVER_STOPPED");
+        safeInvoke(() ->
+            ServerLifecycleEvents.SERVER_STOPPED.invoker().onServerStopped(server));
+    }
+
+    // ── Forge → Fabric world (level) event translations ───────────────────────
+
+    @SubscribeEvent
+    public void onLevelLoad(LevelEvent.Load event) {
+        Object level = event.getLevel();
+        Object server = extractServerFromLevel(level);
+        if (server == null) return; // client-side level — not a server world event
+        safeInvoke(() ->
+            ServerWorldEvents.LOAD.invoker().onWorldLoad(server, level));
+    }
+
+    @SubscribeEvent
+    public void onLevelUnload(LevelEvent.Unload event) {
+        Object level = event.getLevel();
+        Object server = extractServerFromLevel(level);
+        if (server == null) return;
+        safeInvoke(() ->
+            ServerWorldEvents.UNLOAD.invoker().onWorldUnload(server, level));
+    }
+
+    // ── Reset ─────────────────────────────────────────────────────────────────
+
+    public static void resetForTests() {
+        registered = false;
+        ServerLifecycleEvents.resetForTests();
+        ServerWorldEvents.resetForTests();
+    }
+
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    /**
+     * Extracts the MinecraftServer instance from a Forge server lifecycle event
+     * using {@code getServer()} via reflection so we don't need a hard compile
+     * dependency on the Minecraft server type.
+     */
+    private static Object extractServer(Object event) {
+        if (event == null) return null;
         try {
-            System.out.println("\033[1;35m[InterMed Lifecycle] Initiating Hybrid Boot (Matryoshka Engine)...\033[0m");
-            
-            // Создаем папку кэша, если её нет
-            if (!Files.exists(TEMP_DIR)) Files.createDirectories(TEMP_DIR);
-
-            File fabricDir = new File(System.getProperty("user.dir"), "mods/fabric");
-            File[] files = fabricDir.listFiles((dir, name) -> name.endsWith(".jar"));
-            
-            if (files == null || files.length == 0) {
-                System.out.println("[Lifecycle] No Fabric mods found in /mods/fabric/");
-                return;
-            }
-
-            // ШАГ 1: Собираем ВСЕ URL (включая вложенные в Fabric API)
-            List<URL> allUrls = new ArrayList<>();
-            for (File f : files) {
-                allUrls.add(f.toURI().toURL());
-                
-                // Если это Fabric API, распаковываем его внутренние модули
-                if (f.getName().toLowerCase().contains("fabric-api")) {
-                    System.out.println("[Lifecycle] Unpacking Fabric API modules...");
-                    allUrls.addAll(extractNestedJars(f));
-                }
-            }
-            
-            ClassLoader originalForgeLoader = Thread.currentThread().getContextClassLoader();
-            Instrumentation inst = (Instrumentation) System.getProperties().get("intermed.instrumentation");
-
-            // Создаем DAG-загрузчик, который видит и моды, и все части Fabric API
-            dagLoader = new InterMedClassLoader("InterMed-Universal-DAG", allUrls.toArray(new URL[0]), originalForgeLoader);
-
-            if (inst != null) {
-                InterMedJpmsBypass.crackModule(inst, dagLoader);
-            }
-
-            // ШАГ 2: Запуск точек входа
-            for (File f : files) {
-                // Fabric API не инициализируем как мод, он нужен только как библиотека
-                if (f.getName().toLowerCase().contains("fabric-api")) continue;
-
-                String jsonContent = readFabricModJson(f);
-                if (jsonContent == null) continue;
-
-                List<String> toBoot = new ArrayList<>();
-                toBoot.addAll(extractEntrypoints(jsonContent, "main"));
-                toBoot.addAll(extractEntrypoints(jsonContent, "client"));
-
-                if (!toBoot.isEmpty()) {
-                    System.out.println("\033[1;36m[Lifecycle] Awakening mod: " + f.getName() + "\033[0m");
-                    Thread.currentThread().setContextClassLoader(dagLoader);
-                    try {
-                        for (String className : toBoot) {
-                            String cleanName = className.split("::")[0];
-                            FabricBootstrapper.boot(cleanName, dagLoader);
-                        }
-                    } finally {
-                        Thread.currentThread().setContextClassLoader(originalForgeLoader);
-                    }
-                }
-            }
-            
-        } catch (Throwable e) {
-            System.err.println("[Lifecycle] CRITICAL FAILURE during boot:");
-            e.printStackTrace();
+            Method m = event.getClass().getMethod("getServer");
+            return m.invoke(event);
+        } catch (Exception e) {
+            return null;
         }
     }
 
     /**
-     * Распаковка вложенных JAR-файлов из Fabric API (Req 3.2.3).
+     * Extracts the server from a {@code ServerLevel} / {@code LevelAccessor}.
+     * Returns {@code null} for client-side levels (which have no server reference).
      */
-    private static List<URL> extractNestedJars(File jarFile) throws IOException {
-        List<URL> nested = new ArrayList<>();
-        try (ZipFile zip = new ZipFile(jarFile)) {
-            Enumeration<? extends ZipEntry> entries = zip.entries();
-            while (entries.hasMoreElements()) {
-                ZipEntry entry = entries.nextElement();
-                // Модули Fabric API обычно лежат в META-INF/jars/
-                if (entry.getName().startsWith("META-INF/jars/") && entry.getName().endsWith(".jar")) {
-                    String simpleName = new File(entry.getName()).getName();
-                    Path targetPath = TEMP_DIR.resolve(simpleName);
-                    
-                    // Копируем во временную папку, чтобы Java могла их прочитать
-                    if (!Files.exists(targetPath)) {
-                        try (InputStream is = zip.getInputStream(entry)) {
-                            Files.copy(is, targetPath, StandardCopyOption.REPLACE_EXISTING);
-                        }
-                    }
-                    nested.add(targetPath.toUri().toURL());
-                    System.out.println("\033[1;32m  [+] Unpacked: " + simpleName + "\033[0m");
-                }
-            }
+    private static Object extractServerFromLevel(Object level) {
+        if (level == null) return null;
+        // Server levels implement isClientSide() == false and expose getServer()
+        try {
+            Method isClient = level.getClass().getMethod("isClientSide");
+            if (Boolean.TRUE.equals(isClient.invoke(level))) return null;
+        } catch (Exception ignored) {}
+        try {
+            Method getServer = level.getClass().getMethod("getServer");
+            return getServer.invoke(level);
+        } catch (Exception e) {
+            return null;
         }
-        return nested;
     }
 
-    private static String readFabricModJson(File file) {
-        try (ZipFile zip = new ZipFile(file)) {
-            ZipEntry entry = zip.getEntry("fabric.mod.json");
-            if (entry == null) return null;
-            try (InputStream is = zip.getInputStream(entry)) {
-                return new String(is.readAllBytes(), StandardCharsets.UTF_8);
-            }
-        } catch (Exception e) { return null; }
-    }
-
-    private static List<String> extractEntrypoints(String json, String type) {
-        List<String> results = new ArrayList<>();
-        // Регулярка для поддержки и массивов ["class"], и одиночных строк "class"
-        Pattern pattern = Pattern.compile("\"" + type + "\"\\s*:\\s*(?:\\[(.*?)\\]|\"([^\"]+)\")", Pattern.DOTALL);
-        Matcher matcher = pattern.matcher(json);
-        if (matcher.find()) {
-            String content = (matcher.group(1) != null) ? matcher.group(1) : "\"" + matcher.group(2) + "\"";
-            Matcher classMatcher = Pattern.compile("\"([^\"]+)\"").matcher(content);
-            while (classMatcher.find()) {
-                results.add(classMatcher.group(1));
-            }
+    /**
+     * Invokes a Fabric event invoker, catching and logging any exception so
+     * a failing listener never prevents other listeners from running.
+     */
+    private static void safeInvoke(Runnable runnable) {
+        try {
+            runnable.run();
+        } catch (Exception e) {
+            System.err.printf("[FabricLifecycleBridge] Exception in Fabric lifecycle listener: %s: %s%n",
+                e.getClass().getSimpleName(), e.getMessage());
         }
-        return results;
     }
 }

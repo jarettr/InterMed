@@ -1,5 +1,6 @@
 package org.intermed.core.boot;
 
+import org.intermed.core.metrics.ModBootEvent;
 import java.lang.reflect.Method;
 import java.util.HashSet;
 import java.util.Set;
@@ -22,6 +23,10 @@ public class FabricBootstrapper {
 
         System.out.println("\033[1;36m[Bootstrapper] Waking up Fabric Entrypoint: " + className + "\033[0m");
         
+        ModBootEvent bootEvent = new ModBootEvent();
+        bootEvent.className = className;
+        bootEvent.begin();
+
         try {
             // Загружаем класс мода через изолированный загрузчик
             Class<?> clazz = Class.forName(className, true, loader);
@@ -68,6 +73,8 @@ public class FabricBootstrapper {
         } catch (Throwable t) {
             System.err.println("\033[1;31m[Bootstrapper] Фатальная ошибка в логике мода " + className + ":\033[0m");
             t.printStackTrace();
+        } finally {
+            bootEvent.commit(); // Сохраняем метрику
         }
     }
 }

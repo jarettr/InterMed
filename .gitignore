@@ -12,6 +12,13 @@ build/
 intermed_mods/
 run/
 
+# InterMed generated runtime output and local launch evidence
+app/logs/
+harness-output/
+metrics.jfr
+metrics.json
+*.jfr
+*.log.gz
 
 # OS
 *.log

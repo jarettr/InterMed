@@ -1,9 +1,5 @@
 package org.intermed.core.classloading;
 
-import java.io.File;
-import java.net.URL;
-import java.net.URLClassLoader;
-import java.util.HashSet;
 import java.util.Set;
 
 /**
@@ -20,7 +16,7 @@ public class FabricClusterLoader extends LazyInterMedClassLoader {
     };
 
     public FabricClusterLoader(ClassLoader parent) {
-        super("fabric-cluster", null, parent);
+        super("fabric-cluster", null, Set.of(), parent);
     }
 
     @Override

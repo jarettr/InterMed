@@ -1,5 +1,7 @@
 package org.intermed.core.transformer;
 
+import org.intermed.core.bridge.NeoForgeEventBridge;
+import org.intermed.core.bridge.NeoForgeNetworkBridge;
 import org.intermed.core.util.MappingManager;
 import org.intermed.core.lifecycle.LifecycleManager;
 import java.lang.instrument.ClassFileTransformer;
@@ -13,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class InterMedTransformer implements ClassFileTransformer {
     private static boolean bridgeStarted = false;
+    private static boolean deferredBootstrapReleased = false;
     private static final AtomicInteger classCounter = new AtomicInteger(0);
 
     @Override
@@ -29,6 +32,20 @@ public class InterMedTransformer implements ClassFileTransformer {
         String realName = MappingManager.translate(className);
         String nameToCheck = (realName != null) ? realName : className;
 
+        if (nameToCheck.startsWith("net/neoforged/") || nameToCheck.startsWith("net.neoforged.")) {
+            NeoForgeEventBridge.scheduleRegistrationProbe();
+            NeoForgeNetworkBridge.scheduleRegistrationProbe();
+        }
+
+        if (!deferredBootstrapReleased
+            && Boolean.getBoolean("intermed.deferDeepBootstrap")
+            && (nameToCheck.contains("gui/screens/TitleScreen")
+                || nameToCheck.contains("server/MinecraftServer"))) {
+            deferredBootstrapReleased = true;
+            System.out.println("[Kernel] Releasing deferred Phase 0 bootstrap at: " + nameToCheck);
+            LifecycleManager.startPhase0_Preloader();
+        }
+
         // --- ТРИГГЕР ГЛАВНОГО МЕНЮ (Снятие барьера Фазы 0) ---
         if (!bridgeStarted && (nameToCheck.contains("gui/screens/TitleScreen") || nameToCheck.contains("server/MinecraftServer"))) {
             System.out.println("\033[1;35m[Lifecycle] CRITICAL GAME STATE REACHED: " + nameToCheck + "\033[0m");
@@ -37,6 +54,7 @@ public class InterMedTransformer implements ClassFileTransformer {
             // Включаем скрытый хук событий Forge
             try {
                 org.intermed.core.bridge.events.ForgeEventProxy.hookIntoForge();
+                org.intermed.core.bridge.InterMedEventBridge.initialize();
             } catch (Exception e) {
                 System.err.println("[Kernel] Failed to inject Forge hook: " + e.getMessage());
             }
