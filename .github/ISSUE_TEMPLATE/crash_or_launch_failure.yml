@@ -1,0 +1,85 @@
+name: Crash or launch failure
+description: Report a startup crash, failed launch, dependency failure, or hang.
+title: "[Crash]: "
+labels: ["needs:triage", "type:crash"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please attach a diagnostics bundle when possible. `InterMedLauncher launch`
+        writes one automatically on non-zero exit, or you can run
+        `diagnostics-bundle --game-dir ... --mods-dir ... --output ...`.
+  - type: input
+    id: intermed_version
+    attributes:
+      label: InterMed build or commit
+      description: Include the exact release, local commit, or CI artifact id.
+      placeholder: v8.0-alpha-snapshot / commit abc1234
+    validations:
+      required: true
+  - type: input
+    id: java_os
+    attributes:
+      label: Java and OS
+      placeholder: Java 21.0.4 on Linux / Windows / macOS
+    validations:
+      required: true
+  - type: input
+    id: minecraft_scope
+    attributes:
+      label: Minecraft and launch side
+      placeholder: Minecraft 1.20.1 dedicated server / client
+    validations:
+      required: true
+  - type: dropdown
+    id: security_mode
+    attributes:
+      label: Security mode
+      options:
+        - strict default
+        - permissive compatibility lane
+        - unknown
+    validations:
+      required: true
+  - type: textarea
+    id: mod_list
+    attributes:
+      label: Mod list
+      description: Paste the smallest known mod list, or say it is in the diagnostics bundle.
+      placeholder: |
+        fabric-api 0.x
+        example-forge-mod 1.2.3
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened?
+      description: Include the exit code, last visible message, or hang point.
+      placeholder: The process exited with code 1 after Mixin transformation...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      placeholder: The pack reaches Done / main menu / server ready state.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics bundle
+      description: Attach the zip or explain why it cannot be shared publicly.
+      placeholder: Attached intermed-launch-failure.zip / cannot share because...
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I checked docs/known-limitations.md.
+          required: true
+        - label: I removed private tokens, session IDs, and secrets from uploaded logs.
+          required: true

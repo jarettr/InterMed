@@ -1,52 +1,85 @@
 package org.intermed.core.monitor;
 
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.ArrayDeque;
+import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.atomic.AtomicInteger;
 
-public class EventFlyweightPool {
+/**
+ * Reusable flyweight pool for event wrapper instances used on hot paths.
+ *
+ * <p>The fast path is thread-local to avoid global queue traffic during bursts,
+ * while a bounded global pool still amortizes allocations across threads.
+ */
+public final class EventFlyweightPool {
 
-    // Класс-пустышка для шины событий, который мы будем переиспользовать
-    public static class InterMedEvent {
-        public String eventName;
-        public Object payload;
+    private static final int PREALLOCATED_GLOBAL = 512;
+    private static final int MAX_GLOBAL_POOL_SIZE = 1024;
+    private static final int MAX_LOCAL_POOL_SIZE = 32;
 
-        public void reset() {
-            this.eventName = null;
-            this.payload = null;
-        }
-    }
+    private static final ConcurrentLinkedDeque<InterMedEvent> GLOBAL_POOL = new ConcurrentLinkedDeque<>();
+    private static final ThreadLocal<ArrayDeque<InterMedEvent>> LOCAL_POOL =
+        ThreadLocal.withInitial(() -> new ArrayDeque<>(MAX_LOCAL_POOL_SIZE));
+    private static final AtomicInteger GLOBAL_SIZE = new AtomicInteger(0);
 
-    // Потокобезопасная очередь для пула
-    private static final ConcurrentLinkedQueue<InterMedEvent> POOL = new ConcurrentLinkedQueue<>();
-    private static final int MAX_POOL_SIZE = 1000;
-    private static int currentSize = 0;
+    private EventFlyweightPool() {}
 
-    // Инициализация пула (вызывается из Preparator'а)
     public static void preallocate() {
-        for (int i = 0; i < 500; i++) {
-            POOL.add(new InterMedEvent());
-            currentSize++;
+        while (GLOBAL_SIZE.get() < PREALLOCATED_GLOBAL) {
+            GLOBAL_POOL.addFirst(new InterMedEvent());
+            GLOBAL_SIZE.incrementAndGet();
         }
-        System.out.println("[Event Pool] Flyweight пул инициализирован (размер: " + currentSize + ")");
     }
 
     public static InterMedEvent acquire(String name, Object payload) {
-        InterMedEvent event = POOL.poll();
-        if (event == null) {
-            // Если пул пуст (пиковая нагрузка), создаем новый
-            event = new InterMedEvent();
-        } else {
-            currentSize--;
-        }
+        InterMedEvent event = acquireReusable();
         event.eventName = name;
         event.payload = payload;
         return event;
     }
 
     public static void release(InterMedEvent event) {
-        if (currentSize < MAX_POOL_SIZE) {
-            event.reset();
-            POOL.add(event);
-            currentSize++;
+        if (event == null) {
+            return;
+        }
+        event.reset();
+        ArrayDeque<InterMedEvent> localPool = LOCAL_POOL.get();
+        if (localPool.size() < MAX_LOCAL_POOL_SIZE) {
+            localPool.addFirst(event);
+            return;
+        }
+        if (GLOBAL_SIZE.get() < MAX_GLOBAL_POOL_SIZE) {
+            GLOBAL_POOL.addFirst(event);
+            GLOBAL_SIZE.incrementAndGet();
+        }
+    }
+
+    static void resetForTests() {
+        GLOBAL_POOL.clear();
+        GLOBAL_SIZE.set(0);
+        LOCAL_POOL.remove();
+    }
+
+    private static InterMedEvent acquireReusable() {
+        ArrayDeque<InterMedEvent> localPool = LOCAL_POOL.get();
+        InterMedEvent local = localPool.pollFirst();
+        if (local != null) {
+            return local;
+        }
+        InterMedEvent global = GLOBAL_POOL.pollFirst();
+        if (global != null) {
+            GLOBAL_SIZE.decrementAndGet();
+            return global;
+        }
+        return new InterMedEvent();
+    }
+
+    public static final class InterMedEvent {
+        public String eventName;
+        public Object payload;
+
+        public void reset() {
+            eventName = null;
+            payload = null;
         }
     }
 }

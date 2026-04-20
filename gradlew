@@ -114,6 +114,54 @@ esac
 
 CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
 
+# InterMed override: allow an explicit Java 21 home for Gradle.
+if [ -n "$INTERMED_JAVA_HOME" ]; then
+    JAVA_HOME=$INTERMED_JAVA_HOME
+fi
+
+intermed_java_major() {
+    _cmd=$1
+    if [ -z "$_cmd" ]; then
+        printf '%s\n' ""
+        return 1
+    fi
+    _version_output=$("$_cmd" -version 2>&1 | sed -n '1p')
+    printf '%s\n' "$_version_output" | sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p'
+}
+
+intermed_is_java_21() {
+    _major=$(intermed_java_major "$1")
+    [ "$_major" = "21" ]
+}
+
+intermed_find_java_21() {
+    for candidate in \
+        "$HOME/.sdkman/candidates/java"/21* \
+        "$HOME/.sdkman/candidates/java"/21.* \
+        "$HOME/.local/jdks"/temurin21* \
+        "$HOME/.local/jdks"/jdk-21* \
+        "/usr/lib/jvm"/java-21* \
+        "/usr/lib/jvm"/jdk-21* \
+        "/opt"/jdk-21* \
+        "/opt"/temurin-21*; do
+        if [ -x "$candidate/bin/java" ]; then
+            if intermed_is_java_21 "$candidate/bin/java"; then
+                printf '%s\n' "$candidate"
+                return 0
+            fi
+        fi
+        for nested in "$candidate"/jdk-21*; do
+            if [ -x "$nested/bin/java" ]; then
+                if intermed_is_java_21 "$nested/bin/java"; then
+                    printf '%s\n' "$nested"
+                    return 0
+                fi
+            fi
+        done
+    done
+    return 1
+}
+
 
 # Determine the Java command to use to start the JVM.
 if [ -n "$JAVA_HOME" ] ; then
@@ -137,6 +185,29 @@ else
 
 Please set the JAVA_HOME variable in your environment to match the
 location of your Java installation."
+    fi
+fi
+
+# InterMed requires running Gradle with Java 21.
+# If you intentionally want to probe a newer JVM locally, export
+# INTERMED_SKIP_JAVA_GUARD=1 and accept that Gradle/plugin behavior may still fail later.
+if [ "${INTERMED_SKIP_JAVA_GUARD:-0}" != "1" ]; then
+    if ! intermed_is_java_21 "$JAVACMD"; then
+        FOUND_JAVA_HOME=$(intermed_find_java_21)
+        if [ -n "$FOUND_JAVA_HOME" ]; then
+            JAVA_HOME=$FOUND_JAVA_HOME
+            JAVACMD=$JAVA_HOME/bin/java
+        fi
+    fi
+    JAVA_VERSION_OUTPUT=$("$JAVACMD" -version 2>&1 | sed -n '1p')
+    JAVA_MAJOR=$(printf '%s\n' "$JAVA_VERSION_OUTPUT" | sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p')
+    if [ "$JAVA_MAJOR" != "21" ]; then
+        die "ERROR: InterMed build requires Java 21 to run Gradle.
+
+Detected: $JAVA_VERSION_OUTPUT
+
+Set JAVA_HOME (or INTERMED_JAVA_HOME) to a Java 21 installation and retry.
+To bypass this guard for local diagnostics only, export INTERMED_SKIP_JAVA_GUARD=1."
     fi
 fi
 

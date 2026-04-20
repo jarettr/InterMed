@@ -1,7 +1,6 @@
 package org.intermed.security;
 
 import net.bytebuddy.asm.Advice;
-import org.intermed.core.security.Capability;
 import org.intermed.core.security.CapabilityManager;
 
 /**
@@ -11,19 +10,7 @@ import org.intermed.core.security.CapabilityManager;
 public class UnsafeSecurityAdvice {
 
     @Advice.OnMethodEnter
-    public static void checkUnsafeAccess() {
-        StackWalker walker = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE);
-        Class<?> caller = walker.getCallerClass();
-        String callerName = caller.getName();
-
-        // Пропускаем ядро платформы, ванильный Minecraft и стандартную библиотеку Java
-        if (callerName.startsWith("java.") || callerName.startsWith("sun.") || 
-            callerName.startsWith("org.intermed.") || callerName.startsWith("net.minecraft.")) {
-            return;
-        }
-
-        // Требование 8 ТЗ: Проверка запрошенного действия через политику возможностей
-        // Предотвращает несанкционированное создание объектов или модификацию памяти через Unsafe
-        CapabilityManager.checkPermission(Capability.UNSAFE_ACCESS.name(), caller);
+    public static void checkUnsafeAccess(@Advice.Origin("#m") String memberName) {
+        CapabilityManager.checkUnsafeOperation(memberName);
     }
 }

@@ -3,6 +3,9 @@ package org.intermed.core.bridge;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import org.intermed.core.registry.VirtualRegistryService;
+import org.intermed.core.metrics.RegistryFlushEvent;
+import org.intermed.core.security.CapabilityManager;
+
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
@@ -29,12 +32,18 @@ public class InterMedRegistry {
      */
     public static <T> T virtualRegister(ResourceKey<?> registryKey, ResourceLocation id, T object) {
         // ИСПРАВЛЕНО: Используем SRG-имя m_135782_() вместо location() для совместимости с Forge 1.20.1
-        System.out.println("\033[1;33m[InterMed Registry] Перехвачена регистрация: " + id + " для реестра " + registryKey.m_135782_() + "\033[0m");
+        System.out.println("\033[1;33m[InterMed Registry] Перехвачена регистрация: " + id + " для реестра " + registryKey.location() + "\033[0m");
         
         // ТЗ 3.2.2: Виртуализация реестров (Шардирование пространств имен)
         // Запрашиваем безопасный виртуальный ID у сервиса
         String namespacePath = id.getNamespace() + ":" + id.getPath();
-        int virtualId = VirtualRegistryService.resolveVirtualId(namespacePath, -1);
+        VirtualRegistryService.registerVirtualized(
+            CapabilityManager.currentModIdOr("unknown"),
+            registryKey.location().toString(),
+            namespacePath,
+            -1,
+            object
+        );
 
         // Кладем объект в очередь для последующего сброса в шину Forge
         QUEUE.computeIfAbsent(registryKey, k -> new ArrayList<>())
@@ -52,6 +61,12 @@ public class InterMedRegistry {
         List<PendingRegistration> pending = QUEUE.remove(registryKey);
         if (pending != null && !pending.isEmpty()) {
             System.out.println("[InterMed Bridge] Сбрасываем " + pending.size() + " объектов в Forge...");
+
+            RegistryFlushEvent flushEvent = new RegistryFlushEvent();
+            flushEvent.registryKey = registryKey.location().toString();
+            flushEvent.objectCount = pending.size();
+            flushEvent.begin();
+
             try {
                 // Ищем метод только один раз
                 if (cachedRegisterMethod == null) {
@@ -65,6 +80,8 @@ public class InterMedRegistry {
                 }
             } catch (Throwable t) {
                 System.err.println("[InterMed Bridge] Ошибка при сбросе реестра: " + t.getMessage());
+            } finally {
+                flushEvent.commit(); // Записываем метрику времени выполнения
             }
         }
     }

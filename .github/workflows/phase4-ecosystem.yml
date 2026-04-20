@@ -1,0 +1,44 @@
+name: Phase4 Ecosystem
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 2 * * *"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Prepare
+        run: chmod +x gradlew
+
+      - name: Test Suite
+        run: ./gradlew :app:test --stacktrace
+
+      - name: Registry Microbench
+        run: ./gradlew :app:registryMicrobench --stacktrace
+
+      - name: Build Core Jar
+        run: ./gradlew :app:coreJar --stacktrace
+
+      - name: Generate Ecosystem Artifacts
+        run: |
+          mkdir -p build/reports/phase4 .intermed-empty-mods
+          java -cp app/build/libs/InterMedCore.jar org.intermed.launcher.InterMedLauncher compat-report --mods-dir .intermed-empty-mods --output build/reports/phase4/compat-report.json
+          java -cp app/build/libs/InterMedCore.jar org.intermed.launcher.InterMedLauncher sbom --mods-dir .intermed-empty-mods --output build/reports/phase4/intermed-sbom.cdx.json
+
+      - name: Upload Ecosystem Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: intermed-phase4-artifacts
+          path: |
+            build/reports/phase4
+            app/build/reports/microbench

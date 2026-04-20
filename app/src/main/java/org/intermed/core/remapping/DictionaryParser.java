@@ -53,16 +53,74 @@ public class DictionaryParser {
                     }
                     cCount++;
                 } 
-                else if (line.startsWith("\tm\t") && currentClass != null && p.length >= 4) {
-                    dict.addMethod(currentClass, p[3], p[2], (p.length > 4) ? p[4] : p[3]);
-                    mCount++;
+                else if (line.startsWith("\tm\t") && currentClass != null) {
+                    TinyMemberLine member = parseTinyMemberLine(p);
+                    if (member != null) {
+                        dict.addMethod(currentClass, member.intermediaryName(), member.descriptor(), member.officialName());
+                        mCount++;
+                    }
                 }
-                else if (line.startsWith("\tf\t") && currentClass != null && p.length >= 4) {
-                    dict.addField(currentClass, p[3], p[2], (p.length > 4) ? p[4] : p[3]);
-                    fCount++;
+                else if (line.startsWith("\tf\t") && currentClass != null) {
+                    TinyMemberLine member = parseTinyMemberLine(p);
+                    if (member != null) {
+                        dict.addField(currentClass, member.intermediaryName(), member.descriptor(), member.officialName());
+                        fCount++;
+                    }
                 }
             }
             System.out.println("\033[1;32m[Dictionary] Pure Logic Fusion: " + cCount + " classes, " + mCount + " methods, " + fCount + " fields.\033[0m");
         }
     }
+
+    /**
+     * Loads only the Mojang (ProGuard) mapping file — no Tiny intermediary file
+     * required.  Populates {@code dict} with obfuscated → Mojang class-name
+     * mappings, which is sufficient for Forge environments where Fabric mods
+     * with Intermediary names are not present.
+     *
+     * @param srgPath path to {@code client-<version>-mappings.txt}
+     * @param dict    dictionary to populate
+     */
+    public static void parseSrgOnly(Path srgPath, MappingDictionary dict) throws java.io.IOException {
+        if (srgPath == null || !Files.exists(srgPath)) return;
+        int count = 0;
+        try (BufferedReader r = Files.newBufferedReader(srgPath)) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                // ProGuard format: "net.minecraft.SomeClass -> obf.Name:"
+                if (line.isEmpty() || line.startsWith(" ") || line.startsWith("#")) continue;
+                if (line.contains(" -> ")) {
+                    String[] p = line.split(" -> ");
+                    if (p.length < 2) continue;
+                    String mojang = p[0].trim().replace('.', '/');
+                    String obf    = p[1].trim().replace(":", "").replace('.', '/');
+                    dict.addClass(obf, mojang);
+                    count++;
+                }
+            }
+        }
+        System.out.println("\033[1;32m[Dictionary] SRG-only load: " + count + " class entries.\033[0m");
+    }
+
+    private static TinyMemberLine parseTinyMemberLine(String[] parts) {
+        if (parts == null || parts.length == 0) {
+            return null;
+        }
+
+        int offset = parts[0].isEmpty() ? 1 : 0;
+        int descriptorIndex = offset + 1;
+        int intermediaryNameIndex = offset + 3;
+        int officialNameIndex = offset + 4;
+
+        if (parts.length <= intermediaryNameIndex) {
+            return null;
+        }
+
+        String descriptor = parts[descriptorIndex];
+        String intermediaryName = parts[intermediaryNameIndex];
+        String officialName = parts.length > officialNameIndex ? parts[officialNameIndex] : intermediaryName;
+        return new TinyMemberLine(descriptor, intermediaryName, officialName);
+    }
+
+    private record TinyMemberLine(String descriptor, String intermediaryName, String officialName) {}
 }

@@ -1,5 +1,6 @@
 package org.intermed.core.async;
 
+import org.intermed.core.classloading.TcclInterceptor;
 import org.intermed.core.security.KernelContext;
 
 import java.util.concurrent.PriorityBlockingQueue;
@@ -19,7 +20,7 @@ public class BackgroundPreparator {
 
     private BackgroundPreparator() {
         // Создаем фабрику потоков с МИНИМАЛЬНЫМ приоритетом, чтобы не мешать основному потоку Minecraft
-        ThreadFactory lowPriorityFactory = new ThreadFactory() {
+        ThreadFactory lowPriorityFactory = TcclInterceptor.contextAwareFactory(new ThreadFactory() {
             private final AtomicInteger counter = new AtomicInteger(1);
             @Override
             public Thread newThread(Runnable r) {
@@ -28,7 +29,7 @@ public class BackgroundPreparator {
                 t.setDaemon(true); // Демон-потоки не мешают закрытию игры
                 return t;
             }
-        };
+        });
 
         // Пул потоков с приоритетной очередью
         int cores = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
@@ -43,7 +44,7 @@ public class BackgroundPreparator {
     }
 
     public void submitTask(PreparatorTask task) {
-        executor.execute(() -> {
+        executor.execute(TcclInterceptor.propagating(() -> {
             System.out.println("\033[1;34m[Preparator] Starting background task: " + task.getName() + "\033[0m");
             try {
                 // Все задачи Preparator'а выполняются в защищенном контуре ядра!
@@ -56,7 +57,7 @@ public class BackgroundPreparator {
                 System.err.println("\033[1;31m[Preparator] Task FAILED: " + task.getName() + "\033[0m");
                 e.printStackTrace();
             }
-        });
+        }));
     }
 
     public void shutdown() {

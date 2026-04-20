@@ -11,10 +11,14 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(Registry.class)
 public class RegistryInjectorMixin {
 
-    // m_255069_ - внутреннее имя метода register в 1.20.1
-    @Inject(method = "m_255069_", at = @At("HEAD"))
-    private static <V, T extends V> void onRegister(Registry<V> registry, ResourceLocation id, T entry, net.minecraft.core.RegistrationInfo info, CallbackInfoReturnable<T> cir) {
-        
+    @Inject(
+        method = "register(Lnet/minecraft/core/Registry;Lnet/minecraft/resources/ResourceLocation;Ljava/lang/Object;)Ljava/lang/Object;",
+        at = @At("HEAD")
+    )
+    private static <V, T extends V> void onRegister(Registry<V> registry,
+                                                    ResourceLocation id,
+                                                    T entry,
+                                                    CallbackInfoReturnable<T> cir) {
         // НИКАКИХ System.out.println ЗДЕСЬ! Это вызывает deadlock.
         // Просто молча передаем данные на склад.
         if (id != null && entry != null) {
