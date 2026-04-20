@@ -75,6 +75,69 @@ class CompatibilitySweepMatrixGeneratorTest {
         assertEquals(1, written.getAsJsonObject("summary").get("linkedCandidates").getAsInt());
     }
 
+    @Test
+    void linksHarnessAliasesWithoutCrossLoaderOrWrongVersionMatches() {
+        JsonObject corpus = new JsonObject();
+        JsonArray candidates = new JsonArray();
+        candidates.add(candidate("architectury-9.2.14-forge.jar", "architectury", "Architectury", "9.2.14", "FORGE", "parsed"));
+        candidates.add(candidate("architectury-9.2.14-fabric.jar", "architectury", "Architectury", "9.2.14", "FABRIC", "parsed"));
+        candidates.add(candidate("architectury-9.1.12-forge.jar", "architectury", "Architectury", "9.1.12", "FORGE", "parsed"));
+        candidates.add(candidate("collective-1.20.1-8.19.jar", "collective", "Collective", "8.19", "FABRIC", "parsed"));
+        candidates.add(candidate("voicechat-bukkit-2.6.16.jar", null, null, null, null, "unsupported"));
+        candidates.add(candidate("tacz-1.20.1-1.1.7-hotfix2.jar", "tacz", "Timeless & Classics Guns: Zero", "${file.jarVersion}", "FORGE", "parsed"));
+        corpus.add("candidates", candidates);
+
+        JsonObject harnessResults = new JsonObject();
+        JsonArray results = new JsonArray();
+        results.add(result(
+            "single-architectury-api-forge",
+            "architectury-api",
+            "Architectury API",
+            "9.2.14+forge",
+            "FORGE",
+            "PASS",
+            true
+        ));
+        results.add(result(
+            "single-collective-forge",
+            "collective",
+            "Collective",
+            "1.20.1-8.19-fabric+forge+neo",
+            "FORGE",
+            "PASS",
+            true
+        ));
+        results.add(result(
+            "single-simple-voice-chat-fabric",
+            "simple-voice-chat",
+            "Simple Voice Chat",
+            "bukkit-2.6.16",
+            "FABRIC",
+            "PASS",
+            true
+        ));
+        results.add(result(
+            "single-timeless-and-classics-zero-forge",
+            "timeless-and-classics-zero",
+            "[TaCZ] Timeless and Classics Zero",
+            "1.1.7-hotfix2",
+            "FORGE",
+            "PASS",
+            true
+        ));
+        harnessResults.add("results", results);
+
+        JsonObject matrix = CompatibilitySweepMatrixGenerator.generate(corpus, harnessResults);
+
+        assertEquals("passed", candidateByFile(matrix, "architectury-9.2.14-forge.jar").get("sweepStatus").getAsString());
+        assertEquals("not-run", candidateByFile(matrix, "architectury-9.2.14-fabric.jar").get("sweepStatus").getAsString());
+        assertEquals("not-run", candidateByFile(matrix, "architectury-9.1.12-forge.jar").get("sweepStatus").getAsString());
+        assertEquals("passed", candidateByFile(matrix, "collective-1.20.1-8.19.jar").get("sweepStatus").getAsString());
+        assertEquals("passed", candidateByFile(matrix, "voicechat-bukkit-2.6.16.jar").get("sweepStatus").getAsString());
+        assertEquals("passed", candidateByFile(matrix, "tacz-1.20.1-1.1.7-hotfix2.jar").get("sweepStatus").getAsString());
+        assertEquals(0, matrix.getAsJsonObject("summary").get("unmatchedResults").getAsInt());
+    }
+
     private static JsonObject harnessResults() {
         JsonObject root = new JsonObject();
         root.addProperty("generatedAt", "2026-04-19T00:00:00Z");
@@ -87,10 +150,20 @@ class CompatibilitySweepMatrixGeneratorTest {
     }
 
     private static JsonObject result(String id, String slug, String name, String outcome, boolean passed) {
+        return result(id, slug, name, "1.0.0", id.endsWith("forge") ? "FORGE" : "FABRIC", outcome, passed);
+    }
+
+    private static JsonObject result(String id,
+                                     String slug,
+                                     String name,
+                                     String version,
+                                     String loader,
+                                     String outcome,
+                                     boolean passed) {
         JsonObject result = new JsonObject();
         result.addProperty("id", id);
         result.addProperty("description", "Single: " + slug);
-        result.addProperty("loader", id.endsWith("forge") ? "FORGE" : "FABRIC");
+        result.addProperty("loader", loader);
         result.addProperty("modCount", 1);
         result.addProperty("outcome", outcome);
         result.addProperty("passed", passed);
@@ -101,12 +174,37 @@ class CompatibilitySweepMatrixGeneratorTest {
         JsonObject mod = new JsonObject();
         mod.addProperty("slug", slug);
         mod.addProperty("name", name);
-        mod.addProperty("version", "1.0.0");
+        mod.addProperty("version", version);
         mod.addProperty("downloads", 42);
+        mod.addProperty("modrinthUrl", "https://modrinth.com/mod/" + slug);
         mods.add(mod);
         result.add("mods", mods);
         result.add("issues", new JsonArray());
         return result;
+    }
+
+    private static JsonObject candidate(String file,
+                                        String id,
+                                        String name,
+                                        String version,
+                                        String platform,
+                                        String status) {
+        JsonObject candidate = new JsonObject();
+        candidate.addProperty("file", file);
+        if (id != null) {
+            candidate.addProperty("id", id);
+        }
+        if (name != null) {
+            candidate.addProperty("name", name);
+        }
+        if (version != null) {
+            candidate.addProperty("version", version);
+        }
+        if (platform != null) {
+            candidate.addProperty("platform", platform);
+        }
+        candidate.addProperty("status", status);
+        return candidate;
     }
 
     private static JsonObject candidate(JsonObject matrix, String modId) {

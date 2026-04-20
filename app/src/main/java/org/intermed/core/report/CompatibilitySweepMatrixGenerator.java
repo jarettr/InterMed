@@ -20,6 +20,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Links a compatibility corpus manifest to stored harness outcomes.
@@ -31,6 +33,48 @@ public final class CompatibilitySweepMatrixGenerator {
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Map<String, Integer> OUTCOME_RANK = outcomeRank();
+    private static final Pattern VERSION_START = Pattern.compile("(?i)(^|[-_+.])(?:mc)?\\d");
+    private static final Pattern SEMANTIC_VERSION = Pattern.compile("(?i)(\\d+(?:\\.\\d+){1,3}(?:-[a-z0-9]+)?)");
+    private static final Set<String> GENERIC_KEYS = Set.of(
+        "api",
+        "base",
+        "bukkit",
+        "client",
+        "common",
+        "core",
+        "fabric",
+        "forge",
+        "lib",
+        "library",
+        "mc",
+        "minecraft",
+        "mod",
+        "neoforge",
+        "paper",
+        "quilt",
+        "server"
+    );
+    private static final List<String> TRAILING_ALIAS_SUFFIXES = List.of(
+        "neoforge",
+        "minecraft",
+        "library",
+        "fabric",
+        "bukkit",
+        "common",
+        "server",
+        "client",
+        "forge",
+        "paper",
+        "quilt",
+        "base",
+        "core",
+        "api",
+        "lib",
+        "mod"
+    );
+    private static final List<String> LEADING_ALIAS_PREFIXES = List.of(
+        "simple"
+    );
 
     private CompatibilitySweepMatrixGenerator() {}
 
@@ -52,14 +96,14 @@ public final class CompatibilitySweepMatrixGenerator {
     public static JsonObject generate(JsonObject corpus, JsonObject harnessResults) {
         JsonObject safeCorpus = corpus == null ? new JsonObject() : corpus;
         List<JsonObject> resultRows = resultRows(harnessResults);
-        Map<String, List<JsonObject>> resultsByKey = indexResults(resultRows);
+        ResultIndex resultIndex = indexResults(resultRows);
         Set<String> matchedResultIds = new LinkedHashSet<>();
 
         JsonArray candidates = new JsonArray();
         MatrixSummary summary = new MatrixSummary();
         for (JsonObject candidate : candidateRows(safeCorpus)) {
             JsonObject enriched = candidate.deepCopy();
-            List<JsonObject> matches = matchesFor(candidate, resultsByKey);
+            List<JsonObject> matches = matchesFor(candidate, resultIndex);
             JsonArray matched = new JsonArray();
             for (JsonObject result : matches) {
                 JsonObject reference = resultReference(result);
@@ -154,35 +198,38 @@ public final class CompatibilitySweepMatrixGenerator {
         return rows;
     }
 
-    private static Map<String, List<JsonObject>> indexResults(List<JsonObject> results) {
+    private static ResultIndex indexResults(List<JsonObject> results) {
         Map<String, List<JsonObject>> index = new LinkedHashMap<>();
         for (JsonObject result : results) {
-            for (String key : resultKeys(result)) {
+            for (String key : resultAliases(result)) {
                 index.computeIfAbsent(key, ignored -> new ArrayList<>()).add(result);
             }
         }
-        return index;
+        return new ResultIndex(index);
     }
 
-    private static List<JsonObject> matchesFor(JsonObject candidate, Map<String, List<JsonObject>> resultsByKey) {
+    private static List<JsonObject> matchesFor(JsonObject candidate, ResultIndex resultIndex) {
         LinkedHashMap<String, JsonObject> matches = new LinkedHashMap<>();
-        for (String key : candidateKeys(candidate)) {
-            for (JsonObject result : resultsByKey.getOrDefault(key, List.of())) {
-                matches.put(resultId(result), result);
+        for (String key : candidateAliases(candidate)) {
+            for (JsonObject result : resultIndex.byAlias().getOrDefault(key, List.of())) {
+                if (candidateCompatibleWithResult(candidate, result)) {
+                    matches.put(resultId(result), result);
+                }
             }
         }
         return List.copyOf(matches.values());
     }
 
-    private static Set<String> candidateKeys(JsonObject candidate) {
+    private static Set<String> candidateAliases(JsonObject candidate) {
         LinkedHashSet<String> keys = new LinkedHashSet<>();
-        addKey(keys, string(candidate, "id", ""));
-        addKey(keys, string(candidate, "name", ""));
-        addKey(keys, fileStem(string(candidate, "file", "")));
+        addAliases(keys, string(candidate, "id", ""));
+        addAliases(keys, string(candidate, "name", ""));
+        addAliases(keys, fileStem(string(candidate, "file", "")));
+        artifactAliases(string(candidate, "file", "")).forEach(alias -> addAliases(keys, alias));
         return keys;
     }
 
-    private static Set<String> resultKeys(JsonObject result) {
+    private static Set<String> resultAliases(JsonObject result) {
         LinkedHashSet<String> keys = new LinkedHashSet<>();
         JsonArray mods = result.has("mods") && result.get("mods").isJsonArray()
             ? result.getAsJsonArray("mods")
@@ -192,17 +239,72 @@ public final class CompatibilitySweepMatrixGenerator {
                 continue;
             }
             JsonObject mod = element.getAsJsonObject();
-            addKey(keys, string(mod, "slug", ""));
-            addKey(keys, string(mod, "name", ""));
+            addAliases(keys, string(mod, "slug", ""));
+            addAliases(keys, string(mod, "name", ""));
+            addAliases(keys, modrinthSlug(mod));
         }
         return keys;
     }
 
-    private static void addKey(Set<String> keys, String raw) {
+    private static void addAliases(Set<String> keys, String raw) {
         String normalized = normalizeKey(raw);
-        if (!normalized.isBlank()) {
-            keys.add(normalized);
+        addNormalizedAlias(keys, normalized);
+        for (String variant : aliasVariants(normalized)) {
+            addNormalizedAlias(keys, variant);
         }
+        for (String token : rawTokens(raw)) {
+            addNormalizedAlias(keys, token);
+            for (String variant : aliasVariants(token)) {
+                addNormalizedAlias(keys, variant);
+            }
+        }
+    }
+
+    private static void addNormalizedAlias(Set<String> keys, String normalized) {
+        if (normalized == null || normalized.isBlank() || normalized.length() < 3 || GENERIC_KEYS.contains(normalized)) {
+            return;
+        }
+        keys.add(normalized);
+    }
+
+    private static Set<String> aliasVariants(String normalized) {
+        LinkedHashSet<String> variants = new LinkedHashSet<>();
+        if (normalized == null || normalized.isBlank()) {
+            return variants;
+        }
+        for (String prefix : LEADING_ALIAS_PREFIXES) {
+            if (normalized.startsWith(prefix) && normalized.length() > prefix.length() + 2) {
+                variants.add(normalized.substring(prefix.length()));
+            }
+        }
+        String current = normalized;
+        boolean stripped;
+        do {
+            stripped = false;
+            for (String suffix : TRAILING_ALIAS_SUFFIXES) {
+                if (current.endsWith(suffix) && current.length() > suffix.length() + 2) {
+                    current = current.substring(0, current.length() - suffix.length());
+                    variants.add(current);
+                    stripped = true;
+                    break;
+                }
+            }
+        } while (stripped);
+        return variants;
+    }
+
+    private static List<String> rawTokens(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return List.of();
+        }
+        List<String> tokens = new ArrayList<>();
+        for (String token : raw.toLowerCase(Locale.ROOT).split("[^a-z0-9]+")) {
+            String normalized = normalizeKey(token);
+            if (!normalized.isBlank()) {
+                tokens.add(normalized);
+            }
+        }
+        return tokens;
     }
 
     private static String normalizeKey(String raw) {
@@ -210,6 +312,172 @@ public final class CompatibilitySweepMatrixGenerator {
             return "";
         }
         return raw.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+    }
+
+    private static List<String> artifactAliases(String file) {
+        String stem = embeddedJarStem(fileStem(file));
+        if (stem.isBlank()) {
+            return List.of();
+        }
+        LinkedHashSet<String> aliases = new LinkedHashSet<>();
+        String artifact = artifactPrefix(stem);
+        if (!artifact.isBlank()) {
+            aliases.add(artifact);
+        }
+        aliases.add(stem);
+        return List.copyOf(aliases);
+    }
+
+    private static String embeddedJarStem(String stem) {
+        if (stem == null || stem.isBlank()) {
+            return "";
+        }
+        String[] nested = stem.split("(?i)\\.jar-[a-f0-9]{8,}-");
+        return nested.length == 0 ? stem : nested[nested.length - 1];
+    }
+
+    private static String artifactPrefix(String stem) {
+        if (stem == null || stem.isBlank()) {
+            return "";
+        }
+        Matcher matcher = VERSION_START.matcher(stem);
+        if (!matcher.find()) {
+            return stem;
+        }
+        int cut = matcher.start();
+        if (cut == 0) {
+            return "";
+        }
+        return stem.substring(0, cut);
+    }
+
+    private static String modrinthSlug(JsonObject mod) {
+        String url = string(mod, "modrinthUrl", "");
+        if (url.isBlank()) {
+            return "";
+        }
+        int slash = url.lastIndexOf('/');
+        return slash >= 0 ? url.substring(slash + 1) : url;
+    }
+
+    private static boolean candidateCompatibleWithResult(JsonObject candidate, JsonObject result) {
+        return loaderCompatible(candidate, result) && versionCompatible(candidate, result);
+    }
+
+    private static boolean loaderCompatible(JsonObject candidate, JsonObject result) {
+        String platform = normalizeKey(string(candidate, "platform", ""));
+        String loader = normalizeKey(string(result, "loader", ""));
+        return platform.isBlank()
+            || loader.isBlank()
+            || platform.equals(loader)
+            || candidateDeclaresLoader(candidate, loader)
+            || resultDeclaresLoader(result, platform) && resultDeclaresLoader(result, loader);
+    }
+
+    private static boolean candidateDeclaresLoader(JsonObject candidate, String loader) {
+        if (loader == null || loader.isBlank()) {
+            return false;
+        }
+        String haystack = normalizeKey(
+            string(candidate, "file", "") + " "
+                + string(candidate, "version", "") + " "
+                + string(candidate, "name", "")
+        );
+        return haystack.contains(loader) || haystack.contains("merged") || haystack.contains("multiloader");
+    }
+
+    private static boolean resultDeclaresLoader(JsonObject result, String loader) {
+        if (loader == null || loader.isBlank()) {
+            return false;
+        }
+        JsonArray mods = result.has("mods") && result.get("mods").isJsonArray()
+            ? result.getAsJsonArray("mods")
+            : new JsonArray();
+        for (JsonElement element : mods) {
+            if (element != null && element.isJsonObject()) {
+                JsonObject mod = element.getAsJsonObject();
+                String haystack = normalizeKey(
+                    string(mod, "slug", "") + " "
+                        + string(mod, "name", "") + " "
+                        + string(mod, "version", "")
+                );
+                if (haystack.contains(loader) || haystack.contains("merged") || haystack.contains("multiloader")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean versionCompatible(JsonObject candidate, JsonObject result) {
+        String candidateVersion = string(candidate, "version", "");
+        if (!hasMeaningfulVersion(candidateVersion)) {
+            return true;
+        }
+
+        JsonArray mods = result.has("mods") && result.get("mods").isJsonArray()
+            ? result.getAsJsonArray("mods")
+            : new JsonArray();
+        if (mods.isEmpty()) {
+            return true;
+        }
+
+        for (JsonElement element : mods) {
+            if (element != null && element.isJsonObject()) {
+                String resultVersion = string(element.getAsJsonObject(), "version", "");
+                if (versionMatches(candidateVersion, resultVersion)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasMeaningfulVersion(String version) {
+        String normalized = version == null ? "" : version.trim();
+        return !normalized.isBlank()
+            && !"null".equalsIgnoreCase(normalized)
+            && !normalized.startsWith("${");
+    }
+
+    private static boolean versionMatches(String left, String right) {
+        if (!hasMeaningfulVersion(right)) {
+            return true;
+        }
+        String normalizedLeft = normalizeVersion(left);
+        String normalizedRight = normalizeVersion(right);
+        if (normalizedLeft.isBlank() || normalizedRight.isBlank()) {
+            return true;
+        }
+        String semanticLeft = semanticBaseVersion(left);
+        String semanticRight = semanticBaseVersion(right);
+        return normalizedLeft.equals(normalizedRight)
+            || normalizedLeft.startsWith(normalizedRight)
+            || normalizedRight.startsWith(normalizedLeft)
+            || normalizedLeft.contains(normalizedRight)
+            || normalizedRight.contains(normalizedLeft)
+            || (!semanticLeft.isBlank() && semanticLeft.equals(semanticRight));
+    }
+
+    private static String normalizeVersion(String version) {
+        if (version == null) {
+            return "";
+        }
+        return version.toLowerCase(Locale.ROOT)
+            .replaceAll("\\$\\{[^}]+}", "")
+            .replaceAll("(?i)(minecraft|fabric|forge|neoforge|quilt|bukkit|paper|mc)", "")
+            .replaceAll("[^a-z0-9]", "");
+    }
+
+    private static String semanticBaseVersion(String version) {
+        if (version == null) {
+            return "";
+        }
+        Matcher matcher = SEMANTIC_VERSION.matcher(version);
+        if (!matcher.find()) {
+            return "";
+        }
+        return matcher.group(1).toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
     }
 
     private static String fileStem(String file) {
@@ -350,6 +618,8 @@ public final class CompatibilitySweepMatrixGenerator {
         rank.put("FAIL_OTHER", 8);
         return Map.copyOf(rank);
     }
+
+    private record ResultIndex(Map<String, List<JsonObject>> byAlias) {}
 
     private static final class MatrixSummary {
         private int corpusTotal;

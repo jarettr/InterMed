@@ -26,6 +26,9 @@ scope beyond Minecraft `1.20.1`.
   fluid types.
 - Removed duplicate NeoForge test-only shim classes so tests now compile against
   the packaged runtime shims.
+- Hardened compatibility sweep matching so stored harness results can link to
+  corpus candidates across Modrinth slugs, manifest IDs, artifact filename
+  aliases, loader classifiers, multi-loader jars, and version aliases.
 
 ## Updated Evidence
 
@@ -43,6 +46,14 @@ Core jar rebuild passed:
 
 ```bash
 ./gradlew :app:coreJar --no-daemon
+```
+
+Compatibility sweep matcher regression passed:
+
+```bash
+./gradlew :app:test \
+  --tests org.intermed.core.report.CompatibilitySweepMatrixGeneratorTest \
+  --no-daemon
 ```
 
 The local `build/launch-evidence/intermed-api-gap-matrix.json` was regenerated
@@ -63,6 +74,20 @@ Remaining missing symbols are beta-stage Fabric API surface only:
 - `net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback`
 - `net.fabricmc.fabric.api.event.player.UseBlockCallback`
 
+The local `build/launch-evidence/intermed-compatibility-sweep-matrix.json` was
+regenerated from the same corpus and stored harness results. Current summary:
+
+- Corpus total: `1804`
+- Linked candidates: `188`
+- Untested candidates: `1616`
+- Harness results total: `184`
+- Harness pass count: `184`
+- Harness fail count: `0`
+- Unmatched harness results: `1`
+
+The only remaining unmatched harness result is `single-terralith-fabric`; no
+matching `terralith` candidate is present in the current corpus artifact.
+
 The diagnostics bundle was regenerated and still contains `17` entries. During
 bundle generation the existing GraalVM sandbox probe warning remained visible:
 
@@ -77,7 +102,9 @@ risk and is tracked in [alpha-risk-register-2026-04-20.md](alpha-risk-register-2
 
 ```text
 5437a86816b27edf7aaad89546fdd1bd76b5ea451e1a479df81d467665c3c3fe  build/launch-evidence/intermed-api-gap-matrix.json
-d0cf2d8e876ebfa2f2e6cdf320e05725a10181ad667cdb24976fff590eb567f6  build/launch-evidence/intermed-diagnostics-bundle.zip
+0b9707fdfc0f93da04e26c1e20774c1329ec5bb36c60238f222ee87963a1e687  build/launch-evidence/intermed-compatibility-sweep-matrix.json
+5e6522a800ddb541229c4ab11a24f5c169c540ab761259ff03977ac2cd453d15  build/launch-evidence/intermed-launch-readiness-report.json
+b5ce743e3a606abdfacc4381fa468536d36f509ba522a03ae4215d63f7f0f777  build/launch-evidence/intermed-diagnostics-bundle.zip
 ```
 
 ## Non-Claims
