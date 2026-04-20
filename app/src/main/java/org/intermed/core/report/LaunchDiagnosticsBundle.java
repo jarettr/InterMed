@@ -168,7 +168,8 @@ public final class LaunchDiagnosticsBundle {
         root.addProperty("gameDir", display(gameDir));
         root.addProperty("modsDir", display(modsDir));
         root.addProperty("configDir", display(configDir));
-        root.addProperty("modJarCount", jars.size());
+        root.addProperty("modJarCount", jars.stream().filter(LaunchDiagnosticsBundle::isJar).count());
+        root.addProperty("modArtifactCount", jars.size());
         root.addProperty("entryCount", entryNames.size() + 1);
         root.add("entries", stringArray(entryNames));
         root.add("artifacts", artifactIndex);
@@ -189,6 +190,10 @@ public final class LaunchDiagnosticsBundle {
         return readiness;
     }
 
+    private static boolean isJar(File file) {
+        return file != null && file.getName().toLowerCase(java.util.Locale.ROOT).endsWith(".jar");
+    }
+
     private static JsonObject dependencyPlan(List<File> jars) {
         JsonObject root = new JsonObject();
         JsonArray candidates = new JsonArray();
@@ -203,6 +208,18 @@ public final class LaunchDiagnosticsBundle {
                 candidate.addProperty("path", jar.toPath().toAbsolutePath().normalize().toString());
                 candidate.addProperty("sha256", sha256(jar.toPath()));
                 if (parsed.isEmpty()) {
+                    Optional<DataDrivenArchiveDetector.Artifact> dataDriven = DataDrivenArchiveDetector.detect(jar);
+                    if (dataDriven.isPresent()) {
+                        DataDrivenArchiveDetector.Artifact artifact = dataDriven.get();
+                        candidate.addProperty("status", "data-driven");
+                        candidate.addProperty("id", artifact.id());
+                        candidate.addProperty("version", artifact.version());
+                        candidate.addProperty("platform", artifact.platform());
+                        candidate.addProperty("artifactType", artifact.artifactType());
+                        candidate.add("dependencies", new JsonArray());
+                        candidates.add(candidate);
+                        continue;
+                    }
                     candidate.addProperty("status", "unsupported");
                     candidates.add(candidate);
                     continue;
@@ -275,7 +292,19 @@ public final class LaunchDiagnosticsBundle {
             try {
                 Optional<NormalizedModMetadata> parsed = ModMetadataParser.parse(jar);
                 if (parsed.isEmpty()) {
-                    entry.addProperty("status", "unsupported");
+                    Optional<DataDrivenArchiveDetector.Artifact> dataDriven = DataDrivenArchiveDetector.detect(jar);
+                    if (dataDriven.isPresent()) {
+                        DataDrivenArchiveDetector.Artifact artifact = dataDriven.get();
+                        entry.addProperty("status", "data-driven");
+                        entry.addProperty("id", artifact.id());
+                        entry.addProperty("platform", artifact.platform());
+                        entry.addProperty("artifactType", artifact.artifactType());
+                        entry.add("declaredPermissions", new JsonArray());
+                        entry.add("granularSecurity", new JsonObject());
+                        entry.addProperty("hasGranularSecurity", false);
+                    } else {
+                        entry.addProperty("status", "unsupported");
+                    }
                 } else {
                     NormalizedModMetadata mod = parsed.get();
                     JsonObject manifest = mod.manifest();

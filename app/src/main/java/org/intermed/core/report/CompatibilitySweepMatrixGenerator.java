@@ -370,8 +370,15 @@ public final class CompatibilitySweepMatrixGenerator {
         return platform.isBlank()
             || loader.isBlank()
             || platform.equals(loader)
+            || isDataDrivenPlatform(platform)
             || candidateDeclaresLoader(candidate, loader)
             || resultDeclaresLoader(result, platform) && resultDeclaresLoader(result, loader);
+    }
+
+    private static boolean isDataDrivenPlatform(String platform) {
+        return platform.equals("datapack")
+            || platform.equals("resourcepack")
+            || platform.equals("dataresourcepack");
     }
 
     private static boolean candidateDeclaresLoader(JsonObject candidate, String loader) {
@@ -486,7 +493,10 @@ public final class CompatibilitySweepMatrixGenerator {
         }
         int slash = Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\'));
         String name = slash >= 0 ? file.substring(slash + 1) : file;
-        return name.endsWith(".jar") ? name.substring(0, name.length() - 4) : name;
+        String lower = name.toLowerCase(Locale.ROOT);
+        return lower.endsWith(".jar") || lower.endsWith(".zip")
+            ? name.substring(0, name.length() - 4)
+            : name;
     }
 
     private static String sweepStatus(List<JsonObject> matches) {

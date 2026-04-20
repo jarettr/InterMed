@@ -16,8 +16,9 @@ listed here even when code exists in the repository.
 ## Compatibility
 
 - Full Fabric API, Forge API, and NeoForge API parity is not yet proven.
-- The `compat-corpus` command records local candidate JARs and manifest-derived
-  metadata only. It does not prove that those candidates boot or behave correctly.
+- The `compat-corpus` command records local candidate JARs plus reporting-only
+  data/resource pack ZIP archives and manifest-derived metadata. It does not
+  prove that those candidates boot, reload, or behave correctly.
 - The `compat-sweep-matrix` command normalizes stored harness outcomes, but it
   still does not prove gameplay, multiplayer, strict-security, or field behavior.
 - Diagnostics bundles include harness-linked sweep results only when a harness
@@ -45,7 +46,8 @@ listed here even when code exists in the repository.
 ## Minecraft Lifecycle
 
 - VFS/data-pack support is alpha-level. Classpath and overlay routing have
-  in-repo evidence, but the full Minecraft ResourceManager/DataPack reload
+  in-repo evidence, and data/resource pack ZIPs are now represented in
+  reporting evidence, but the full Minecraft ResourceManager/DataPack reload
   lifecycle still needs real game validation.
 - Registry virtualization has synthetic and hot-path evidence, but real
   conflict-heavy modpacks and multiplayer registry sync are still deferred.

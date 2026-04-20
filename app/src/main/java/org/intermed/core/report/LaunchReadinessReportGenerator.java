@@ -51,7 +51,7 @@ public final class LaunchReadinessReportGenerator {
         Path results = normalize(harnessResults);
         List<File> jars = mods == null || !Files.isDirectory(mods)
             ? List.of()
-            : ModDiscovery.discoverJars(mods.toFile());
+            : ModDiscovery.discoverCandidateArchives(mods.toFile());
 
         JsonObject apiGapMatrix = ApiGapMatrixGenerator.generate();
         JsonObject corpus = CompatibilityCorpusGenerator.generate(jars);

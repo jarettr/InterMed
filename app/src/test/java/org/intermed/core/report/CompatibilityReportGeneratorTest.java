@@ -11,7 +11,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
+import java.util.jar.JarEntry;
+import java.util.jar.JarOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -69,5 +74,41 @@ class CompatibilityReportGeneratorTest {
             }
         }
         assertTrue(hasServerbound);
+    }
+
+    @Test
+    void reportsDataDrivenZipArchivesWithoutMarkingThemUnsupported() throws Exception {
+        Path root = Files.createTempDirectory("intermed-compat-report-data-driven");
+        Path dataPack = createDataPackZip(root.resolve("Terralith_1.20_v2.5.4.zip"));
+
+        JsonObject report = CompatibilityReportGenerator.generate(List.of(dataPack.toFile()));
+        JsonObject entry = report.getAsJsonArray("mods").get(0).getAsJsonObject();
+
+        assertEquals("data-driven", entry.get("status").getAsString());
+        assertEquals("terralith", entry.get("id").getAsString());
+        assertEquals("2.5.4", entry.get("version").getAsString());
+        assertEquals("DATA_PACK", entry.get("platform").getAsString());
+        assertEquals("data-pack", entry.get("artifactType").getAsString());
+        assertTrue(entry.get("serverData").getAsBoolean());
+    }
+
+    private static Path createDataPackZip(Path zipPath) throws Exception {
+        try (JarOutputStream output = new JarOutputStream(Files.newOutputStream(zipPath))) {
+            output.putNextEntry(new JarEntry("pack.mcmeta"));
+            output.write("""
+                {
+                  "pack": {
+                    "pack_format": 15,
+                    "description": "Terralith"
+                  }
+                }
+                """.getBytes(StandardCharsets.UTF_8));
+            output.closeEntry();
+
+            output.putNextEntry(new JarEntry("data/terralith/worldgen/biome/test.json"));
+            output.write("{}".getBytes(StandardCharsets.UTF_8));
+            output.closeEntry();
+        }
+        return zipPath;
     }
 }

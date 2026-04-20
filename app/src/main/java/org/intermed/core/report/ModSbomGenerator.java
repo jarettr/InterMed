@@ -94,7 +94,27 @@ public final class ModSbomGenerator {
                 addProperty(properties, "intermed:sandbox.effective", plan.effectiveMode().externalName());
                 addProperty(properties, "intermed:sandbox.reason", plan.reason());
             } else {
-                addProperty(properties, "intermed:status", "unsupported");
+                Optional<DataDrivenArchiveDetector.Artifact> dataDriven = DataDrivenArchiveDetector.detect(jar);
+                if (dataDriven.isEmpty()) {
+                    addProperty(properties, "intermed:status", "unsupported");
+                    component.add("properties", properties);
+                    return component;
+                }
+                DataDrivenArchiveDetector.Artifact artifact = dataDriven.get();
+                component.addProperty("name", artifact.id());
+                component.addProperty("version", artifact.version());
+                component.addProperty(
+                    "purl",
+                    "pkg:generic/intermed/" + artifact.artifactType() + "/" + artifact.id() + "@" + artifact.version()
+                );
+                addProperty(properties, "intermed:status", "data-driven");
+                addProperty(properties, "intermed:platform", artifact.platform());
+                addProperty(properties, "intermed:artifactType", artifact.artifactType());
+                addProperty(properties, "intermed:clientResources", Boolean.toString(artifact.clientResources()));
+                addProperty(properties, "intermed:serverData", Boolean.toString(artifact.serverData()));
+                addProperty(properties, "intermed:sandbox.requested", "native");
+                addProperty(properties, "intermed:sandbox.effective", "native");
+                addProperty(properties, "intermed:sandbox.reason", artifact.artifactType());
             }
         } catch (Exception e) {
             addProperty(properties, "intermed:status", "failed");

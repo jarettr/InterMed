@@ -6,6 +6,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.jar.JarOutputStream;
@@ -13,6 +14,7 @@ import java.util.jar.JarOutputStream;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ModDiscoveryTest {
 
@@ -35,6 +37,19 @@ class ModDiscoveryTest {
         assertEquals("v2", readNestedMarker(secondNested.toPath()));
         assertNotEquals(firstNested.getName(), secondNested.getName(),
             "Cache fingerprint must change when nested jar content changes");
+    }
+
+    @Test
+    void candidateArchivesIncludeZipDataPacksWithoutAddingThemToRuntimeJars() throws Exception {
+        Path modsDir = Files.createTempDirectory("intermed-discovery-archives");
+        writeParentJar(modsDir.resolve("parent-mod.jar"), "v1");
+        writeDataPackZip(modsDir.resolve("Terralith_1.20_v2.5.4.zip"));
+
+        List<java.io.File> runtimeJars = ModDiscovery.discoverJars(modsDir.toFile());
+        List<java.io.File> candidateArchives = ModDiscovery.discoverCandidateArchives(modsDir.toFile());
+
+        assertTrue(runtimeJars.stream().noneMatch(file -> file.getName().endsWith(".zip")));
+        assertTrue(candidateArchives.stream().anyMatch(file -> file.getName().equals("Terralith_1.20_v2.5.4.zip")));
     }
 
     private static java.io.File findNestedJar(ModDiscovery.DiscoveryLayout layout) {
@@ -71,6 +86,25 @@ class ModDiscoveryTest {
             output.closeEntry();
         }
         return buffer.toByteArray();
+    }
+
+    private static void writeDataPackZip(Path zipPath) throws Exception {
+        try (JarOutputStream output = new JarOutputStream(Files.newOutputStream(zipPath))) {
+            output.putNextEntry(new JarEntry("pack.mcmeta"));
+            output.write("""
+                {
+                  "pack": {
+                    "pack_format": 15,
+                    "description": "Terralith"
+                  }
+                }
+                """.getBytes(StandardCharsets.UTF_8));
+            output.closeEntry();
+
+            output.putNextEntry(new JarEntry("data/terralith/worldgen/biome/test.json"));
+            output.write("{}".getBytes(StandardCharsets.UTF_8));
+            output.closeEntry();
+        }
     }
 
     private static String readNestedMarker(Path nestedJar) throws Exception {

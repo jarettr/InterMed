@@ -22,20 +22,23 @@ class CompatibilityCorpusGeneratorTest {
         Path root = Files.createTempDirectory("intermed-compat-corpus");
         Path fabricJar = createFabricJar(root.resolve("alpha-fabric.jar"));
         Path unsupportedJar = createUnsupportedJar(root.resolve("library-only.jar"));
+        Path dataPackZip = createDataPackZip(root.resolve("Terralith_1.20_v2.5.4.zip"));
 
         JsonObject report = CompatibilityCorpusGenerator.generate(List.of(
             unsupportedJar.toFile(),
-            fabricJar.toFile()
+            fabricJar.toFile(),
+            dataPackZip.toFile()
         ));
         JsonObject summary = report.getAsJsonObject("summary");
 
         assertEquals("intermed-compatibility-corpus-v1", report.get("schema").getAsString());
         assertEquals("manifest-only", report.getAsJsonObject("scope").get("evidenceLevel").getAsString());
-        assertEquals(2, summary.get("total").getAsInt());
-        assertEquals(1, summary.get("parsed").getAsInt());
+        assertEquals(3, summary.get("total").getAsInt());
+        assertEquals(2, summary.get("parsed").getAsInt());
         assertEquals(1, summary.get("unsupported").getAsInt());
-        assertEquals(2, summary.get("notRun").getAsInt());
+        assertEquals(3, summary.get("notRun").getAsInt());
         assertEquals(1, summary.getAsJsonObject("byPlatform").get("FABRIC").getAsInt());
+        assertEquals(1, summary.getAsJsonObject("byPlatform").get("DATA_PACK").getAsInt());
 
         JsonObject fabric = candidate(report, "alpha_mod");
         assertEquals("parsed", fabric.get("status").getAsString());
@@ -47,6 +50,13 @@ class CompatibilityCorpusGeneratorTest {
 
         JsonObject unsupported = candidateByFile(report, "library-only.jar");
         assertEquals("unsupported", unsupported.get("status").getAsString());
+
+        JsonObject dataPack = candidate(report, "terralith");
+        assertEquals("parsed", dataPack.get("status").getAsString());
+        assertEquals("data-pack", dataPack.get("artifactType").getAsString());
+        assertEquals("DATA_PACK", dataPack.get("platform").getAsString());
+        assertEquals("2.5.4", dataPack.get("version").getAsString());
+        assertTrue(dataPack.get("serverData").getAsBoolean());
     }
 
     @Test
@@ -124,5 +134,25 @@ class CompatibilityCorpusGeneratorTest {
             output.closeEntry();
         }
         return jarPath;
+    }
+
+    private static Path createDataPackZip(Path zipPath) throws Exception {
+        try (JarOutputStream output = new JarOutputStream(Files.newOutputStream(zipPath))) {
+            output.putNextEntry(new JarEntry("pack.mcmeta"));
+            output.write("""
+                {
+                  "pack": {
+                    "pack_format": 15,
+                    "description": "Terralith"
+                  }
+                }
+                """.getBytes(StandardCharsets.UTF_8));
+            output.closeEntry();
+
+            output.putNextEntry(new JarEntry("data/terralith/worldgen/noise_settings/test.json"));
+            output.write("{}".getBytes(StandardCharsets.UTF_8));
+            output.closeEntry();
+        }
+        return zipPath;
     }
 }

@@ -184,7 +184,7 @@ public class InterMedLauncher {
     private static int executeCompatReport(LaunchRequest request) throws Exception {
         RuntimeConfig.reload();
         Path output = resolveOutputPath(request, "output", "intermed-compat-report.json");
-        CompatibilityReportGenerator.writeReport(output, discoverJars(request));
+        CompatibilityReportGenerator.writeReport(output, discoverCandidateArchives(request));
         System.out.println("[CompatReport] Wrote " + output);
         return 0;
     }
@@ -192,7 +192,7 @@ public class InterMedLauncher {
     private static int executeCompatCorpus(LaunchRequest request) throws Exception {
         RuntimeConfig.reload();
         Path output = resolveOutputPath(request, "output", "intermed-compatibility-corpus.json");
-        CompatibilityCorpusGenerator.writeReport(output, discoverJars(request));
+        CompatibilityCorpusGenerator.writeReport(output, discoverCandidateArchives(request));
         System.out.println("[CompatCorpus] Wrote " + output);
         return 0;
     }
@@ -209,7 +209,7 @@ public class InterMedLauncher {
         } else {
             CompatibilitySweepMatrixGenerator.writeReport(
                 output,
-                CompatibilityCorpusGenerator.generate(discoverJars(request)),
+                CompatibilityCorpusGenerator.generate(discoverCandidateArchives(request)),
                 results
             );
         }
@@ -220,7 +220,7 @@ public class InterMedLauncher {
     private static int executeSbom(LaunchRequest request) throws Exception {
         RuntimeConfig.reload();
         Path output = resolveOutputPath(request, "output", "intermed-sbom.cdx.json");
-        ModSbomGenerator.writeSbom(output, discoverJars(request));
+        ModSbomGenerator.writeSbom(output, discoverCandidateArchives(request));
         System.out.println("[SBOM] Wrote " + output);
         return 0;
     }
@@ -259,7 +259,7 @@ public class InterMedLauncher {
             .orElse(paths.gameDir().resolve("intermed-diagnostics-bundle.zip").toAbsolutePath().normalize());
         LaunchDiagnosticsBundle.BundleResult result = LaunchDiagnosticsBundle.writeBundle(
             output,
-            ModDiscovery.discoverJars(paths.modsDir().toFile()),
+            ModDiscovery.discoverCandidateArchives(paths.modsDir().toFile()),
             paths.gameDir(),
             paths.modsDir(),
             paths.configDir(),
@@ -280,7 +280,7 @@ public class InterMedLauncher {
             output = uniquePath(output);
             LaunchDiagnosticsBundle.BundleResult result = LaunchDiagnosticsBundle.writeBundle(
                 output,
-                ModDiscovery.discoverJars(paths.modsDir().toFile()),
+                ModDiscovery.discoverCandidateArchives(paths.modsDir().toFile()),
                 paths.gameDir(),
                 paths.modsDir(),
                 paths.configDir(),
@@ -467,6 +467,11 @@ public class InterMedLauncher {
     private static List<File> discoverJars(LaunchRequest request) {
         Path modsDir = Path.of(request.option("mods-dir").orElse(RuntimeConfig.get().getModsDir().toString()));
         return ModDiscovery.discoverJars(modsDir.toFile());
+    }
+
+    private static List<File> discoverCandidateArchives(LaunchRequest request) {
+        Path modsDir = Path.of(request.option("mods-dir").orElse(RuntimeConfig.get().getModsDir().toString()));
+        return ModDiscovery.discoverCandidateArchives(modsDir.toFile());
     }
 
     private static Optional<Path> resolveMappingsPath(LaunchRequest request) throws Exception {

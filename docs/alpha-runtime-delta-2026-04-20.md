@@ -31,6 +31,10 @@ scope beyond Minecraft `1.20.1`.
   aliases, loader classifiers, multi-loader jars, and version aliases.
 - Added minimal runtime shims for the remaining curated Fabric beta symbols:
   `CommandRegistrationCallback`, `FabricBlockSettings`, and `UseBlockCallback`.
+- Added reporting-only discovery/parsing for `.zip` data/resource pack archives
+  so Terralith-style data-driven artifacts are represented in compatibility
+  corpus, sweep, compatibility report, SBOM, and diagnostics evidence without
+  being added to runtime JAR classloading.
 
 ## Updated Evidence
 
@@ -75,18 +79,25 @@ tracked class-level/bridge-level surface is present; it is not a full API parity
 claim for Fabric, Forge, or NeoForge.
 
 The local `build/launch-evidence/intermed-compatibility-sweep-matrix.json` was
-regenerated from the same corpus and stored harness results. Current summary:
+regenerated from the harness-cache corpus and stored harness results. Current
+summary:
 
-- Corpus total: `1804`
-- Linked candidates: `188`
-- Untested candidates: `1616`
+- Corpus total: `1818`
+- Parsed candidates: `1774`
+- Unsupported candidates: `40`
+- Failed corpus parses: `4`
+- Unique linked candidates: `183`
+- Untested candidates: `1635`
 - Harness results total: `184`
 - Harness pass count: `184`
 - Harness fail count: `0`
-- Unmatched harness results: `1`
+- Unmatched harness results: `0`
 
-The only remaining unmatched harness result is `single-terralith-fabric`; no
-matching `terralith` candidate is present in the current corpus artifact.
+The previous unmatched harness result, `single-terralith-fabric`, is now linked
+through the Terralith `.zip` data-pack candidate. The corpus also records other
+top-level data/resource pack `.zip` artifacts as reporting candidates. This is
+evidence linkage only; it does not prove the full Minecraft ResourceManager or
+data-pack reload lifecycle in gameplay.
 
 The diagnostics bundle was regenerated and still contains `17` entries. During
 bundle generation the existing GraalVM sandbox probe warning remained visible:
@@ -101,10 +112,11 @@ risk and is tracked in [alpha-risk-register-2026-04-20.md](alpha-risk-register-2
 ## Evidence Checksums
 
 ```text
-b1fb8b398bf47c683fae1864c133d01db3eb16d14833d18fb24e97e13f0c6232  build/launch-evidence/intermed-api-gap-matrix.json
-0b9707fdfc0f93da04e26c1e20774c1329ec5bb36c60238f222ee87963a1e687  build/launch-evidence/intermed-compatibility-sweep-matrix.json
-f065bd9b5d7db7be2c893e9b2d48a43eb66d06acba318c4b08172c29bdd40d25  build/launch-evidence/intermed-launch-readiness-report.json
-55d91706b9b0a200d97d4e804cad19746d5d93cf3201adc9d4c12e4c6537d69a  build/launch-evidence/intermed-diagnostics-bundle.zip
+88f6dd349d2028ab8fb6c79bc1f23db8a9543b04b563976671b36eda0ce86fb7  build/launch-evidence/intermed-api-gap-matrix.json
+397ab20f1eaa958638e81a65d7cb96857a038023f44e689c68f24f63f146ce6a  build/launch-evidence/intermed-compatibility-corpus.json
+9d7c315dbdb8d60683b403e3eda0e7c94aaf1324fc7d96e01f4f32c7f8955c18  build/launch-evidence/intermed-compatibility-sweep-matrix.json
+8146155d5e2788f3bb685cc978396d1369883826e357d14f3362a9934385353d  build/launch-evidence/intermed-launch-readiness-report.json
+8101e7e5b338a6009e6f9e21dd6fa02917fbecb10c85c5975d6c55f734fbe5a8  build/launch-evidence/intermed-diagnostics-bundle.zip
 ```
 
 ## Non-Claims

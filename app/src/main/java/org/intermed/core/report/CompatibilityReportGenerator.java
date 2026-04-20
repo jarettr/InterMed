@@ -176,6 +176,10 @@ public final class CompatibilityReportGenerator {
         try {
             Optional<NormalizedModMetadata> metadata = ModMetadataParser.parse(jar);
             if (metadata.isEmpty()) {
+                Optional<DataDrivenArchiveDetector.Artifact> artifact = DataDrivenArchiveDetector.detect(jar);
+                if (artifact.isPresent()) {
+                    return dataDrivenEntry(entry, artifact.get());
+                }
                 entry.addProperty("status", "unsupported");
                 return entry;
             }
@@ -210,6 +214,22 @@ public final class CompatibilityReportGenerator {
             entry.addProperty("status", "failed");
             entry.addProperty("error", e.getMessage());
         }
+        return entry;
+    }
+
+    private static JsonObject dataDrivenEntry(JsonObject entry, DataDrivenArchiveDetector.Artifact artifact) {
+        entry.addProperty("status", "data-driven");
+        entry.addProperty("artifactType", artifact.artifactType());
+        entry.addProperty("id", artifact.id());
+        entry.addProperty("name", artifact.name());
+        entry.addProperty("version", artifact.version());
+        entry.addProperty("platform", artifact.platform());
+        entry.addProperty("clientResources", artifact.clientResources());
+        entry.addProperty("serverData", artifact.serverData());
+        entry.add("mixins", new JsonArray());
+        entry.add("entrypoints", DataDrivenArchiveDetector.emptyEntrypoints());
+        entry.add("riskyReasons", new JsonArray());
+        entry.add("sandbox", DataDrivenArchiveDetector.sandbox(artifact));
         return entry;
     }
 

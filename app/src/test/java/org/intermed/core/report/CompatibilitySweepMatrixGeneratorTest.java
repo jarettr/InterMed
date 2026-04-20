@@ -83,6 +83,7 @@ class CompatibilitySweepMatrixGeneratorTest {
         candidates.add(candidate("architectury-9.2.14-fabric.jar", "architectury", "Architectury", "9.2.14", "FABRIC", "parsed"));
         candidates.add(candidate("architectury-9.1.12-forge.jar", "architectury", "Architectury", "9.1.12", "FORGE", "parsed"));
         candidates.add(candidate("collective-1.20.1-8.19.jar", "collective", "Collective", "8.19", "FABRIC", "parsed"));
+        candidates.add(candidate("Terralith_1.20_v2.5.4.zip", "terralith", "Terralith", "2.5.4", "DATA_PACK", "parsed"));
         candidates.add(candidate("voicechat-bukkit-2.6.16.jar", null, null, null, null, "unsupported"));
         candidates.add(candidate("tacz-1.20.1-1.1.7-hotfix2.jar", "tacz", "Timeless & Classics Guns: Zero", "${file.jarVersion}", "FORGE", "parsed"));
         corpus.add("candidates", candidates);
@@ -125,6 +126,15 @@ class CompatibilitySweepMatrixGeneratorTest {
             "PASS",
             true
         ));
+        results.add(result(
+            "single-terralith-fabric",
+            "terralith",
+            "Terralith",
+            "2.5.4",
+            "FABRIC",
+            "PASS",
+            true
+        ));
         harnessResults.add("results", results);
 
         JsonObject matrix = CompatibilitySweepMatrixGenerator.generate(corpus, harnessResults);
@@ -133,6 +143,7 @@ class CompatibilitySweepMatrixGeneratorTest {
         assertEquals("not-run", candidateByFile(matrix, "architectury-9.2.14-fabric.jar").get("sweepStatus").getAsString());
         assertEquals("not-run", candidateByFile(matrix, "architectury-9.1.12-forge.jar").get("sweepStatus").getAsString());
         assertEquals("passed", candidateByFile(matrix, "collective-1.20.1-8.19.jar").get("sweepStatus").getAsString());
+        assertEquals("passed", candidateByFile(matrix, "Terralith_1.20_v2.5.4.zip").get("sweepStatus").getAsString());
         assertEquals("passed", candidateByFile(matrix, "voicechat-bukkit-2.6.16.jar").get("sweepStatus").getAsString());
         assertEquals("passed", candidateByFile(matrix, "tacz-1.20.1-1.1.7-hotfix2.jar").get("sweepStatus").getAsString());
         assertEquals(0, matrix.getAsJsonObject("summary").get("unmatchedResults").getAsInt());

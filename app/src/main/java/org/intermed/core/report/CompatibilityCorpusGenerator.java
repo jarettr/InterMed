@@ -92,6 +92,10 @@ public final class CompatibilityCorpusGenerator {
         try {
             Optional<NormalizedModMetadata> parsed = ModMetadataParser.parse(jar);
             if (parsed.isEmpty()) {
+                Optional<DataDrivenArchiveDetector.Artifact> dataDriven = DataDrivenArchiveDetector.detect(jar);
+                if (dataDriven.isPresent()) {
+                    return dataDrivenCandidate(entry, dataDriven.get(), summary);
+                }
                 summary.unsupported++;
                 summary.status("unsupported");
                 entry.addProperty("status", "unsupported");
@@ -138,6 +142,39 @@ public final class CompatibilityCorpusGenerator {
             entry.addProperty("error", e.getMessage());
             return entry;
         }
+    }
+
+    private static JsonObject dataDrivenCandidate(JsonObject entry,
+                                                  DataDrivenArchiveDetector.Artifact artifact,
+                                                  CorpusSummary summary) {
+        summary.parsed++;
+        summary.status("parsed");
+        summary.platform(artifact.platform());
+        if (artifact.clientResources()) {
+            summary.withClientResources++;
+        }
+        if (artifact.serverData()) {
+            summary.withServerData++;
+        }
+
+        entry.addProperty("status", "parsed");
+        entry.addProperty("artifactType", artifact.artifactType());
+        entry.addProperty("id", artifact.id());
+        entry.addProperty("name", artifact.name());
+        entry.addProperty("version", artifact.version());
+        entry.addProperty("platform", artifact.platform());
+        entry.addProperty("clientResources", artifact.clientResources());
+        entry.addProperty("serverData", artifact.serverData());
+        entry.addProperty("mixinConfigCount", 0);
+        entry.addProperty("dependencyCount", 0);
+        entry.add("dependencies", new JsonObject());
+        entry.add("softDependencies", new JsonArray());
+        entry.add("allowedPeers", new JsonArray());
+        entry.add("weakApiPrefixes", new JsonArray());
+        entry.add("mixins", new JsonArray());
+        entry.add("entrypoints", DataDrivenArchiveDetector.emptyEntrypoints());
+        entry.add("sandbox", DataDrivenArchiveDetector.sandbox(artifact));
+        return entry;
     }
 
     private static JsonObject entrypoints(NormalizedModMetadata mod) {
@@ -222,4 +259,5 @@ public final class CompatibilityCorpusGenerator {
             return json;
         }
     }
+
 }

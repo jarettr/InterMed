@@ -44,6 +44,19 @@ public class ModDiscovery {
         return discoverLayout(modsDir).jars();
     }
 
+    public static List<File> discoverCandidateArchives(File modsDir) {
+        DiscoveryLayout layout = discoverLayout(modsDir);
+        List<File> archives = new ArrayList<>(layout.jars());
+        File[] zips = modsDir.listFiles((dir, name) -> isZipName(name));
+        if (zips != null) {
+            for (File zip : zips) {
+                System.out.println("\033[1;32m[Discovery] IDENTIFIED CANDIDATE ARCHIVE: " + zip.getName() + "\033[0m");
+                archives.add(zip);
+            }
+        }
+        return archives;
+    }
+
     public static DiscoveryLayout discoverLayout(File modsDir) {
         List<File> jars = new ArrayList<>();
         Map<Path, Path> nestedJarOwners = new LinkedHashMap<>();
@@ -54,7 +67,7 @@ public class ModDiscovery {
         if (!modsDir.exists()) modsDir.mkdirs();
         if (!cacheDir.exists()) cacheDir.mkdirs();
         
-        File[] files = modsDir.listFiles((dir, name) -> name.endsWith(".jar"));
+        File[] files = modsDir.listFiles((dir, name) -> isJarName(name));
         if (files != null) {
             for (File f : files) {
                 System.out.println("\033[1;32m[Discovery] IDENTIFIED: " + f.getName() + "\033[0m");
@@ -121,5 +134,13 @@ public class ModDiscovery {
 
     private static Path normalize(File file) {
         return file.toPath().toAbsolutePath().normalize();
+    }
+
+    private static boolean isJarName(String name) {
+        return name != null && name.toLowerCase(java.util.Locale.ROOT).endsWith(".jar");
+    }
+
+    private static boolean isZipName(String name) {
+        return name != null && name.toLowerCase(java.util.Locale.ROOT).endsWith(".zip");
     }
 }
