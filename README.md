@@ -70,6 +70,8 @@ InterMed `v8.0-alpha-snapshot` is a pre-launch Minecraft mod hypervisor snapshot
 - Internal RC checklist: [docs/internal-rc-checklist.md](docs/internal-rc-checklist.md)
 - Alpha snapshot inventory: [docs/alpha-snapshot-inventory.md](docs/alpha-snapshot-inventory.md)
 - Alpha sign-off snapshot: [docs/alpha-signoff-2026-04-19.md](docs/alpha-signoff-2026-04-19.md)
+- Alpha runtime delta: [docs/alpha-runtime-delta-2026-04-20.md](docs/alpha-runtime-delta-2026-04-20.md)
+- Alpha risk register: [docs/alpha-risk-register-2026-04-20.md](docs/alpha-risk-register-2026-04-20.md)
 - Alpha triage guide: [docs/alpha-triage.md](docs/alpha-triage.md)
 - Known limitations: [docs/known-limitations.md](docs/known-limitations.md)
 

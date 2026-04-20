@@ -2,7 +2,9 @@ package net.neoforged.fml.javafmlmod;
 
 import net.neoforged.bus.api.EventPriority;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 
@@ -27,25 +29,29 @@ public final class FMLJavaModLoadingContext {
     }
 
     public static final class FakeEventBus {
-        private final Map<Class<?>, Consumer<Object>> listeners = new LinkedHashMap<>();
+        private final Map<Class<?>, List<Consumer<Object>>> listeners = new LinkedHashMap<>();
 
         @SuppressWarnings("unchecked")
         public <T> void addListener(EventPriority priority,
                                     boolean receiveCanceled,
                                     Class<T> eventType,
                                     Consumer<T> consumer) {
-            listeners.put(eventType, (Consumer<Object>) consumer);
+            listeners.computeIfAbsent(eventType, ignored -> new ArrayList<>())
+                .add((Consumer<Object>) consumer);
         }
 
         public void dispatch(Object event) {
-            Consumer<Object> consumer = listeners.get(event.getClass());
-            if (consumer != null) {
+            List<Consumer<Object>> consumers = listeners.get(event.getClass());
+            if (consumers == null) {
+                return;
+            }
+            for (Consumer<Object> consumer : consumers) {
                 consumer.accept(event);
             }
         }
 
         public int listenerCount() {
-            return listeners.size();
+            return listeners.values().stream().mapToInt(List::size).sum();
         }
 
         private void reset() {
