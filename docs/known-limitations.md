@@ -29,8 +29,8 @@ listed here even when code exists in the repository.
 - The `api-gap-matrix` command tracks a curated alpha bridge surface and known
   beta gaps. Symbols absent from that matrix are not implied to be supported.
 - As of the `2026-04-20` runtime delta, the curated alpha-stage matrix is
-  `87/87` present and NeoForge is `17/17` present, but three beta-stage Fabric
-  API symbols remain intentionally unclaimed.
+  `87/87` present, beta-stage tracked symbols are `5/5` present, and NeoForge
+  is `17/17` present. This is still a curated surface check, not full API parity.
 - Harness reports currently prove startup/boot behavior under documented
   conditions; they do not prove real gameplay, multiplayer, or long-session
   correctness.

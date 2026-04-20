@@ -29,6 +29,8 @@ scope beyond Minecraft `1.20.1`.
 - Hardened compatibility sweep matching so stored harness results can link to
   corpus candidates across Modrinth slugs, manifest IDs, artifact filename
   aliases, loader classifiers, multi-loader jars, and version aliases.
+- Added minimal runtime shims for the remaining curated Fabric beta symbols:
+  `CommandRegistrationCallback`, `FabricBlockSettings`, and `UseBlockCallback`.
 
 ## Updated Evidence
 
@@ -60,19 +62,17 @@ The local `build/launch-evidence/intermed-api-gap-matrix.json` was regenerated
 from the rebuilt core jar. Current summary:
 
 - Total tracked symbols: `92`
-- Present: `89`
-- Missing: `3`
-- Fabric: `56/59` present
+- Present: `92`
+- Missing: `0`
+- Fabric: `59/59` present
 - Forge: `16/16` present
 - NeoForge: `17/17` present
 - Alpha-stage symbols: `87/87` present
-- Beta-stage symbols: `2/5` present
+- Beta-stage symbols: `5/5` present
 
-Remaining missing symbols are beta-stage Fabric API surface only:
-
-- `net.fabricmc.fabric.api.object.builder.v1.block.FabricBlockSettings`
-- `net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback`
-- `net.fabricmc.fabric.api.event.player.UseBlockCallback`
+The curated API gap matrix now has no missing symbols. This only means the
+tracked class-level/bridge-level surface is present; it is not a full API parity
+claim for Fabric, Forge, or NeoForge.
 
 The local `build/launch-evidence/intermed-compatibility-sweep-matrix.json` was
 regenerated from the same corpus and stored harness results. Current summary:
@@ -101,16 +101,17 @@ risk and is tracked in [alpha-risk-register-2026-04-20.md](alpha-risk-register-2
 ## Evidence Checksums
 
 ```text
-5437a86816b27edf7aaad89546fdd1bd76b5ea451e1a479df81d467665c3c3fe  build/launch-evidence/intermed-api-gap-matrix.json
+b1fb8b398bf47c683fae1864c133d01db3eb16d14833d18fb24e97e13f0c6232  build/launch-evidence/intermed-api-gap-matrix.json
 0b9707fdfc0f93da04e26c1e20774c1329ec5bb36c60238f222ee87963a1e687  build/launch-evidence/intermed-compatibility-sweep-matrix.json
-5e6522a800ddb541229c4ab11a24f5c169c540ab761259ff03977ac2cd453d15  build/launch-evidence/intermed-launch-readiness-report.json
-b5ce743e3a606abdfacc4381fa468536d36f509ba522a03ae4215d63f7f0f777  build/launch-evidence/intermed-diagnostics-bundle.zip
+f065bd9b5d7db7be2c893e9b2d48a43eb66d06acba318c4b08172c29bdd40d25  build/launch-evidence/intermed-launch-readiness-report.json
+55d91706b9b0a200d97d4e804cad19746d5d93cf3201adc9d4c12e4c6537d69a  build/launch-evidence/intermed-diagnostics-bundle.zip
 ```
 
 ## Non-Claims
 
 - This delta does not claim full NeoForge API parity.
-- This delta does not claim Fabric beta API completion.
+- This delta does not claim full Fabric beta API parity beyond the curated
+  matrix symbols.
 - This delta does not convert synthetic or harness evidence into field evidence.
 - The `184/184` stored harness passes remain startup/boot evidence for the
   provided harness results only.

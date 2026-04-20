@@ -24,8 +24,7 @@ class ApiGapMatrixGeneratorTest {
         assertEquals("intermed-api-gap-matrix-v1", report.get("schema").getAsString());
         assertTrue(summary.get("total").getAsInt() > 40);
         assertTrue(summary.get("present").getAsInt() > 20);
-        assertTrue(summary.get("missing").getAsInt() > 0,
-            "The curated matrix should retain known beta gaps until implemented");
+        assertEquals(0, summary.get("missing").getAsInt());
         assertNotNull(byEcosystem.getAsJsonObject("Fabric"));
         assertNotNull(byEcosystem.getAsJsonObject("Forge"));
         assertNotNull(byEcosystem.getAsJsonObject("NeoForge"));
@@ -40,7 +39,7 @@ class ApiGapMatrixGeneratorTest {
             "net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback",
             null
         );
-        assertEquals("missing", commandCallback.get("status").getAsString());
+        assertEquals("present", commandCallback.get("status").getAsString());
         assertEquals("beta", commandCallback.get("stage").getAsString());
     }
 
