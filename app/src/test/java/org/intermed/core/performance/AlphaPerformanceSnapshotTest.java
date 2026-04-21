@@ -40,7 +40,7 @@ class AlphaPerformanceSnapshotTest {
 
     @Test
     void writesInitialAlphaPerformanceSnapshotWithoutNativeOverheadClaim() throws Exception {
-        Path outputDir = outputDir();
+        Path outputDir = Files.createTempDirectory("intermed-alpha-performance");
         Files.createDirectories(outputDir);
 
         MemoryUsage heapBefore = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
@@ -56,7 +56,7 @@ class AlphaPerformanceSnapshotTest {
 
         long tickStart = System.nanoTime();
         ObservabilityMonitor.onTickStart();
-        Thread.sleep(35L);
+        Thread.sleep(200L);
         ObservabilityMonitor.onTickEnd("alpha_performance_snapshot");
         long tickMillis = Math.max(0L, (System.nanoTime() - tickStart) / 1_000_000L);
 
@@ -265,11 +265,4 @@ class AlphaPerformanceSnapshotTest {
         return Math.max(0L, bean.getCollectionTime());
     }
 
-    private static Path outputDir() {
-        String configured = System.getProperty("intermed.performance.outputDir");
-        if (configured == null || configured.isBlank()) {
-            return Path.of("build", "reports", "performance");
-        }
-        return Path.of(configured);
-    }
 }
