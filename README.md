@@ -55,6 +55,10 @@ InterMed `v8.0.0-alpha.1` is an open-alpha Minecraft mod hypervisor preview targ
 
 InterMed is released as open source under the [MIT License](LICENSE). Third-party dependency notes are tracked in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and release builds publish a machine-readable SBOM.
 
+## Community
+
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening alpha issues or PRs. Project discussions follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and suspected vulnerabilities should be reported privately through GitHub private vulnerability reporting when available.
+
 ## Current Evidence Matrix
 
 ### Implemented foundation
