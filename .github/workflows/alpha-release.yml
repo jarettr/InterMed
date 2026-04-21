@@ -84,6 +84,10 @@ jobs:
           cp "$RELEASE_ROOT/reports/intermed-compatibility-sweep-matrix.json" "$PAYLOAD_DIR/"
           cp "$RELEASE_ROOT/reports/intermed-sbom.cdx.json" "$PAYLOAD_DIR/"
           cp "$RELEASE_ROOT/reports/alpha-performance-snapshot.json" "$PAYLOAD_DIR/"
+          cp LICENSE "$PAYLOAD_DIR/"
+          cp THIRD_PARTY_NOTICES.md "$PAYLOAD_DIR/"
+          cp CHANGELOG.md "$PAYLOAD_DIR/"
+          cp docs/release-notes-v8.0.0-alpha.1.md "$PAYLOAD_DIR/"
 
           (
             cd "$PAYLOAD_DIR"
@@ -91,6 +95,27 @@ jobs:
               | sort -z \
               | xargs -0 sha256sum > SHA256SUMS.txt
           )
+
+      - name: Smoke-test payload launch-kit generation
+        run: |
+          set -euo pipefail
+          PAYLOAD_DIR="$GITHUB_WORKSPACE/build/alpha-release/payload"
+          SMOKE_DIR="$GITHUB_WORKSPACE/build/alpha-release/payload-smoke"
+          CORE_JAR="$(find "$PAYLOAD_DIR" -maxdepth 1 -type f -name 'InterMedCore*.jar' ! -name '*-bootstrap.jar' ! -name '*-fabric.jar' | sort | tail -n 1)"
+          FABRIC_JAR="$(find "$PAYLOAD_DIR" -maxdepth 1 -type f -name 'InterMedCore*-fabric.jar' | sort | tail -n 1)"
+          mkdir -p "$SMOKE_DIR/game/intermed_mods"
+
+          java -jar "$CORE_JAR" launch-kit \
+            --agent "$CORE_JAR" \
+            --fabric-agent "$FABRIC_JAR" \
+            --game-dir "$SMOKE_DIR/game" \
+            --mods-dir "$SMOKE_DIR/game/intermed_mods" \
+            --output-dir "$SMOKE_DIR/launch-kit"
+
+          test -s "$SMOKE_DIR/launch-kit/launcher-jvm-args-generic.txt"
+          test -s "$SMOKE_DIR/launch-kit/intermed-launch-generic.sh"
+          test -s "$SMOKE_DIR/launch-kit/intermed-launch-generic.cmd"
+          test -s "$PAYLOAD_DIR/SHA256SUMS.txt"
 
       - name: Upload alpha release payload
         uses: actions/upload-artifact@v4
@@ -113,4 +138,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           prerelease: true
+          body_path: docs/release-notes-v8.0.0-alpha.1.md
           files: build/alpha-release/payload/*

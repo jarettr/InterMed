@@ -1,6 +1,6 @@
 # InterMed v8.0 Alpha Triage Guide
 
-This guide explains how to report issues during the `v8.0-alpha-snapshot`
+This guide explains how to report issues during the `v8.0.0-alpha.1`
 hardening phase. The goal is reproducibility, not blame: a good report should
 let a maintainer reproduce the same launch surface and classify the failure
 without guessing.

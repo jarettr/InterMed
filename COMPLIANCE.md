@@ -1,12 +1,12 @@
-# InterMed v8.0 Alpha Snapshot Compliance Matrix
+# InterMed v8.0.0-alpha.1 Open Alpha Compliance Matrix
 
-This document tracks the frozen `v8.0-alpha-snapshot` scope for the current codebase.
+This document tracks the frozen `v8.0.0-alpha.1` scope for the current codebase.
 
 ## Scope Freeze
 
 - Minecraft version: `1.20.1`
 - Loader families in scope: `Fabric`, `Forge`, `NeoForge`
-- Release status: `v8.0-alpha-snapshot / internal RC hardening`
+- Release status: `v8.0.0-alpha.1 / open alpha`
 - Field validation with real modpacks: deferred until after full functional hardening
 
 ## Scope Interpretation
@@ -84,7 +84,7 @@ This document tracks the frozen `v8.0-alpha-snapshot` scope for the current code
 - This matrix is intentionally narrower than the original spec: it tracks the current shipped runtime path, not every future architectural idea already present in the repository.
 - Evidence statuses in this matrix describe the current proof level, not a broad public compatibility promise.
 - Internal/public alpha sign-off for this freeze assumes `:app:test`, `:app:coverageGate`, `:app:strictSecurity`, `:app:verifyRuntime`, and `:test-harness:test` are all green.
-- Public alpha release artifacts are defined by [LAUNCH_CRITERIA.md](LAUNCH_CRITERIA.md) and must include the versioned core runtime jars, the matching bootstrap support jar, release checksums, SBOM, and launcher-generated alpha evidence reports without broadening the frozen scope.
+- Public alpha release artifacts are defined by [LAUNCH_CRITERIA.md](LAUNCH_CRITERIA.md) and must include the versioned core runtime jars, the matching bootstrap support jar, harness jar, release checksums, MIT `LICENSE`, third-party notices, release notes/changelog, SBOM, and launcher-generated alpha evidence reports without broadening the frozen scope.
 - Compatibility reporting remains a permissive lane for broad boot coverage and must not be read as a replacement for strict-security verification.
 - `launch-readiness-report` summarizes required alpha evidence artifact presence, docs scope guardrails, and compatibility report summaries. It does not execute gates or convert synthetic/harness evidence into field evidence.
 - `compat-corpus` is the current reproducibility artifact for local compatibility sweeps. It records parsed/unsupported/failed candidates, SHA-256 hashes, entrypoints, dependencies, mixins, and sandbox plans, but it does not claim any candidate has booted.

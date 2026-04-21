@@ -1,6 +1,6 @@
-# InterMed v8.0 Alpha Snapshot — User Guide
+# InterMed v8.0.0-alpha.1 Open Alpha User Guide
 
-InterMed `v8.0-alpha-snapshot` is an experimental JVM hypervisor for Minecraft `1.20.1` that is being hardened for mixed Fabric, Forge, and NeoForge compatibility. This guide describes the current alpha path, not a production-ready compatibility guarantee.
+InterMed `v8.0.0-alpha.1` is an experimental JVM hypervisor for Minecraft `1.20.1` that is being hardened for mixed Fabric, Forge, and NeoForge compatibility. This guide describes the current alpha path, not a production-ready compatibility guarantee.
 
 ---
 
@@ -35,39 +35,77 @@ InterMed does not support Java 8 or Java 11. The GraalVM Espresso sandbox requir
 
 ## 2. Installation
 
-### 2.1 Standalone JAR / local alpha build
+### 2.1 Unified launch kit (recommended)
 
-1. Use the packaged alpha build or build the local launcher/core JAR from this repository with `./gradlew :app:coreJar :app:coreFabricJar`.
-2. Place it in your game directory alongside `minecraft_server.jar` (server) or inside the Minecraft launcher profile directory (client).
-3. Launch via:
+1. Use the packaged alpha build or build the local launcher/core JARs from this repository:
 
-   **Server:**
-   ```
-   java -Xmx8G -jar app/build/libs/InterMedCore-8.0-SNAPSHOT.jar nogui
+   ```bash
+   ./gradlew :app:coreJar :app:coreFabricJar :app:bootstrapJar
    ```
 
-   **Client (launcher profile):**
-   Set the JVM argument `-javaagent:/path/to/InterMedCore-8.0-SNAPSHOT.jar` in your launcher's advanced settings. For Fabric launcher profiles, use `InterMedCore-8.0-SNAPSHOT-fabric.jar`.
+2. Generate a local launch kit once for the target game directory:
+
+   ```bash
+   java -jar app/build/libs/InterMedCore-8.0.0-alpha.1.jar launch-kit \
+     --game-dir /path/to/.minecraft
+   ```
+
+   This creates `.intermed/launch-kit/` inside the game directory with:
+   - launcher-agnostic JVM args snippets
+   - Linux/macOS wrapper scripts
+   - Windows `.cmd` wrapper scripts
+   - a staged `runtime/` folder containing the exact InterMed JARs that the kit references
+
+3. Use the generated files in the way that best matches your setup:
+
+   **Any launcher with a JVM args field**
+   - open `launcher-jvm-args-generic.txt`
+   - for Fabric launcher profiles, use `launcher-jvm-args-fabric.txt`
+   - paste the single line into the launcher's JVM arguments / Java flags field
+
+   **Linux/macOS direct server launch**
+   ```bash
+   ./.intermed/launch-kit/intermed-launch-generic.sh -jar minecraft_server.jar nogui
+   ```
+
+   **Windows direct server launch**
+   ```bat
+   .\.intermed\launch-kit\intermed-launch-generic.cmd -jar minecraft_server.jar nogui
+   ```
+
+   Use the `fabric` wrapper variants for Fabric-specific launch profiles.
 
 4. On first launch InterMed creates:
    - `intermed_mods/` — put alpha-test mods here (Fabric, Forge, and NeoForge JARs can coexist within the current compatibility envelope)
    - `config/intermed-runtime.properties` — main configuration file (see [Section 7](../docs/config-reference.md))
    - `.intermed/` — internal caches (do not edit manually)
 
-### 2.2 Gradle / Maven integration (for server operators)
+### 2.2 Manual fallback
+
+If you prefer to wire the process yourself, keep the same runtime model as the launch kit:
+
+- `-javaagent:/path/to/InterMedCore-8.0.0-alpha.1.jar`
+- `--add-opens=java.base/java.lang=ALL-UNNAMED`
+- `--add-opens=java.base/sun.nio.ch=ALL-UNNAMED`
+- `-Druntime.game.dir=/path/to/gameDir`
+- `-Druntime.mods.dir=/path/to/gameDir/intermed_mods`
+
+For Fabric launcher profiles, swap the agent JAR for `InterMedCore-8.0.0-alpha.1-fabric.jar`.
+
+### 2.3 Gradle / Maven integration (for server operators)
 
 Add the InterMed artifact to your build:
 
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("org.intermed:intermed-runtime:8.0.0-alpha-SNAPSHOT")
+    implementation("org.intermed:intermed-runtime:8.0.0-alpha.1")
 }
 ```
 
 Then configure the main class in your launch script to `org.intermed.cli.InterMedCLI`.
 
-### 2.3 Upgrading from an earlier InterMed version
+### 2.4 Upgrading from an earlier InterMed version
 
 The AOT bytecode cache is versioned (`aot_v8`). When upgrading from v7 or earlier, delete `.intermed/aot_v8/` to force a full cache rebuild on next startup. This is done automatically if the cache format version does not match; the deletion message appears in the log as:
 
@@ -344,8 +382,12 @@ Recommended JVM flags for controlled alpha/server testing:
 --enable-preview
 --add-opens java.base/java.lang=ALL-UNNAMED
 --add-opens java.base/sun.nio.ch=ALL-UNNAMED
--javaagent:/path/to/InterMedCore-8.0-SNAPSHOT.jar
+-javaagent:/path/to/InterMedCore-8.0.0-alpha.1.jar
 ```
+
+If you generated a launch kit, those InterMed-specific flags are already included
+in `intermed-java-generic.args` / `intermed-java-fabric.args`, so you only need to
+add your own heap/GC tuning on top.
 
 ZGC with generational mode (`-XX:+ZGenerational`, available since JDK 21) significantly reduces pause times compared to G1GC under InterMed's heavy allocation pattern during startup.
 

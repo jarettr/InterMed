@@ -2,13 +2,13 @@
 
 This note records the post-sign-off runtime delta after
 [alpha-signoff-2026-04-19.md](alpha-signoff-2026-04-19.md). It is not a
-production release note and does not expand the frozen `v8.0-alpha-snapshot`
+production release note and does not expand the frozen `v8.0.0-alpha.1`
 scope beyond Minecraft `1.20.1`.
 
 ## Scope
 
-- Branch: `alpha/v8.0-snapshot-freeze`
-- Release line: `v8.0-alpha-snapshot`
+- Release branch target: `release/v8.0.0-alpha.1`
+- Release line: `v8.0.0-alpha.1`
 - Runtime scope: Minecraft `1.20.1`
 - Loader scope: Fabric / Forge / NeoForge alpha bridge scope
 - Claim posture: internal RC hardening only

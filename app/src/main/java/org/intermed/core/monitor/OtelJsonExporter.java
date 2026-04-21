@@ -35,7 +35,7 @@ import java.util.concurrent.TimeUnit;
  *   "resourceMetrics": [{
  *     "resource": { "attributes": [{ "key": "service.name", "value": { "stringValue": "intermed" } }] },
  *     "scopeMetrics": [{
- *       "scope": { "name": "intermed", "version": "8.0-SNAPSHOT" },
+ *       "scope": { "name": "intermed", "version": "8.0.0-alpha.1" },
  *       "metrics": [
  *         { "name": "...", "sum": { ... } },          // counters
  *         { "name": "...", "gauge": { ... } },         // gauges

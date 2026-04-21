@@ -1,6 +1,8 @@
 # InterMed
 
-InterMed `v8.0-alpha-snapshot` is a pre-launch Minecraft mod hypervisor snapshot targeting one frozen runtime scope:
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+InterMed `v8.0.0-alpha.1` is an open-alpha Minecraft mod hypervisor preview targeting one frozen runtime scope:
 
 - Minecraft `1.20.1`
 - cross-loader compatibility foundations for `Fabric`, `Forge`, and `NeoForge`
@@ -8,10 +10,10 @@ InterMed `v8.0-alpha-snapshot` is a pre-launch Minecraft mod hypervisor snapshot
 
 ## Status
 
-- Release status: `v8.0-alpha-snapshot / internal RC hardening`
+- Release status: `v8.0.0-alpha.1 / open alpha`
 - Target Minecraft baseline: `1.20.1`
 - Loader families under alpha scope: `Fabric`, `Forge`, `NeoForge`
-- Frozen runtime claim: this snapshot applies to `1.20.1` only. It must not be read as a compatibility claim for `1.20+` until real-world validation exists.
+- Frozen runtime claim: this alpha applies to `1.20.1` only. It must not be read as a compatibility claim for `1.20+` until real-world validation exists.
 - Not claimed yet: production stability, broad real-mod compatibility proof, field-tested hostile-mod security, or field-tested performance targets
 
 ## Scope Contract
@@ -26,7 +28,7 @@ InterMed `v8.0-alpha-snapshot` is a pre-launch Minecraft mod hypervisor snapshot
 ## Intentional Spec Deviations
 
 - Runtime configuration is currently based on `intermed-runtime.properties` plus JSON override files. TOML/YAML is not the active configuration plane in this freeze.
-- Runtime launch is currently based on JVM args, existing launcher profiles, and the thin CLI launcher. A dedicated GUI launcher is optional and deferred, not required for scope completion.
+- Runtime launch is currently based on a launcher-agnostic `launch-kit` generator, existing launcher profiles, and the thin CLI launcher. A dedicated GUI launcher is optional and deferred, not required for scope completion.
 
 ## Definition Of Done For This Freeze
 
@@ -47,7 +49,11 @@ InterMed `v8.0-alpha-snapshot` is a pre-launch Minecraft mod hypervisor snapshot
 - Alpha performance baseline lane: `./test-harness/run.sh performance-baseline --heap=768 --timeout=180`
 - Evidence artifacts are emitted under `app/build/reports/{tests,jacoco,microbench,security,performance,soak,startup,observability}`; launch-failure triage uses `diagnostics-bundle` zip archives, which include a launch-readiness report, compatibility corpus manifest, compatibility sweep matrix, and machine-readable API gap matrix
 - Compatibility-report runs and strict-security runs are intentionally separate; a permissive compatibility pass is not treated as proof of secure-by-default behavior
-- Public alpha release assets include the versioned core runtime jar, fabric runtime jar, matching bootstrap support jar, harness jar, release checksums, SBOM, and launcher-generated alpha evidence reports from the reproducible CI release job defined by [LAUNCH_CRITERIA.md](LAUNCH_CRITERIA.md)
+- Public alpha release assets include the versioned core runtime jar, fabric runtime jar, matching bootstrap support jar, harness jar, release checksums, MIT `LICENSE`, third-party notices, release notes/changelog, SBOM, and launcher-generated alpha evidence reports from the reproducible CI release job defined by [LAUNCH_CRITERIA.md](LAUNCH_CRITERIA.md)
+
+## License
+
+InterMed is released as open source under the [MIT License](LICENSE). Third-party dependency notes are tracked in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and release builds publish a machine-readable SBOM.
 
 ## Current Evidence Matrix
 
@@ -75,14 +81,16 @@ InterMed `v8.0-alpha-snapshot` is a pre-launch Minecraft mod hypervisor snapshot
 - Launch criteria: [LAUNCH_CRITERIA.md](LAUNCH_CRITERIA.md)
 - Delivery roadmap: [ROADMAP.md](ROADMAP.md)
 - Internal RC checklist: [docs/internal-rc-checklist.md](docs/internal-rc-checklist.md)
-- Alpha snapshot inventory: [docs/alpha-snapshot-inventory.md](docs/alpha-snapshot-inventory.md)
-- Alpha sign-off snapshot: [docs/alpha-signoff-2026-04-19.md](docs/alpha-signoff-2026-04-19.md)
+- Alpha source inventory: [docs/alpha-snapshot-inventory.md](docs/alpha-snapshot-inventory.md)
+- Alpha sign-off: [docs/alpha-signoff-2026-04-19.md](docs/alpha-signoff-2026-04-19.md)
 - Alpha runtime delta: [docs/alpha-runtime-delta-2026-04-20.md](docs/alpha-runtime-delta-2026-04-20.md)
 - Alpha risk register: [docs/alpha-risk-register-2026-04-20.md](docs/alpha-risk-register-2026-04-20.md)
 - Alpha security posture: [docs/alpha-security-posture-2026-04-21.md](docs/alpha-security-posture-2026-04-21.md)
 - Alpha performance snapshot: [docs/alpha-performance-snapshot-2026-04-21.md](docs/alpha-performance-snapshot-2026-04-21.md)
+- Alpha.1 release notes: [docs/release-notes-v8.0.0-alpha.1.md](docs/release-notes-v8.0.0-alpha.1.md)
 - Alpha triage guide: [docs/alpha-triage.md](docs/alpha-triage.md)
 - Known limitations: [docs/known-limitations.md](docs/known-limitations.md)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
 
 ## Development
 

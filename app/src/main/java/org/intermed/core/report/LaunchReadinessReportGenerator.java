@@ -88,7 +88,7 @@ public final class LaunchReadinessReportGenerator {
 
     private static JsonObject scope(String highestEvidenceLevel) {
         JsonObject scope = new JsonObject();
-        scope.addProperty("releaseLine", "v8.0-alpha-snapshot");
+        scope.addProperty("releaseLine", InterMedVersion.DISPLAY_VERSION);
         scope.addProperty("minecraft", "1.20.1");
         scope.addProperty("loaderScope", "Fabric, Forge, NeoForge");
         scope.addProperty("evidenceLevel",
@@ -140,12 +140,12 @@ public final class LaunchReadinessReportGenerator {
 
     private static com.google.gson.JsonArray documentationGuardrails(Path projectRoot, ArtifactSummary summary) {
         com.google.gson.JsonArray docs = new com.google.gson.JsonArray();
-        docs.add(doc(projectRoot, "README.md", "v8.0-alpha-snapshot", summary));
-        docs.add(doc(projectRoot, "COMPLIANCE.md", "v8.0-alpha-snapshot", summary));
-        docs.add(doc(projectRoot, "LAUNCH_CRITERIA.md", "v8.0-alpha-snapshot", summary));
-        docs.add(doc(projectRoot, "docs/user-guide.md", "v8.0-alpha-snapshot", summary));
-        docs.add(doc(projectRoot, "docs/known-limitations.md", "v8.0-alpha-snapshot", summary));
-        docs.add(doc(projectRoot, "docs/alpha-triage.md", "v8.0-alpha-snapshot", summary));
+        docs.add(doc(projectRoot, "README.md", InterMedVersion.DISPLAY_VERSION, summary));
+        docs.add(doc(projectRoot, "COMPLIANCE.md", InterMedVersion.DISPLAY_VERSION, summary));
+        docs.add(doc(projectRoot, "LAUNCH_CRITERIA.md", InterMedVersion.DISPLAY_VERSION, summary));
+        docs.add(doc(projectRoot, "docs/user-guide.md", InterMedVersion.DISPLAY_VERSION, summary));
+        docs.add(doc(projectRoot, "docs/known-limitations.md", InterMedVersion.DISPLAY_VERSION, summary));
+        docs.add(doc(projectRoot, "docs/alpha-triage.md", InterMedVersion.DISPLAY_VERSION, summary));
         return docs;
     }
 

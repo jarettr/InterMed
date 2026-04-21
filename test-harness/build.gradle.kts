@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "org.intermed"
-version = "8.0-SNAPSHOT"
+version = providers.gradleProperty("intermedVersion").get()
 
 repositories {
     mavenCentral()

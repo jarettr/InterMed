@@ -1,7 +1,7 @@
 # InterMed v8.0 Launch Criteria
 
 This document defines what must be true before InterMed moves from the current
-`v8.0-alpha-snapshot` into wider external launch stages.
+`v8.0.0-alpha.1` into wider external launch stages.
 
 The goal is to keep launch language honest: a feature is not treated as launch
 ready because code exists. It needs the evidence level required by the target
@@ -9,8 +9,8 @@ stage.
 
 ## Current Position
 
-- Current version line: `v8.0-alpha-snapshot`
-- Current release posture: `internal RC hardening / pre-launch alpha snapshot`
+- Current version line: `v8.0.0-alpha.1`
+- Current release posture: `open alpha`
 - Current Minecraft scope: `1.20.1`
 - Current loader scope: `Fabric`, `Forge`, `NeoForge`
 - Current public claim posture: `alpha` only; no `beta`, `stable`, or production-ready claim, no `95%` compatibility claim, no general `1.20+` compatibility claim, and no field-proven hostile-mod security claim
@@ -37,7 +37,7 @@ These items are required before any external alpha or technical preview.
 
 | Area | Required state |
 | --- | --- |
-| Scope | README, compliance matrix, roadmap, user docs, and this file all describe `v8.0-alpha-snapshot`, Minecraft `1.20.1`, and no broad external guarantees. |
+| Scope | README, compliance matrix, roadmap, user docs, and this file all describe `v8.0.0-alpha.1`, Minecraft `1.20.1`, and no broad external guarantees. |
 | Build gates | The combined alpha app gate `./gradlew :app:test :app:coverageGate :app:strictSecurity :app:verifyRuntime --rerun-tasks -Dintermed.allowRemoteForgeRepo=true --console=plain` plus `./gradlew :test-harness:test --rerun-tasks --console=plain` both pass from a clean checkout locally and in CI, so task dependencies cannot hide failures. |
 | Coverage policy | Open-alpha coverage uses a staged gate, not the original 80% target: current machine enforcement is bundle line coverage `>=20%` plus selected launch/report/config classes `>=60%`. This must be documented as an alpha threshold. The next hardening step is package-level gates for `core`, `security`, `registry`, and `remapping` at `60-70%`, then a later move toward broad `80%` coverage before stable language. |
 | Security posture | Strict security remains a separate fail-closed lane; permissive compatibility results are never presented as security proof. |
@@ -51,7 +51,7 @@ These items are required before any external alpha or technical preview.
 | Performance evidence | Microbench and soak reports are available, and the initial alpha performance snapshot is generated at `app/build/reports/performance/alpha-performance-snapshot.json` with a native-loader mirror at `app/build/reports/performance/native-loader-baseline.json`. Registry/remapper/event-bus microbench reports are internal hot-path evidence only, not real modpack overhead. No `10-15%` steady-state overhead claim is made from this short-smoke baseline. |
 | Diagnostics | A failed external test can produce a `diagnostics-bundle` zip with logs, launch-readiness report, compatibility corpus manifest, compatibility sweep matrix, optional raw harness results, mod list, dependency plan, API gap matrix, security report, and relevant runtime reports. `InterMedLauncher launch` now writes this bundle automatically on non-zero process exit; real external crash uploads remain an alpha exercise. |
 | Triage support | Public alpha reports have issue templates, a known-limitations page, and an alpha triage guide that require diagnostics or a clear reason diagnostics cannot be shared. |
-| Release pipeline | Every public alpha release publishes the versioned `InterMedCore-*.jar`, `InterMedCore-*-fabric.jar`, the matching runtime bootstrap sidecar `InterMedCore-*-bootstrap.jar`, `intermed-test-harness-*.jar`, release checksums, SBOM, and attached launcher-generated `launch-readiness-report`, `api-gap-matrix`, `compat-corpus`, `compat-sweep-matrix`, and `alpha-performance-snapshot` artifacts from a reproducible CI release job. |
+| Release pipeline | Every public alpha release publishes the versioned `InterMedCore-*.jar`, `InterMedCore-*-fabric.jar`, the matching runtime bootstrap sidecar `InterMedCore-*-bootstrap.jar`, `intermed-test-harness-*.jar`, release checksums, MIT `LICENSE`, third-party notices, release notes/changelog, SBOM, and attached launcher-generated `launch-readiness-report`, `api-gap-matrix`, `compat-corpus`, `compat-sweep-matrix`, and `alpha-performance-snapshot` artifacts from a reproducible CI release job. |
 
 ## Must Before Beta
 

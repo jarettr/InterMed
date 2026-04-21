@@ -1,12 +1,12 @@
 # InterMed Internal RC Checklist
 
-This checklist defines what `internal RC` means for the frozen `v8.0-alpha-snapshot` scope.
+This checklist records the internal RC gates that preceded the frozen `v8.0.0-alpha.1` open-alpha scope.
 
 ## Scope Guardrails
 
 - Minecraft scope stays frozen at `1.20.1`
 - Loader scope stays frozen at `Fabric`, `Forge`, and `NeoForge`
-- Snapshot source scope follows [alpha-snapshot-inventory.md](alpha-snapshot-inventory.md)
+- Open-alpha source scope follows [alpha-snapshot-inventory.md](alpha-snapshot-inventory.md)
 - No document claims `1.20+`, `95%` external compatibility, production stability, or field-proven hostile-mod security
 - Active configuration remains `intermed-runtime.properties` plus JSON overrides
 - Active launch remains JVM args, existing launcher profiles, and the thin CLI launcher
@@ -75,4 +75,4 @@ This checklist defines what `internal RC` means for the frozen `v8.0-alpha-snaps
 - the launcher can generate an API gap matrix, and diagnostics bundles include it
 - observability evidence includes both metrics output and a non-empty `.jfr` dump
 - no known critical module remains outside the canonical runtime lifecycle
-- release posture is still `v8.0-alpha-snapshot / internal RC hardening`, with public releases described as `alpha` only pending external field validation
+- release posture is now `v8.0.0-alpha.1 / open alpha`, with public releases described as `alpha` only pending external field validation

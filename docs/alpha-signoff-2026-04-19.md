@@ -1,18 +1,18 @@
-# Alpha Snapshot Sign-Off - 2026-04-19
+# Alpha Sign-Off - 2026-04-19
 
-This sign-off records the evidence generated for the `v8.0-alpha-snapshot`
+This sign-off records the evidence generated for the `v8.0.0-alpha.1`
 freeze branch. It is not a production release note and must not be read as a
 field-compatibility or security guarantee.
 
-## Snapshot
+## Source Evidence
 
-- Branch: `alpha/v8.0-snapshot-freeze`
-- Source snapshot commit: `253b1cf chore: freeze v8.0 alpha snapshot`
+- Release branch target: `release/v8.0.0-alpha.1`
+- Source cleanup baseline: superseded by the final `v8.0.0-alpha.1` release commit
 - Cleanup commit: `bf4f3b0 chore: ignore local codex scratch file`
-- Release line: `v8.0-alpha-snapshot`
+- Release line: `v8.0.0-alpha.1`
 - Runtime scope: Minecraft `1.20.1`
 - Loader scope: Fabric / Forge / NeoForge alpha bridge scope
-- Claim posture: internal RC hardening only
+- Claim posture: open alpha only
 
 ## Source Hygiene
 

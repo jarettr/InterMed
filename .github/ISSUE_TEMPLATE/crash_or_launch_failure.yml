@@ -14,7 +14,7 @@ body:
     attributes:
       label: InterMed build or commit
       description: Include the exact release, local commit, or CI artifact id.
-      placeholder: v8.0-alpha-snapshot / commit abc1234
+      placeholder: v8.0.0-alpha.1 / commit abc1234
     validations:
       required: true
   - type: input

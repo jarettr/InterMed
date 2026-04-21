@@ -1,7 +1,7 @@
 # Alpha Performance Snapshot - 2026-04-21
 
 This note defines the performance evidence posture for InterMed
-`v8.0-alpha-snapshot`.
+`v8.0.0-alpha.1`.
 
 ## Current Artifact
 

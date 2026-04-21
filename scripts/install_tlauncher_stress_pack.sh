@@ -6,8 +6,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REGISTRY_JSON="${REPO_ROOT}/harness-output/cache/mods/registry.json"
 MOD_CACHE_DIR="${REPO_ROOT}/harness-output/cache/mods/jars"
 JAVA21_BIN="/home/mak/.local/jdks/temurin21-full/jdk-21.0.10+7/bin/java"
-FORGE_AGENT="${REPO_ROOT}/app/build/libs/InterMedCore-8.0-SNAPSHOT.jar"
-FABRIC_AGENT="${REPO_ROOT}/app/build/libs/InterMedCore-8.0-SNAPSHOT-fabric.jar"
+FORGE_AGENT="${REPO_ROOT}/app/build/libs/InterMedCore-8.0.0-alpha.1.jar"
+FABRIC_AGENT="${REPO_ROOT}/app/build/libs/InterMedCore-8.0.0-alpha.1-fabric.jar"
 DEFAULT_BASE_DIR="${HOME}/.minecraft-intermed-packs"
 
 usage() {

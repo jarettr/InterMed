@@ -17,13 +17,13 @@ InterMed targets Java 21+. TLauncher may try to use an older runtime by default,
 Use these flags for a **Forge profile**:
 
 ```text
--javaagent:/home/mak/Projects/InterMed/app/build/libs/InterMedCore-8.0-SNAPSHOT.jar --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
+-javaagent:/home/mak/Projects/InterMed/app/build/libs/InterMedCore-8.0.0-alpha.1.jar --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
 ```
 
 Use these flags for a **Fabric profile**:
 
 ```text
--javaagent:/home/mak/Projects/InterMed/app/build/libs/InterMedCore-8.0-SNAPSHOT-fabric.jar --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
+-javaagent:/home/mak/Projects/InterMed/app/build/libs/InterMedCore-8.0.0-alpha.1-fabric.jar --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
 ```
 
 ## 3. Curated heavy packs

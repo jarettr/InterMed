@@ -13,7 +13,7 @@ body:
     id: intermed_version
     attributes:
       label: InterMed build or commit
-      placeholder: v8.0-alpha-snapshot / commit abc1234
+      placeholder: v8.0.0-alpha.1 / commit abc1234
     validations:
       required: true
   - type: dropdown

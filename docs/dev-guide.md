@@ -1,6 +1,6 @@
-# InterMed v8.0 Alpha Snapshot — Developer Guide
+# InterMed v8.0.0-alpha.1 Open Alpha Developer Guide
 
-This guide covers the current `v8.0-alpha-snapshot` runtime surface for mod authors experimenting with InterMed: how the ClassLoader DAG works, how to write Mixins that are easier to diagnose in multi-loader conflict resolution, how to work with the remapping and reflection layers, and how to use the polyglot sandbox API. It documents the alpha surface, not a full Forge/Fabric/NeoForge parity guarantee.
+This guide covers the current `v8.0.0-alpha.1` runtime surface for mod authors experimenting with InterMed: how the ClassLoader DAG works, how to write Mixins that are easier to diagnose in multi-loader conflict resolution, how to work with the remapping and reflection layers, and how to use the polyglot sandbox API. It documents the alpha surface, not a full Forge/Fabric/NeoForge parity guarantee.
 
 ---
 
@@ -513,10 +513,13 @@ Do not try to solve both jobs with one oversized launcher.
 - validate the environment with `doctor`
 - run one concrete server or client process
 
-For real user launch, prefer existing launcher profiles plus JVM arguments:
+For real user launch, prefer the launcher-generated `launch-kit` plus existing
+launcher profiles:
 
-- client launchers: set `-javaagent:/path/to/InterMedCore-8.0-SNAPSHOT.jar`
-- dedicated servers: use `java -javaagent:... -jar ... nogui`
+- `InterMedLauncher launch-kit` emits launcher-agnostic JVM args snippets
+- it also emits Linux/macOS and Windows wrapper scripts for direct `java` launch
+- the underlying runtime model still stays simple: `-javaagent`, required
+  `--add-opens`, and InterMed runtime properties
 
 That is enough for the runtime product. A custom GUI launcher can come later if there is a strong product reason, but it should not block compatibility work.
 

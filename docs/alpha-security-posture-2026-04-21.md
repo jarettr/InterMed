@@ -1,7 +1,7 @@
 # Alpha Security Posture - 2026-04-21
 
 This note defines the open-alpha security posture for InterMed
-`v8.0-alpha-snapshot`. It is intentionally narrow: strict mode is useful for
+`v8.0.0-alpha.1`. It is intentionally narrow: strict mode is useful for
 testers, but it is not a field-proven hostile-mod security claim.
 
 ## What Is In Scope

@@ -1,35 +1,34 @@
-# Alpha Snapshot Inventory
+# Alpha Source Inventory
 
-This document freezes the rules for turning the current dirty development tree
-into a reviewable `v8.0-alpha-snapshot` source snapshot.
+This document records the source hygiene rules for publishing
+`v8.0.0-alpha.1` as an open alpha. It replaces the earlier internal RC
+snapshot notes with the decisions that should hold for the release commit.
 
-It is intentionally conservative: generated evidence can prove launch readiness,
-but it should not be mixed into the source commit unless a maintainer explicitly
-decides to publish a small, curated artifact in the repository.
+## Release Goal
 
-## Snapshot Goal
-
-- Snapshot name: `v8.0-alpha-snapshot`
-- Branch target: `alpha/v8.0-snapshot-freeze`
-- Commit target: one reviewable source commit after generated artifacts are
-  removed from the index
+- Release line: `v8.0.0-alpha.1`
+- Git tag target: `v8.0.0-alpha.1`
+- Suggested release branch: `release/v8.0.0-alpha.1`
 - Runtime scope: Minecraft `1.20.1`, Fabric / Forge / NeoForge alpha bridge
   scope only
-- Claim posture: internal RC hardening, not production-ready, not broad `1.20+`,
-  not `95%` compatibility, not field-proven hostile-mod security
+- Claim posture: open alpha only; not production-ready, not broad `1.20+`, not
+  `95%` compatibility, and not field-proven hostile-mod security
 
-## Source Set Allowed In The Snapshot Commit
+## Source Set Allowed In The Release Commit
 
-These paths are allowed to be part of the release-candidate source commit if
-their diffs are intentional and pass the mandatory gates:
+These paths are allowed in the source commit when their diffs are intentional
+and the mandatory gates pass:
 
 - `.github/workflows/**`
 - `.github/ISSUE_TEMPLATE/**`
 - `.github/SECURITY.md`
 - `README.md`
+- `CHANGELOG.md`
 - `COMPLIANCE.md`
 - `ROADMAP.md`
 - `LAUNCH_CRITERIA.md`
+- `LICENSE`
+- `THIRD_PARTY_NOTICES.md`
 - `.gitignore`
 - `docs/**`
 - `gradle/**`
@@ -47,11 +46,24 @@ their diffs are intentional and pass the mandatory gates:
 - `test-harness/build.gradle.kts`
 - `scripts/*.sh` when the script is source-controlled tooling, not local output
 
+## Explicit Cleanup Decisions
+
+- Restore `gradlew.bat`: Windows users should be able to build from a clean
+  checkout without installing Gradle manually.
+- Remove tracked `app/bin/**`: these files are generated class/resource output
+  and are already ignored by the repository rules.
+- Remove root-level legacy test files under `app/*.java`: maintained tests live
+  under `app/src/test/**`.
+- Remove local Windows cleanup/guard scripts from the release source set:
+  `InterMed_Cleanup.bat` and `InterMed_Guard.bat` contained maintainer-local
+  paths and were not portable release tooling.
+- Keep generated evidence out of Git. Release evidence belongs in CI/release
+  artifacts unless a maintainer writes a small curated summary under `docs/`.
+
 ## Evidence Artifacts
 
 These artifacts are useful for alpha sign-off, diagnostics, and release notes,
-but they should normally be uploaded as CI/release artifacts instead of committed
-as source:
+but should normally be uploaded by CI rather than committed as source:
 
 - `app/build/reports/tests`
 - `app/build/test-results`
@@ -68,13 +80,11 @@ as source:
 - `harness-output/report/results.json` and `harness-output/report/index.html`,
   if they are tied to a dated compatibility run
 
-If an evidence file must be preserved in Git, copy only a small redacted summary
-into `docs/` and keep the raw runtime output outside the source tree.
-
-## Paths Excluded From The Snapshot Commit
+## Paths Excluded From The Release Commit
 
 These paths are generated, local, too heavy, or unsafe to treat as source:
 
+- `app/bin/**`
 - `app/logs/**`
 - `harness-output/cache/**`
 - `harness-output/runs/**`
@@ -91,94 +101,44 @@ These paths are generated, local, too heavy, or unsafe to treat as source:
 - `*.log`
 - `*.log.gz`
 
-## Current Dirty-Tree Findings
+## Verification Commands
 
-The current tree is not yet a clean source snapshot. The audit found:
-
-- `58` generated `app/logs/*.log.gz` files are already staged.
-- `29` generated `app/logs/*.log.gz` files also have unstaged local changes.
-- `harness-output/cache/**` contains downloaded Minecraft/mod artifacts and must
-  stay outside the source commit.
-- `harness-output/report/results.json` and `harness-output/report/index.html`
-  are evidence, not source.
-- `metrics.jfr` and `metrics.json` are local observability outputs and should not
-  be committed as source.
-- root-level `ModBootEvent.java` and `RegistryFlushEvent.java` exist outside
-  `app/src/**`; confirm whether they are accidental scratch files before commit.
-- `.codex` is an empty staged root file; confirm before commit.
-- global `git diff --check` currently fails on
-  `app/src/main/java/org/intermed/core/bridge/InterMedRegistry.java:64` because
-  of trailing whitespace. That should be cleaned before the snapshot commit.
-
-## Snapshot Audit Commands
-
-Run the non-destructive audit first:
+Before committing or tagging the alpha source release, verify:
 
 ```bash
-scripts/alpha_snapshot_audit.sh
+git diff --check
+./gradlew :app:test :app:coverageGate :app:strictSecurity :app:verifyRuntime --rerun-tasks -Dintermed.allowRemoteForgeRepo=true --console=plain
+./gradlew :test-harness:test --rerun-tasks --console=plain
+./gradlew :app:coreJar :app:coreFabricJar :app:bootstrapJar :test-harness:harnessJar -Dintermed.allowRemoteForgeRepo=true --console=plain
 ```
 
-Then run the mandatory runtime gates:
+Then generate or inspect the release payload from the CI workflow. The public
+payload must include:
+
+- `InterMedCore-8.0.0-alpha.1.jar`
+- `InterMedCore-8.0.0-alpha.1-fabric.jar`
+- `InterMedCore-8.0.0-alpha.1-bootstrap.jar`
+- `intermed-test-harness-8.0.0-alpha.1.jar`
+- `SHA256SUMS.txt`
+- `intermed-sbom.cdx.json`
+- `intermed-launch-readiness-report.json`
+- `intermed-api-gap-matrix.json`
+- `intermed-compatibility-corpus.json`
+- `intermed-compatibility-sweep-matrix.json`
+- `alpha-performance-snapshot.json`
+- `LICENSE`
+- `THIRD_PARTY_NOTICES.md`
+- `CHANGELOG.md`
+- `release-notes-v8.0.0-alpha.1.md`
+
+Suggested local source commit:
 
 ```bash
-./gradlew :app:strictSecurity :app:test :app:verifyRuntime --no-daemon
+git commit -m "Prepare v8.0.0-alpha.1 open alpha release"
 ```
 
-Generate the machine-readable launch evidence after the gates pass:
+Suggested release tag after the source commit is reviewed:
 
 ```bash
-./gradlew :app:run --args="launch-readiness-report \
-  --output intermed-launch-readiness-report.json"
-
-./gradlew :app:run --args="diagnostics-bundle \
-  --output intermed-diagnostics-bundle.zip \
-  --harness-results harness-output/report/results.json"
+git tag v8.0.0-alpha.1
 ```
-
-The generated JSON/zip files should be attached to release notes or CI artifacts
-unless a maintainer explicitly chooses a small redacted source-controlled
-summary.
-
-## Cleanup Before The Snapshot Commit
-
-Use non-destructive index cleanup. These commands do not delete files from disk;
-they only remove generated/local files from the pending commit:
-
-```bash
-git restore --staged app/logs .codex
-git restore --staged metrics.jfr metrics.json 2>/dev/null || true
-```
-
-If root scratch files are accidental, remove or move them only after owner
-confirmation:
-
-```bash
-git status --short -- ModBootEvent.java RegistryFlushEvent.java
-```
-
-After cleanup, stage only the source set:
-
-```bash
-git add .gitignore README.md COMPLIANCE.md ROADMAP.md LAUNCH_CRITERIA.md docs .github
-git add gradle gradle.properties gradlew gradlew.bat settings.gradle.kts
-git add app/build.gradle.kts app/src mixin-fork test-harness scripts
-```
-
-Before committing, verify the staged snapshot:
-
-```bash
-git diff --cached --check
-git diff --cached --stat
-scripts/alpha_snapshot_audit.sh
-./gradlew :app:strictSecurity :app:test :app:verifyRuntime --no-daemon
-```
-
-Suggested final commit:
-
-```bash
-git switch -c alpha/v8.0-snapshot-freeze
-git commit -m "chore: freeze v8.0 alpha snapshot"
-```
-
-Do not create this commit while generated logs, harness caches, or unresolved
-scratch files are staged.

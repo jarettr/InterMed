@@ -1,6 +1,6 @@
 # Security Policy
 
-InterMed `v8.0-alpha-snapshot` is not yet a production security boundary. The
+InterMed `v8.0.0-alpha.1` is not yet a production security boundary. The
 strict security lane is actively hardened, but field-proven hostile-mod security
 is not claimed.
 

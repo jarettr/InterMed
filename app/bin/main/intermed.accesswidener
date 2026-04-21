@@ -1,5 +1,0 @@
-# InterMed Access Widener
-# This file grants extended access to Minecraft's internals.
-# Format: accessible <type> <class_name> <member_name> <descriptor>
-
-access-widener	v2	named

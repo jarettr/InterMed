@@ -23,13 +23,13 @@ In TLauncher, open the version/profile settings and make sure the Java path poin
 Add this to the JVM arguments for the game profile:
 
 ```text
--javaagent:/home/mak/Projects/InterMed/app/build/libs/InterMedCore-8.0-SNAPSHOT.jar
+-javaagent:/home/mak/Projects/InterMed/app/build/libs/InterMedCore-8.0.0-alpha.1.jar
 ```
 
 If you want the explicit mods directory too, add:
 
 ```text
--javaagent:/home/mak/Projects/InterMed/app/build/libs/InterMedCore-8.0-SNAPSHOT.jar -Dintermed.modsDir=/path/to/.minecraft/intermed_mods
+-javaagent:/home/mak/Projects/InterMed/app/build/libs/InterMedCore-8.0.0-alpha.1.jar -Dintermed.modsDir=/path/to/.minecraft/intermed_mods
 ```
 
 ## Recommended Minecraft baseline
@@ -53,7 +53,7 @@ cd /home/mak/Projects/InterMed
 2. Verify the artifact exists:
 
 ```bash
-ls -lah /home/mak/Projects/InterMed/app/build/libs/InterMedCore-8.0-SNAPSHOT.jar
+ls -lah /home/mak/Projects/InterMed/app/build/libs/InterMedCore-8.0.0-alpha.1.jar
 ```
 
 3. In TLauncher, force Java 21 and add the `-javaagent` argument shown above.
