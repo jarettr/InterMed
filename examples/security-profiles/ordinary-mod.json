@@ -1,0 +1,14 @@
+[
+  {
+    "modId": "ordinary-mod",
+    "capabilities": [
+      "FILE_READ"
+    ],
+    "fileReadPaths": [
+      "config/ordinary-mod/**"
+    ],
+    "fileWritePaths": [],
+    "networkHosts": [],
+    "unsafeMembers": []
+  }
+]

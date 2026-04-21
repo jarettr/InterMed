@@ -87,6 +87,7 @@ class LaunchDiagnosticsBundleTest {
             assertEquals(2, manifest.get("modJarCount").getAsInt());
             assertFalse(readiness.get("compatibilityLaneIsSecurityProof").getAsBoolean());
             assertFalse(readiness.get("fieldTested").getAsBoolean());
+            assertEquals("reports/launch-readiness-report.json", manifest.get("claimSource").getAsString());
 
             JsonObject dependencyPlan = readJson(zip, "reports/dependency-plan.json");
             assertEquals("resolved", dependencyPlan.get("status").getAsString());
@@ -107,12 +108,20 @@ class LaunchDiagnosticsBundleTest {
             JsonObject sweepMatrix = readJson(zip, "reports/compatibility-sweep-matrix.json");
             assertEquals("intermed-compatibility-sweep-matrix-v1", sweepMatrix.get("schema").getAsString());
             assertEquals(
-                "corpus-only-not-run",
+                "PARSED",
                 sweepMatrix.getAsJsonObject("scope").get("evidenceLevel").getAsString()
             );
 
             JsonObject readinessReport = readJson(zip, "reports/launch-readiness-report.json");
             assertEquals("intermed-launch-readiness-report-v1", readinessReport.get("schema").getAsString());
+            assertEquals(
+                readinessReport.getAsJsonObject("truthModel").get("highestLevel").getAsString(),
+                manifest.getAsJsonObject("truthModel").get("highestLevel").getAsString()
+            );
+            assertEquals(
+                readinessReport.getAsJsonObject("truthModel").get("highestLevel").getAsString(),
+                readiness.get("highestEvidenceLevel").getAsString()
+            );
 
             JsonObject securityReport = readJson(zip, "reports/security-report.json");
             assertTrue(securityReport.get("strictMode").getAsBoolean());
@@ -131,6 +140,9 @@ class LaunchDiagnosticsBundleTest {
         Files.createDirectories(modsDir);
         Files.createDirectories(configDir);
         Files.writeString(harnessResults, harnessResultsJson("bundle_mod"), StandardCharsets.UTF_8);
+        Files.writeString(root.resolve("alpha-compatibility-proof-plan.json"), """
+            {"schema":"intermed-alpha-compatibility-proof-plan-v1","summary":{"notRun":1}}
+            """, StandardCharsets.UTF_8);
 
         Path modJar = createFabricJar(modsDir.resolve("bundle-mod.jar"), "bundle_mod", List.of());
         Path output = root.resolve("bundle.zip");
@@ -145,15 +157,26 @@ class LaunchDiagnosticsBundleTest {
         );
 
         assertTrue(result.entries().contains("reports/compatibility-sweep-matrix.json"));
+        assertTrue(result.entries().contains("reports/alpha-compatibility-proof-plan.json"));
         assertTrue(result.entries().contains("artifacts/harness/results.json"));
         try (ZipFile zip = new ZipFile(output.toFile())) {
+            JsonObject proofPlan = readJson(zip, "reports/alpha-compatibility-proof-plan.json");
+            assertEquals("intermed-alpha-compatibility-proof-plan-v1", proofPlan.get("schema").getAsString());
+
             JsonObject sweepMatrix = readJson(zip, "reports/compatibility-sweep-matrix.json");
             assertEquals(
-                "harness-result-normalization",
+                "BOOTED",
                 sweepMatrix.getAsJsonObject("scope").get("evidenceLevel").getAsString()
             );
             assertEquals(1, sweepMatrix.getAsJsonObject("summary").get("linkedCandidates").getAsInt());
             assertEquals(1, sweepMatrix.getAsJsonObject("summary").get("passCount").getAsInt());
+
+            JsonObject manifest = readJson(zip, "manifest.json");
+            JsonObject readinessReport = readJson(zip, "reports/launch-readiness-report.json");
+            assertEquals(
+                readinessReport.getAsJsonObject("truthModel").get("highestLevel").getAsString(),
+                manifest.getAsJsonObject("truthModel").get("highestLevel").getAsString()
+            );
         }
     }
 

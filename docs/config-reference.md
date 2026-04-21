@@ -476,6 +476,39 @@ mod.priority.base-compatibility-mod=500
 
 ---
 
+### `config/intermed-security-profiles.json`
+
+External profiles are the preferred open-alpha way to grant scoped capabilities.
+The file is a JSON array. Each entry replaces the manifest/persisted profile for
+that mod.
+
+```json
+[
+  {
+    "modId": "ordinary-mod",
+    "capabilities": ["FILE_READ"],
+    "fileReadPaths": ["config/ordinary-mod/**"],
+    "fileWritePaths": [],
+    "networkHosts": [],
+    "unsafeMembers": []
+  },
+  {
+    "modId": "network-file-config-heavy-mod",
+    "capabilities": ["FILE_READ", "FILE_WRITE", "NETWORK_CONNECT"],
+    "fileReadPaths": ["config/network-file-config-heavy-mod/**"],
+    "fileWritePaths": ["config/network-file-config-heavy-mod/**"],
+    "networkHosts": ["api.example.org", "*.cdn.example.org"],
+    "unsafeMembers": []
+  }
+]
+```
+
+Use `memoryMembers` or `unsafeMembers` only for trusted low-level mods. Avoid
+`PROCESS_SPAWN`, `NATIVE_LIBRARY`, `REFLECTION_ACCESS`, and `MEMORY_ACCESS`
+unless the reason is understood and documented.
+
+---
+
 ### `mod.grant.<modId>`
 
 | Type                    | Default |
@@ -483,6 +516,8 @@ mod.priority.base-compatibility-mod=500
 | comma-separated strings | `""`    |
 
 Grants the specified capabilities to a mod. Values are capability names from the `Capability` enum.
+This form is coarse and does not express file paths or host allowlists; prefer
+`intermed-security-profiles.json` for strict alpha testing.
 
 ```properties
 mod.grant.network-mod=NETWORK_CONNECT

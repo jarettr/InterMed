@@ -11,6 +11,7 @@ import java.nio.file.Path;
  * <ol>
  *   <li>Downloads the vanilla Minecraft server JAR from Mojang's CDN.</li>
  *   <li>Installs the Forge server base (runs the Forge installer headlessly).</li>
+ *   <li>Installs the NeoForge server base (runs the NeoForge installer headlessly).</li>
  *   <li>Installs the Fabric server base (downloads fabric-server-launch.jar).</li>
  * </ol>
  *
@@ -36,6 +37,7 @@ public final class EnvironmentBootstrap {
         System.out.println("=== InterMed Test Harness — Bootstrap ===");
         System.out.println("MC version : " + config.mcVersion);
         System.out.println("Forge      : " + config.forgeVersion);
+        System.out.println("NeoForge   : " + config.neoforgeVersion);
         System.out.println("Output dir : " + config.outputDir);
         System.out.println();
 
@@ -48,7 +50,8 @@ public final class EnvironmentBootstrap {
             fetcher.fetch(config.mcVersion, config.cacheDir());
 
             // 2. Forge server base
-            if (config.loaderFilter != HarnessConfig.LoaderFilter.FABRIC) {
+            if (config.loaderFilter == HarnessConfig.LoaderFilter.ALL
+                    || config.loaderFilter == HarnessConfig.LoaderFilter.FORGE) {
                 var forgeInstaller = new ForgeServerInstaller();
                 forgeInstaller.install(
                     config.mcVersion,
@@ -61,8 +64,23 @@ public final class EnvironmentBootstrap {
                 writeCommonServerFiles(config.serverBaseForge());
             }
 
-            // 3. Fabric server base
-            if (config.loaderFilter != HarnessConfig.LoaderFilter.FORGE) {
+            // 3. NeoForge server base
+            if (config.loaderFilter == HarnessConfig.LoaderFilter.ALL
+                    || config.loaderFilter == HarnessConfig.LoaderFilter.NEOFORGE) {
+                var neoForgeInstaller = new NeoForgeServerInstaller();
+                neoForgeInstaller.install(
+                    config.mcVersion,
+                    config.neoforgeVersion,
+                    config.cacheDir(),
+                    config.serverBaseNeoForge(),
+                    config.javaExecutable
+                );
+                writeCommonServerFiles(config.serverBaseNeoForge());
+            }
+
+            // 4. Fabric server base
+            if (config.loaderFilter == HarnessConfig.LoaderFilter.ALL
+                    || config.loaderFilter == HarnessConfig.LoaderFilter.FABRIC) {
                 var fabricInstaller = new FabricServerInstaller();
                 fabricInstaller.install(
                     config.mcVersion,

@@ -43,6 +43,13 @@ class RemapperHotPathMicrobenchTest {
         byte[] warmedClass = InterMedRemapper.transformClassBytes("bench.Probe", original);
         assertArrayEquals(warmedClass, InterMedRemapper.transformClassBytes("bench.Probe", original));
 
+        for (int i = 0; i < 10_000; i++) {
+            InterMedRemapper.translateRuntimeString(runtimeString);
+        }
+        for (int i = 0; i < 5_000; i++) {
+            InterMedRemapper.transformClassBytes("bench.Probe", original);
+        }
+
         long stringStarted = System.nanoTime();
         for (int i = 0; i < 250_000; i++) {
             InterMedRemapper.translateRuntimeString(runtimeString);

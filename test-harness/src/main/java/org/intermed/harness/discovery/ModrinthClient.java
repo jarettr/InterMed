@@ -14,6 +14,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 
 /**
@@ -153,36 +154,24 @@ public final class ModrinthClient {
         String slug       = hit.get("slug").getAsString();
         String name       = hit.get("title").getAsString();
         long downloads    = hit.get("downloads").getAsLong();
+        List<String> categories = extractCategories(hit);
 
         // Build loader list from hit
         List<String> hitLoaders = new ArrayList<>();
-        if (hit.has("categories")) {
-            for (JsonElement c : hit.getAsJsonArray("categories")) {
-                String cat = c.getAsString();
-                if (cat.equals("forge") || cat.equals("fabric") || cat.equals("neoforge")) {
-                    hitLoaders.add(cat);
-                }
-            }
-        }
-        // Also check display_categories
-        if (hit.has("display_categories")) {
-            for (JsonElement c : hit.getAsJsonArray("display_categories")) {
-                String cat = c.getAsString();
-                if ((cat.equals("forge") || cat.equals("fabric") || cat.equals("neoforge"))
-                        && !hitLoaders.contains(cat)) {
-                    hitLoaders.add(cat);
-                }
+        for (String category : categories) {
+            if ((category.equals("forge") || category.equals("fabric") || category.equals("neoforge"))
+                    && !hitLoaders.contains(category)) {
+                hitLoaders.add(category);
             }
         }
 
-        // Server-side flag: if client_side=required and server_side=unsupported → skip on server
-        boolean serverSide = true;
-        if (hit.has("server_side")) {
-            String ss = hit.get("server_side").getAsString();
-            serverSide = !ss.equals("unsupported");
-        }
-
-        if (!serverSide) return null; // skip client-only mods (server test)
+        String clientSide = hit.has("client_side")
+            ? hit.get("client_side").getAsString()
+            : "unknown";
+        String serverSideScope = hit.has("server_side")
+            ? hit.get("server_side").getAsString()
+            : "unknown";
+        boolean serverSide = !serverSideScope.equalsIgnoreCase("unsupported");
 
         // Fetch version list for this project to get a download URL
         VersionInfo vi = resolveVersion(projectId, mcVersion, loaders.isEmpty() ? null : loaders);
@@ -192,7 +181,12 @@ public final class ModrinthClient {
             projectId, slug, name, downloads,
             vi.loaders().isEmpty() ? hitLoaders : vi.loaders(),
             vi.versionId(), vi.versionNumber(),
-            vi.downloadUrl(), vi.fileName(), serverSide
+            vi.downloadUrl(), vi.fileName(), serverSide,
+            categories,
+            "modrinth",
+            "https://modrinth.com/mod/" + slug,
+            clientSide,
+            serverSideScope
         );
     }
 
@@ -271,6 +265,21 @@ public final class ModrinthClient {
         }
         json.append("]");
         return URLEncoder.encode(json.toString(), StandardCharsets.UTF_8);
+    }
+
+    private List<String> extractCategories(JsonObject hit) {
+        LinkedHashSet<String> categories = new LinkedHashSet<>();
+        if (hit.has("categories")) {
+            for (JsonElement c : hit.getAsJsonArray("categories")) {
+                categories.add(c.getAsString());
+            }
+        }
+        if (hit.has("display_categories")) {
+            for (JsonElement c : hit.getAsJsonArray("display_categories")) {
+                categories.add(c.getAsString());
+            }
+        }
+        return List.copyOf(categories);
     }
 
     private record VersionInfo(

@@ -500,7 +500,7 @@ public final class LockFreeEvent<T> {
         @Override
         public void dispatch(Object arg0, Object arg1, Object arg2) {
             for (ListenerRegistration<T> registration : listeners) {
-                if (ObservabilityMonitor.isModThrottled(registration.modId())) {
+                if (ObservabilityMonitor.isModHardThrottled(registration.modId())) {
                     continue;
                 }
                 metadata.invoke(registration.listener(), arg0, arg1, arg2);
@@ -673,7 +673,7 @@ public final class LockFreeEvent<T> {
                 visitor.visitMethodInsn(
                     Opcodes.INVOKESTATIC,
                     OBSERVABILITY,
-                    "isModThrottled",
+                    "isModHardThrottled",
                     SHOULD_SKIP_DESC,
                     false
                 );

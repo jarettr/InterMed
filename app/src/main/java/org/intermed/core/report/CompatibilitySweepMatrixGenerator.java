@@ -139,6 +139,14 @@ public final class CompatibilitySweepMatrixGenerator {
         root.addProperty("intermedVersion", InterMedVersion.BUILD_VERSION);
         root.addProperty("generatedAt", Instant.now().toString());
         root.add("scope", scope(!resultRows.isEmpty()));
+        root.add("truthModel", EvidenceLevel.truthModel(
+            !resultRows.isEmpty()
+                ? List.of(EvidenceLevel.PARSED, EvidenceLevel.BOOTED)
+                : List.of(EvidenceLevel.PARSED),
+            !resultRows.isEmpty()
+                ? "Stored harness outcomes lift linked candidates from PARSED to BOOTED only. Higher gameplay, soak, strict-security, and baseline claims require their own lanes."
+                : "Without stored harness outcomes the matrix remains a PARSED corpus-linking artifact."
+        ));
         root.add("sources", sources(safeCorpus, harnessResults));
         root.add("summary", summary.toJson());
         root.add("candidates", candidates);
@@ -150,9 +158,11 @@ public final class CompatibilitySweepMatrixGenerator {
     private static JsonObject scope(boolean resultsAvailable) {
         JsonObject scope = new JsonObject();
         scope.addProperty("minecraft", "1.20.1");
-        scope.addProperty("evidenceLevel", resultsAvailable ? "harness-result-normalization" : "corpus-only-not-run");
+        scope.addProperty("evidenceLevel", resultsAvailable ? EvidenceLevel.BOOTED.name() : EvidenceLevel.PARSED.name());
+        scope.addProperty("legacyEvidenceLevel",
+            resultsAvailable ? "harness-result-normalization" : "corpus-only-not-run");
         scope.addProperty("claim",
-            "Links corpus candidates to stored harness outcomes; this is not gameplay, multiplayer, security, or field evidence.");
+            (resultsAvailable ? EvidenceLevel.BOOTED : EvidenceLevel.PARSED).description());
         return scope;
     }
 

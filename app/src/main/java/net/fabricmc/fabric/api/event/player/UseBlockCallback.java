@@ -33,7 +33,7 @@ public interface UseBlockCallback {
         public UseBlockCallback invoker() {
             return (player, world, hand, hitResult) -> {
                 for (Registration registration : listeners) {
-                    if (ObservabilityMonitor.isModThrottled(registration.modId())) {
+                    if (ObservabilityMonitor.isModHardThrottled(registration.modId())) {
                         continue;
                     }
                     InteractionResult result = registration.listener().interact(player, world, hand, hitResult);

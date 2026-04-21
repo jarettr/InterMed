@@ -1,12 +1,13 @@
 name: ci
 
 on:
+  workflow_dispatch:
   push:
     branches: ["**"]
   pull_request:
 
 jobs:
-  test:
+  alpha-gate:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -18,78 +19,28 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: gradle
+
+      - name: Clean checkout preparation
+        run: |
+          git clean -ffdx
+          chmod +x gradlew test-harness/run.sh
 
       - name: Gradle version
         run: ./gradlew --version
 
-      - name: Run unit + integration tests
-        run: ./gradlew :app:test --stacktrace --no-daemon
+      - name: Run mandatory public-alpha app gate
+        run: ./gradlew :app:test :app:coverageGate :app:strictSecurity :app:verifyRuntime --rerun-tasks -Dintermed.allowRemoteForgeRepo=true --console=plain
 
-      - name: Upload test reports
+      - name: Run mandatory harness self-test gate
+        run: ./gradlew :test-harness:test --rerun-tasks --console=plain
+
+      - name: Upload alpha-gate reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-reports
+          name: alpha-gate-reports
           path: |
-            app/build/reports/tests
+            app/build/reports
             app/build/test-results
-            app/build/reports/observability
-            app/build/reports/startup
-
-  runtime-verification:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Java 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: gradle
-
-      - name: Run runtime verification lane
-        run: ./gradlew :app:verifyRuntime --stacktrace --no-daemon
-
-      - name: Upload runtime verification reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: runtime-verification-reports
-          path: |
-            app/build/reports/tests
-            app/build/test-results
-            app/build/reports/microbench
-            app/build/reports/soak
-            app/build/reports/observability
-            app/build/reports/startup
-
-  strict-security:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Java 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: gradle
-
-      - name: Run strict security lane
-        run: ./gradlew :app:strictSecurity --stacktrace --no-daemon
-
-      - name: Upload strict security reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: strict-security-reports
-          path: |
-            app/build/reports/tests
-            app/build/test-results
-            app/build/reports/observability
-            app/build/reports/startup
+            test-harness/build/reports
+            test-harness/build/test-results

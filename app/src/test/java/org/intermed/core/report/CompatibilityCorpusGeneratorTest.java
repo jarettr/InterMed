@@ -32,7 +32,8 @@ class CompatibilityCorpusGeneratorTest {
         JsonObject summary = report.getAsJsonObject("summary");
 
         assertEquals("intermed-compatibility-corpus-v1", report.get("schema").getAsString());
-        assertEquals("manifest-only", report.getAsJsonObject("scope").get("evidenceLevel").getAsString());
+        assertEquals("PARSED", report.getAsJsonObject("scope").get("evidenceLevel").getAsString());
+        assertEquals("PARSED", report.getAsJsonObject("truthModel").get("highestLevel").getAsString());
         assertEquals(3, summary.get("total").getAsInt());
         assertEquals(2, summary.get("parsed").getAsInt());
         assertEquals(1, summary.get("unsupported").getAsInt());

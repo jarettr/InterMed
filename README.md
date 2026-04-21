@@ -16,11 +16,12 @@ InterMed `v8.0-alpha-snapshot` is a pre-launch Minecraft mod hypervisor snapshot
 
 ## Scope Contract
 
+- [LAUNCH_CRITERIA.md](LAUNCH_CRITERIA.md) is the canonical public-alpha source of truth for frozen scope, mandatory release gates, and release artifacts. `README.md`, `COMPLIANCE.md`, and `ROADMAP.md` mirror that contract and must not broaden it.
 - The accountable runtime path for this freeze is the canonical in-repo path:
   `InterMedKernel -> LifecycleManager -> LazyInterMedClassLoader`.
 - Evidence levels are tracked in [COMPLIANCE.md](COMPLIANCE.md) as `Implemented`, `Wired`, `Synthetic-tested`, `Harness-tested`, `Field-tested`, or `Deferred`.
 - Helper code, dormant modules, and forward-looking optimizations are not counted as launch-ready surfaces unless they are wired into that runtime path and have the required evidence level.
-- External claims stay deferred: no production-grade claim, no `95%` compatibility claim, and no `1.20+` compatibility claim in this freeze.
+- External claims stay deferred: no beta/stable claim, no production-grade claim, no `95%` compatibility claim, and no `1.20+` compatibility claim in this freeze.
 
 ## Intentional Spec Deviations
 
@@ -36,11 +37,17 @@ InterMed `v8.0-alpha-snapshot` is a pre-launch Minecraft mod hypervisor snapshot
 ## Verification Lanes
 
 - Baseline regression lane: `./gradlew :app:test`
+- Machine-enforced coverage lane: `./gradlew :app:coverageGate`
 - Strict fail-closed security lane: `./gradlew :app:strictSecurity`
 - Runtime verification lane: `./gradlew :app:verifyRuntime`
+- Harness self-test lane: `./gradlew :test-harness:test`
+- Mandatory public-alpha app gate: `./gradlew :app:test :app:coverageGate :app:strictSecurity :app:verifyRuntime --rerun-tasks -Dintermed.allowRemoteForgeRepo=true --console=plain`
+- Mandatory public-alpha release gate: the app gate above plus `./gradlew :test-harness:test --rerun-tasks --console=plain`, both from a clean checkout locally and in CI
 - `:app:verifyRuntime` currently aggregates `compatibilitySmoke`, `registryMicrobench`, and `runtimeSoak`
-- Evidence artifacts are emitted under `app/build/reports/{tests,microbench,soak,startup,observability}`; launch-failure triage uses `diagnostics-bundle` zip archives, which include a launch-readiness report, compatibility corpus manifest, compatibility sweep matrix, and machine-readable API gap matrix
+- Alpha performance baseline lane: `./test-harness/run.sh performance-baseline --heap=768 --timeout=180`
+- Evidence artifacts are emitted under `app/build/reports/{tests,jacoco,microbench,security,performance,soak,startup,observability}`; launch-failure triage uses `diagnostics-bundle` zip archives, which include a launch-readiness report, compatibility corpus manifest, compatibility sweep matrix, and machine-readable API gap matrix
 - Compatibility-report runs and strict-security runs are intentionally separate; a permissive compatibility pass is not treated as proof of secure-by-default behavior
+- Public alpha release assets include the versioned core runtime jar, fabric runtime jar, matching bootstrap support jar, harness jar, release checksums, SBOM, and launcher-generated alpha evidence reports from the reproducible CI release job defined by [LAUNCH_CRITERIA.md](LAUNCH_CRITERIA.md)
 
 ## Current Evidence Matrix
 
@@ -57,7 +64,7 @@ InterMed `v8.0-alpha-snapshot` is a pre-launch Minecraft mod hypervisor snapshot
 
 - Espresso sandbox runtime path
 - Wasm/WIT ecosystem integration beyond synthetic scenarios
-- native-baseline performance proof against external ecosystems
+- field-scale native-baseline performance proof against external ecosystems
 - long-running field soak validation beyond in-repo runtime soak gates
 - hostile/public-mod field security validation
 - broad compatibility proof against external mod corpora
@@ -72,6 +79,8 @@ InterMed `v8.0-alpha-snapshot` is a pre-launch Minecraft mod hypervisor snapshot
 - Alpha sign-off snapshot: [docs/alpha-signoff-2026-04-19.md](docs/alpha-signoff-2026-04-19.md)
 - Alpha runtime delta: [docs/alpha-runtime-delta-2026-04-20.md](docs/alpha-runtime-delta-2026-04-20.md)
 - Alpha risk register: [docs/alpha-risk-register-2026-04-20.md](docs/alpha-risk-register-2026-04-20.md)
+- Alpha security posture: [docs/alpha-security-posture-2026-04-21.md](docs/alpha-security-posture-2026-04-21.md)
+- Alpha performance snapshot: [docs/alpha-performance-snapshot-2026-04-21.md](docs/alpha-performance-snapshot-2026-04-21.md)
 - Alpha triage guide: [docs/alpha-triage.md](docs/alpha-triage.md)
 - Known limitations: [docs/known-limitations.md](docs/known-limitations.md)
 
@@ -81,4 +90,5 @@ InterMed `v8.0-alpha-snapshot` is a pre-launch Minecraft mod hypervisor snapshot
   to a Java 21 installation before invoking `./gradlew`.
 - The canonical runtime path is `InterMedKernel -> LifecycleManager -> LazyInterMedClassLoader`.
 - Loader compatibility work in this freeze is shared across `Fabric`, `Forge`, and `NeoForge` on the `1.20.1` baseline.
-- Internal sign-off commands for this freeze are `:app:test`, `:app:strictSecurity`, and `:app:verifyRuntime`.
+- Public-alpha release posture stays `alpha` only; this freeze must not be described as `beta`, `stable`, or production-ready.
+- Internal/public alpha sign-off commands for this freeze are `:app:test`, `:app:coverageGate`, `:app:strictSecurity`, `:app:verifyRuntime`, and `:test-harness:test`.

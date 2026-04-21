@@ -7,6 +7,7 @@ import org.intermed.core.security.CapabilityManager;
 import org.intermed.core.vfs.VirtualFileSystemRouter;
 
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
@@ -43,6 +44,8 @@ public final class RuntimeConfig {
     private final Path gameDir;
     private final Path configDir;
     private final Path modsDir;
+    private final Path runtimeConfigFile;
+    private final boolean externalRuntimeConfigLoaded;
     private final boolean prometheusEnabled;
     private final int prometheusPort;
     private final boolean otelEnabled;
@@ -69,6 +72,8 @@ public final class RuntimeConfig {
                           Path gameDir,
                           Path configDir,
                           Path modsDir,
+                          Path runtimeConfigFile,
+                          boolean externalRuntimeConfigLoaded,
                           boolean prometheusEnabled,
                           int prometheusPort,
                           boolean otelEnabled,
@@ -94,6 +99,8 @@ public final class RuntimeConfig {
         this.gameDir = gameDir;
         this.configDir = configDir;
         this.modsDir = modsDir;
+        this.runtimeConfigFile = runtimeConfigFile;
+        this.externalRuntimeConfigLoaded = externalRuntimeConfigLoaded;
         this.prometheusEnabled = prometheusEnabled;
         this.prometheusPort = prometheusPort;
         this.otelEnabled = otelEnabled;
@@ -202,6 +209,14 @@ public final class RuntimeConfig {
         return modsDir;
     }
 
+    public Path getRuntimeConfigFile() {
+        return runtimeConfigFile;
+    }
+
+    public boolean isExternalRuntimeConfigLoaded() {
+        return externalRuntimeConfigLoaded;
+    }
+
     public boolean isPrometheusEnabled() {
         return prometheusEnabled;
     }
@@ -239,19 +254,19 @@ public final class RuntimeConfig {
             + "|env=" + environmentType
             + "|gameDir=" + gameDir
             + "|configDir=" + configDir
-            + "|modsDir=" + modsDir;
+            + "|modsDir=" + modsDir
+            + "|runtimeConfigFile=" + runtimeConfigFile
+            + "|externalRuntimeConfigLoaded=" + externalRuntimeConfigLoaded;
         return AOTCacheManager.sha256(descriptor);
     }
 
     private static RuntimeConfig load() {
-        Properties properties = new Properties();
-        try (InputStream input = RuntimeConfig.class.getClassLoader().getResourceAsStream(RESOURCE_NAME)) {
-            if (input != null) {
-                properties.load(input);
-            }
-        } catch (Exception e) {
-            System.err.println("[RuntimeConfig] Failed to load " + RESOURCE_NAME + ": " + e.getMessage());
-        }
+        Properties properties = loadBundledDefaults();
+        Path bootstrapGameDir = resolveGameDir(properties);
+        Path bootstrapConfigDir = resolvePath(properties, "runtime.config.dir",
+            bootstrapGameDir.resolve("config"), bootstrapGameDir);
+        Path runtimeConfigFile = bootstrapConfigDir.resolve(RESOURCE_NAME).toAbsolutePath().normalize();
+        boolean externalRuntimeConfigLoaded = loadExternalOverrides(properties, runtimeConfigFile);
 
         boolean aotCacheEnabled = getBoolean(properties, "aot.cache.enabled", true);
         boolean securityStrictMode = getBoolean(properties, "security.strict.mode", true);
@@ -277,6 +292,9 @@ public final class RuntimeConfig {
         EnvType environmentType = resolveEnvironmentType(properties);
         Path gameDir = resolveGameDir(properties);
         Path configDir = resolvePath(properties, "runtime.config.dir", gameDir.resolve("config"), gameDir);
+        if (!externalRuntimeConfigLoaded) {
+            runtimeConfigFile = configDir.resolve(RESOURCE_NAME).toAbsolutePath().normalize();
+        }
         boolean vfsEnabled = getBoolean(properties, "vfs.enabled", true);
         String vfsConflictPolicy = getString(properties, "vfs.conflict.policy", "merge_then_priority");
         List<String> vfsPriorityOrder = splitCsv(
@@ -318,11 +336,41 @@ public final class RuntimeConfig {
             gameDir,
             configDir,
             modsDir,
+            runtimeConfigFile,
+            externalRuntimeConfigLoaded,
             prometheusEnabled,
             prometheusPort,
             otelEnabled,
             otelOutputPath
         );
+    }
+
+    private static Properties loadBundledDefaults() {
+        Properties properties = new Properties();
+        try (InputStream input = RuntimeConfig.class.getClassLoader().getResourceAsStream(RESOURCE_NAME)) {
+            if (input != null) {
+                properties.load(input);
+            }
+        } catch (Exception e) {
+            System.err.println("[RuntimeConfig] Failed to load " + RESOURCE_NAME + ": " + e.getMessage());
+        }
+        return properties;
+    }
+
+    private static boolean loadExternalOverrides(Properties properties, Path runtimeConfigFile) {
+        if (runtimeConfigFile == null || !Files.isRegularFile(runtimeConfigFile)) {
+            return false;
+        }
+        try (InputStream input = Files.newInputStream(runtimeConfigFile)) {
+            Properties overrides = new Properties();
+            overrides.load(input);
+            properties.putAll(overrides);
+            return true;
+        } catch (Exception e) {
+            System.err.println("[RuntimeConfig] Failed to load external overrides from "
+                + runtimeConfigFile + ": " + e.getMessage());
+            return false;
+        }
     }
 
     private static boolean getBoolean(Properties properties, String key, boolean defaultValue) {

@@ -121,23 +121,24 @@ public final class LaunchDiagnosticsBundle {
 
         JsonObject compatibilityCorpus = CompatibilityCorpusGenerator.generate(jars);
         JsonObject harnessResultsJson = readJsonIfExists(harnessResults);
+        JsonObject sweepMatrix = CompatibilitySweepMatrixGenerator.generate(compatibilityCorpus, harnessResultsJson);
+        JsonObject readinessReport = LaunchReadinessReportGenerator.generate(Path.of("."), gameDir, modsDir, harnessResults);
         putJson(entries, "reports/compatibility-report.json", CompatibilityReportGenerator.generate(jars));
         putJson(entries, "reports/compatibility-corpus.json", compatibilityCorpus);
-        putJson(entries, "reports/compatibility-sweep-matrix.json",
-            CompatibilitySweepMatrixGenerator.generate(compatibilityCorpus, harnessResultsJson));
+        putJson(entries, "reports/compatibility-sweep-matrix.json", sweepMatrix);
         putJson(entries, "reports/sbom.cdx.json", ModSbomGenerator.generate(jars));
         putJson(entries, "reports/api-gap-matrix.json", ApiGapMatrixGenerator.generate());
         putJson(entries, "reports/dependency-plan.json", dependencyPlan(jars));
         putJson(entries, "reports/security-report.json", securityReport(jars, configDir));
         putJson(entries, "reports/runtime-config.json", runtimeConfig(gameDir, modsDir, configDir));
-        putJson(entries, "reports/launch-readiness-report.json",
-            LaunchReadinessReportGenerator.generate(Path.of("."), gameDir, modsDir, harnessResults));
+        putJson(entries, "reports/launch-readiness-report.json", readinessReport);
+        copyAlphaProofPlanIfExists(entries, artifactIndex, harnessResults);
 
         copyIfExists(entries, artifactIndex, harnessResults, "artifacts/harness/results.json");
         collectRuntimeArtifacts(entries, artifactIndex, gameDir);
         collectBuildReports(entries, artifactIndex);
 
-        JsonObject manifest = manifest(jars, gameDir, modsDir, configDir, entries.keySet(), artifactIndex);
+        JsonObject manifest = manifest(jars, gameDir, modsDir, configDir, entries.keySet(), artifactIndex, readinessReport);
         putJsonFirst(entries, "manifest.json", manifest);
         return new BundleContents(manifest, entries);
     }
@@ -153,12 +154,24 @@ public final class LaunchDiagnosticsBundle {
         }
     }
 
+    private static void copyAlphaProofPlanIfExists(Map<String, byte[]> entries,
+                                                   JsonArray artifactIndex,
+                                                   Path harnessResults) {
+        if (harnessResults == null || harnessResults.getParent() == null) {
+            return;
+        }
+        copyIfExists(entries, artifactIndex,
+            harnessResults.getParent().resolve("alpha-compatibility-proof-plan.json"),
+            "reports/alpha-compatibility-proof-plan.json");
+    }
+
     private static JsonObject manifest(List<File> jars,
                                        Path gameDir,
                                        Path modsDir,
                                        Path configDir,
                                        Set<String> entryNames,
-                                       JsonArray artifactIndex) {
+                                       JsonArray artifactIndex,
+                                       JsonObject readinessReport) {
         JsonObject root = new JsonObject();
         root.addProperty("schema", "intermed-launch-diagnostics-bundle-v1");
         root.addProperty("intermedVersion", InterMedVersion.BUILD_VERSION);
@@ -173,11 +186,14 @@ public final class LaunchDiagnosticsBundle {
         root.addProperty("entryCount", entryNames.size() + 1);
         root.add("entries", stringArray(entryNames));
         root.add("artifacts", artifactIndex);
-        root.add("launchReadiness", launchReadiness());
+        root.addProperty("claimSource", "reports/launch-readiness-report.json");
+        root.add("launchReadiness", launchReadiness(readinessReport));
+        root.add("claimGuardrail", copyObject(readinessReport, "claimGuardrail"));
+        root.add("truthModel", copyObject(readinessReport, "truthModel"));
         return root;
     }
 
-    private static JsonObject launchReadiness() {
+    private static JsonObject launchReadiness(JsonObject readinessReport) {
         JsonObject readiness = new JsonObject();
         readiness.addProperty("status", "alpha-triage-artifact");
         readiness.addProperty("securityLane", RuntimeConfig.get().isSecurityStrictMode()
@@ -185,8 +201,14 @@ public final class LaunchDiagnosticsBundle {
             : "permissive");
         readiness.addProperty("compatibilityLaneIsSecurityProof", false);
         readiness.addProperty("fieldTested", false);
+        readiness.addProperty("highestEvidenceLevel",
+            readinessReport != null
+                && readinessReport.has("truthModel")
+                && readinessReport.get("truthModel").isJsonObject()
+                ? string(readinessReport.getAsJsonObject("truthModel"), "highestLevel", EvidenceLevel.PARSED.name())
+                : EvidenceLevel.PARSED.name());
         readiness.addProperty("notes",
-            "This bundle supports external alpha triage. It is not a production/stable compatibility claim.");
+            "This bundle defers claim truth to the embedded launch-readiness report; it is not a standalone production/stable compatibility claim.");
         return readiness;
     }
 
@@ -333,6 +355,8 @@ public final class LaunchDiagnosticsBundle {
         root.addProperty("gameDir", display(gameDir));
         root.addProperty("modsDir", display(modsDir));
         root.addProperty("configDir", display(configDir));
+        root.addProperty("runtimeConfigFile", config.getRuntimeConfigFile().toString());
+        root.addProperty("externalRuntimeConfigLoaded", config.isExternalRuntimeConfigLoaded());
         root.addProperty("environment", config.getEnvironmentType().name());
         root.addProperty("aotCacheEnabled", config.isAotCacheEnabled());
         root.addProperty("securityStrictMode", config.isSecurityStrictMode());
@@ -382,6 +406,10 @@ public final class LaunchDiagnosticsBundle {
             "microbench/registry-hot-path.txt",
             "microbench/remapper-hot-path.txt",
             "microbench/event-bus-hot-path.txt",
+            "security/hostile-smoke.txt",
+            "performance/alpha-performance-snapshot.json",
+            "performance/native-loader-baseline.json",
+            "performance/alpha-performance-smoke.jfr",
             "soak/runtime-soak.txt"
         );
         for (Path root : reportRoots) {
@@ -533,6 +561,17 @@ public final class LaunchDiagnosticsBundle {
             return element.getAsJsonObject().deepCopy();
         }
         return new JsonObject();
+    }
+
+    private static JsonObject copyObject(JsonObject source, String key) {
+        if (source != null && source.has(key) && source.get(key).isJsonObject()) {
+            return source.getAsJsonObject(key).deepCopy();
+        }
+        return new JsonObject();
+    }
+
+    private static String string(JsonObject object, String key, String defaultValue) {
+        return object != null && object.has(key) ? object.get(key).getAsString() : defaultValue;
     }
 
     private static String sha256(Path path) {

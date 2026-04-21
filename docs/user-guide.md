@@ -181,7 +181,7 @@ To force a full rebuild: delete `.intermed/aot_v8/`.
 
 ## 6. Security policy configuration
 
-InterMed enforces a capability-based security model. Each mod must be granted capabilities it needs; otherwise operations are blocked (in strict mode) or warned (in permissive mode).
+InterMed enforces a capability-based security model. Each mod must be granted capabilities it needs; otherwise operations are blocked (in strict mode) or logged as permissive warnings (in permissive mode).
 
 Compatibility reports and harness sweeps published by the project use a separate
 permissive lane for broad boot coverage. They are useful for compatibility triage,
@@ -193,18 +193,55 @@ but they are not proof that your own installation is running with secure default
 security.strict.mode=true
 ```
 
-Any mod that tries to open a socket, write a file, spawn a process, or access Unsafe without an explicit grant gets `CapabilityDeniedException`. Sensitive operations that cannot be attributed to a known mod or trusted host/platform stack are also denied in strict mode. The full audit trail is written to `logs/intermed-security.log`.
+Any mod that tries to open a socket, write a file, spawn a process, load native code, use private reflection, or access Unsafe/VarHandle/FFM without an explicit grant gets `CapabilityDeniedException`. The exception message includes the mod id, requested capability, scoped path/host/member when available, the denial reason, and the safest next action. Sensitive operations that cannot be attributed to a known mod or trusted host/platform stack are also denied in strict mode. Denials are written to `logs/intermed-security.log`.
 
-### 6.2 Granting capabilities to a specific mod
+### 6.2 Security profiles
 
-In `intermed-runtime.properties`:
+For alpha testing, prefer the external profile file:
 
-```properties
-# Grant file-read and network-connect to "my-mod"
-mod.grant.my-mod=FILE_READ,NETWORK_CONNECT
+```text
+config/intermed-security-profiles.json
 ```
 
-Or via the mod's own `intermed.json` (honoured only when `security.strict.mode = true`):
+Example for an ordinary config-reading mod:
+
+```json
+[
+  {
+    "modId": "ordinary-mod",
+    "capabilities": ["FILE_READ"],
+    "fileReadPaths": ["config/ordinary-mod/**"],
+    "fileWritePaths": [],
+    "networkHosts": [],
+    "unsafeMembers": []
+  }
+]
+```
+
+Example for a network/file/config-heavy mod:
+
+```json
+[
+  {
+    "modId": "network-file-config-heavy-mod",
+    "capabilities": ["FILE_READ", "FILE_WRITE", "NETWORK_CONNECT"],
+    "fileReadPaths": [
+      "config/network-file-config-heavy-mod/**",
+      "resourcepacks/network-file-config-heavy-mod/**"
+    ],
+    "fileWritePaths": [
+      "config/network-file-config-heavy-mod/**",
+      ".intermed/cache/network-file-config-heavy-mod/**"
+    ],
+    "networkHosts": ["api.example.org", "*.cdn.example.org"],
+    "unsafeMembers": []
+  }
+]
+```
+
+The same examples live under `examples/security-profiles/` in the repository.
+
+Manifest-side declarations are also supported for mod authors:
 
 ```json
 {
@@ -245,7 +282,8 @@ security.strict.mode=false
 With this setting, capability violations are logged but never throw. Check `logs/intermed-security.log` to see what a mod is attempting; then add the required grants and re-enable strict mode.
 
 Use this only as a temporary troubleshooting step. A successful boot in permissive mode
-does not mean the mod is acceptable under the default secure posture.
+does not mean the mod is acceptable under the default secure posture. Project harness
+compatibility sweeps that use permissive settings are never described as secure runs.
 
 ---
 
@@ -310,6 +348,25 @@ Recommended JVM flags for controlled alpha/server testing:
 ```
 
 ZGC with generational mode (`-XX:+ZGenerational`, available since JDK 21) significantly reduces pause times compared to G1GC under InterMed's heavy allocation pattern during startup.
+
+### 7.6 Alpha performance evidence
+
+Open-alpha artifacts include `app/build/reports/performance/alpha-performance-snapshot.json`
+and `app/build/reports/performance/native-loader-baseline.json`. This is an
+initial alpha performance snapshot, not a final overhead claim. It records clean
+Fabric, clean Forge, and InterMed-attached short dedicated-server lanes, and it
+keeps the current registry/remapper/event-bus microbench reports labeled as
+internal hot-path evidence.
+
+Generate or refresh the lightweight baseline with:
+
+```bash
+./test-harness/run.sh performance-baseline --heap=768 --timeout=180
+```
+
+Do not cite InterMed as meeting the `10-15%` overhead target until longer
+native-loader and InterMed modpack baselines are captured under comparable
+settings.
 
 ---
 

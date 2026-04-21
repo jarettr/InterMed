@@ -311,6 +311,55 @@ class SecurityPolicyTest {
     }
 
     @Test
+    void externalProfilesHonorDocumentedTopLevelScopedFormat() throws Exception {
+        Path configDir = Files.createTempDirectory("intermed-security-doc-profile");
+        Path configRoot = Files.createTempDirectory("intermed-security-doc-profile-config");
+
+        Files.writeString(
+            configDir.resolve(SecurityPolicy.EXTERNAL_PROFILES_FILE),
+            """
+            [
+              {
+                "modId": "documented_profile_mod",
+                "capabilities": ["FILE_READ", "FILE_WRITE", "NETWORK_CONNECT"],
+                "fileReadPaths": ["%s/**"],
+                "fileWritePaths": ["%s/cache/**"],
+                "networkHosts": ["api.example.org"],
+                "unsafeMembers": []
+              }
+            ]
+            """.formatted(
+                configRoot.toAbsolutePath().normalize().toString().replace("\\", "\\\\"),
+                configRoot.toAbsolutePath().normalize().toString().replace("\\", "\\\\")
+            ),
+            StandardCharsets.UTF_8
+        );
+
+        SecurityPolicy.loadExternalProfiles(configDir);
+
+        assertTrue(SecurityPolicy.hasPermission(
+            "documented_profile_mod",
+            SecurityPolicy.SecurityRequest.fileRead(configRoot.resolve("settings.toml"))
+        ));
+        assertTrue(SecurityPolicy.hasPermission(
+            "documented_profile_mod",
+            SecurityPolicy.SecurityRequest.fileWrite(configRoot.resolve("cache/state.json"))
+        ));
+        assertTrue(SecurityPolicy.hasPermission(
+            "documented_profile_mod",
+            SecurityPolicy.SecurityRequest.network("api.example.org")
+        ));
+        assertFalse(SecurityPolicy.hasPermission(
+            "documented_profile_mod",
+            SecurityPolicy.SecurityRequest.fileWrite(configRoot.resolve("settings.toml"))
+        ));
+        assertFalse(SecurityPolicy.hasPermission(
+            "documented_profile_mod",
+            SecurityPolicy.SecurityRequest.network("telemetry.example.org")
+        ));
+    }
+
+    @Test
     void externalProfilesInvalidateCachedCapabilityDecisions() throws Exception {
         Path configDir = Files.createTempDirectory("intermed-security-cache-profiles");
         Path allowedPath = Files.createTempFile("intermed-security-cache-allowed", ".txt");

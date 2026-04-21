@@ -1,5 +1,6 @@
 plugins {
     id("java")
+    id("jacoco")
     id("dev.architectury.loom") version "1.11.458"
 }
 
@@ -140,6 +141,10 @@ java {
     withSourcesJar()
 }
 
+jacoco {
+    toolVersion = "0.8.12"
+}
+
 sourceSets {
     main {
         java {
@@ -168,6 +173,54 @@ tasks.named<Test>("test") {
         excludeTags("microbench")
         excludeTags("soak")
     }
+    finalizedBy(tasks.named("jacocoTestReport"))
+}
+
+tasks.named<org.gradle.testing.jacoco.tasks.JacocoReport>("jacocoTestReport") {
+    dependsOn(tasks.named("test"))
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+        csv.required.set(false)
+    }
+}
+
+tasks.named<org.gradle.testing.jacoco.tasks.JacocoCoverageVerification>("jacocoTestCoverageVerification") {
+    dependsOn(tasks.named("test"))
+    violationRules {
+        rule {
+            element = "BUNDLE"
+            limit {
+                counter = "LINE"
+                value = "COVEREDRATIO"
+                minimum = "0.20".toBigDecimal()
+            }
+        }
+        rule {
+            element = "CLASS"
+            includes = listOf(
+                "org.intermed.core.config.RuntimeConfig",
+                "org.intermed.core.report.CompatibilityCorpusGenerator",
+                "org.intermed.core.report.CompatibilitySweepMatrixGenerator",
+                "org.intermed.core.report.LaunchDiagnosticsBundle",
+                "org.intermed.core.report.LaunchReadinessReportGenerator"
+            )
+            limit {
+                counter = "LINE"
+                value = "COVEREDRATIO"
+                minimum = "0.60".toBigDecimal()
+            }
+        }
+    }
+}
+
+tasks.register("coverageGate") {
+    group = "verification"
+    description = "Runs the machine-enforced alpha coverage gate and emits JaCoCo reports."
+    dependsOn(
+        tasks.named("jacocoTestReport"),
+        tasks.named("jacocoTestCoverageVerification")
+    )
 }
 
 tasks.register<Test>("registryMicrobench") {
@@ -211,6 +264,10 @@ tasks.register<Test>("strictSecurity") {
     systemProperty("sandbox.espresso.enabled", "true")
     systemProperty("sandbox.wasm.enabled", "true")
     systemProperty("sandbox.native.fallback.enabled", "false")
+    systemProperty(
+        "intermed.security.outputDir",
+        layout.buildDirectory.dir("reports/security").get().asFile.absolutePath
+    )
 }
 
 tasks.register<Test>("runtimeSoak") {
@@ -237,6 +294,10 @@ tasks.register("verifyRuntime") {
         tasks.named("registryMicrobench"),
         tasks.named("runtimeSoak")
     )
+}
+
+tasks.named("check") {
+    dependsOn(tasks.named("coverageGate"))
 }
 
 tasks.withType<JavaCompile> {
@@ -356,6 +417,7 @@ tasks.register<Jar>("bootstrapJar") {
         include("org/intermed/security/**")
         include("org/intermed/core/security/**")
         include("org/intermed/core/registry/**")
+        include("org/intermed/core/metadata/**")
         exclude("org/intermed/core/security/SecurityHookTransformer*")
         exclude("org/intermed/core/security/SecurityInjector*")
         exclude("org/intermed/core/registry/RegistryHookTransformer*")

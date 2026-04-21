@@ -37,7 +37,9 @@ class JsonReportRoundTripTest {
             0,
             "Done (12.345s)! For help, type \"help\"",
             List.of(new IssueRecord(IssueRecord.Severity.ERROR, "MIXIN_BRIDGE", "Bridge generated", "evidence")),
-            Instant.parse("2026-04-12T10:15:30Z")
+            Instant.parse("2026-04-12T10:15:30Z"),
+            2,
+            true
         );
         matrix.add(result);
 
@@ -54,5 +56,42 @@ class JsonReportRoundTripTest {
         assertEquals("sample-mod", restored.testCase().mods().get(0).slug());
         assertEquals("1.2.3", restored.testCase().mods().get(0).versionNumber());
         assertEquals("MIXIN_BRIDGE", restored.issues().get(0).tag());
+        assertEquals(2, restored.attempt());
+        assertEquals(true, restored.flakyRetry());
+    }
+
+    @Test
+    void roundTripsNeoForgeLoaderResults() throws Exception {
+        CompatibilityMatrix matrix = new CompatibilityMatrix();
+        ModCandidate mod = new ModCandidate(
+            "proj-neo",
+            "neo-sample",
+            "Neo Sample",
+            7L,
+            List.of("neoforge"),
+            "ver-neo",
+            "2.0.0",
+            "https://example.invalid/neo-sample.jar",
+            "neo-sample.jar",
+            true
+        );
+        matrix.add(new TestResult(
+            new TestCase("single-neo-sample-neoforge", "Single: neo-sample@2.0.0", List.of(mod), TestCase.Loader.NEOFORGE),
+            TestResult.Outcome.PASS,
+            6789L,
+            0,
+            "Done (6.789s)! For help, type \"help\"",
+            List.of(),
+            Instant.parse("2026-04-12T10:17:30Z")
+        ));
+
+        Path reportDir = Files.createTempDirectory("intermed-harness-neoforge-report");
+        Path jsonFile = new JsonReportWriter().write(matrix, reportDir);
+
+        CompatibilityMatrix loaded = new JsonReportReader().read(jsonFile);
+
+        assertEquals(1, loaded.totalCount());
+        assertEquals(TestCase.Loader.NEOFORGE, loaded.all().get(0).testCase().loader());
+        assertEquals("single-neo-sample-neoforge", loaded.all().get(0).testCase().id());
     }
 }

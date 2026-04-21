@@ -20,8 +20,24 @@ public record TestResult(
     /** Structured issues extracted from the log. */
     List<IssueRecord> issues,
     /** When the test was executed. */
-    Instant executedAt
+    Instant executedAt,
+    /** 1-based attempt number for this test case. */
+    int attempt,
+    /** True when this result replaced a prior flaky/transient attempt. */
+    boolean flakyRetry
 ) {
+    public TestResult(
+        TestCase testCase,
+        Outcome outcome,
+        long startupMs,
+        int exitCode,
+        String rawLog,
+        List<IssueRecord> issues,
+        Instant executedAt
+    ) {
+        this(testCase, outcome, startupMs, exitCode, rawLog, issues, executedAt, 1, false);
+    }
+
     /** Possible test outcomes, ordered from best to worst. */
     public enum Outcome {
         /** Server started cleanly with no conflicts or warnings. */
@@ -68,6 +84,17 @@ public record TestResult(
     public boolean passed()  { return outcome.isPassing(); }
     public boolean failed()  { return outcome.isFailing(); }
 
+    public boolean retryRecommended() {
+        if (outcome == Outcome.FAIL_TIMEOUT) {
+            return true;
+        }
+        if (outcome != Outcome.FAIL_OTHER) {
+            return false;
+        }
+        return issues.stream().anyMatch(issue ->
+            "HARNESS_ERROR".equals(issue.tag()) || "PORT_IN_USE".equals(issue.tag()));
+    }
+
     /** How many FATAL issues were recorded. */
     public long fatalCount() {
         return issues.stream().filter(IssueRecord::isFatal).count();
@@ -80,5 +107,19 @@ public record TestResult(
         return rawLog.substring(0, half)
             + "\n... [truncated] ...\n"
             + rawLog.substring(rawLog.length() - half);
+    }
+
+    public TestResult withAttempt(int newAttempt, boolean retryOfFlakyFailure) {
+        return new TestResult(
+            testCase,
+            outcome,
+            startupMs,
+            exitCode,
+            rawLog,
+            issues,
+            executedAt,
+            newAttempt,
+            retryOfFlakyFailure
+        );
     }
 }
