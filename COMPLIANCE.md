@@ -12,6 +12,7 @@ This document tracks the frozen `v8.0-alpha-snapshot` scope for the current code
 ## Scope Interpretation
 
 - This matrix applies only to the frozen `1.20.1` runtime scope.
+- [LAUNCH_CRITERIA.md](LAUNCH_CRITERIA.md) is the canonical public-alpha source of truth for frozen scope, mandatory release gates, and release artifacts. This matrix mirrors that contract and must not broaden it.
 - Evidence status terms are shared with [LAUNCH_CRITERIA.md](LAUNCH_CRITERIA.md): `Implemented`, `Wired`, `Synthetic-tested`, `Harness-tested`, `Field-tested`, and `Deferred`.
 - The canonical runtime path for support accounting is:
   `InterMedKernel -> LifecycleManager -> LazyInterMedClassLoader`.
@@ -32,8 +33,12 @@ This document tracks the frozen `v8.0-alpha-snapshot` scope for the current code
 ## Verification Lanes
 
 - `:app:test` — baseline unit/integration regression lane for the frozen runtime path
+- `:app:coverageGate` — machine-enforced alpha coverage lane
 - `:app:strictSecurity` — strict fail-closed security/sandbox/config regression lane
 - `:app:verifyRuntime` — aggregate runtime lane for `compatibilitySmoke`, `registryMicrobench`, and `runtimeSoak`
+- `:test-harness:test` — harness self-test lane for the standalone compatibility runner
+- Mandatory public-alpha app gate: `./gradlew :app:test :app:coverageGate :app:strictSecurity :app:verifyRuntime --rerun-tasks -Dintermed.allowRemoteForgeRepo=true --console=plain`
+- Mandatory public-alpha release gate: the app gate above plus `./gradlew :test-harness:test --rerun-tasks --console=plain`, both from a clean checkout locally and in CI
 - Evidence artifacts emitted in-repo: `app/build/reports/tests`, `microbench`, `soak`, `startup`, `observability`, CLI-generated `launch-readiness-report` / `compat-corpus` / `compat-sweep-matrix` / `api-gap-matrix` JSON, and `diagnostics-bundle` zip archives
 - Compatibility sweeps remain distinct from strict-security proof. A permissive compatibility report is not treated as a secure-by-default pass.
 
@@ -75,9 +80,11 @@ This document tracks the frozen `v8.0-alpha-snapshot` scope for the current code
 ## Delivery Notes
 
 - `Fabric`, `Forge`, and `NeoForge` are all inside the frozen alpha scope for `1.20.1`.
+- Public release posture for this freeze stays `alpha` only; this matrix must not be used to justify `beta`, `stable`, or production-ready language.
 - This matrix is intentionally narrower than the original spec: it tracks the current shipped runtime path, not every future architectural idea already present in the repository.
 - Evidence statuses in this matrix describe the current proof level, not a broad public compatibility promise.
-- Internal RC sign-off for this freeze assumes `:app:test`, `:app:strictSecurity`, and `:app:verifyRuntime` are all green.
+- Internal/public alpha sign-off for this freeze assumes `:app:test`, `:app:coverageGate`, `:app:strictSecurity`, `:app:verifyRuntime`, and `:test-harness:test` are all green.
+- Public alpha release artifacts are defined by [LAUNCH_CRITERIA.md](LAUNCH_CRITERIA.md) and must include the versioned core runtime jars, the matching bootstrap support jar, release checksums, SBOM, and launcher-generated alpha evidence reports without broadening the frozen scope.
 - Compatibility reporting remains a permissive lane for broad boot coverage and must not be read as a replacement for strict-security verification.
 - `launch-readiness-report` summarizes required alpha evidence artifact presence, docs scope guardrails, and compatibility report summaries. It does not execute gates or convert synthetic/harness evidence into field evidence.
 - `compat-corpus` is the current reproducibility artifact for local compatibility sweeps. It records parsed/unsupported/failed candidates, SHA-256 hashes, entrypoints, dependencies, mixins, and sandbox plans, but it does not claim any candidate has booted.

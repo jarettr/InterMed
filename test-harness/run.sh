@@ -20,7 +20,12 @@ resolve_single_jar() {
 
 resolve_intermed_core_jar() {
   local pattern_dir="$1"
-  find "$pattern_dir" -maxdepth 1 -type f -name 'InterMedCore*.jar' ! -name '*-bootstrap.jar' | sort | tail -n 1
+  find "$pattern_dir" -maxdepth 1 -type f -name 'InterMedCore*.jar' \
+    ! -name '*-bootstrap.jar' \
+    ! -name '*-fabric.jar' \
+    ! -name '*-thin.jar' \
+    ! -name '*-sources.jar' \
+    | sort | tail -n 1
 }
 
 HARNESS_JAR_RESOLVED="$(resolve_single_jar "${SCRIPT_DIR}/build/libs" 'intermed-test-harness*.jar')"
@@ -151,16 +156,24 @@ if [[ "${1:-}" == "help" || "${1:-}" == "--help" || -z "${1:-}" ]]; then
   echo "  or inside test-harness/: ./run.sh ..."
   echo ""
   echo "Step-by-step:"
-  echo "  ./run.sh bootstrap               # Download MC + Forge/Fabric (one-time, ~500 MB)"
-  echo "  ./run.sh discover --top=1000     # Fetch mod list from Modrinth (~1000 JARs)"
+  echo "  ./run.sh bootstrap               # Download MC + Forge/Fabric/NeoForge (one-time, cached)"
+  echo "  ./run.sh discover --top=1000     # Fetch mod list + emit corpus-lock.json"
+  echo "  ./run.sh alpha-proof --skip-discover # Emit Phase 2 pass/fail/not-run accounting without servers"
+  echo "  ./run.sh performance-baseline --heap=768 --timeout=180 # Capture Phase 5 native performance lanes"
   echo "  ./run.sh run --concurrency=8     # Run tests (several hours)"
   echo "  ./run.sh report                  # Generate HTML/JSON report"
   echo ""
-  echo "Resuming an interrupted run:"
-  echo "  ./run.sh run --skip-bootstrap --skip-discover --concurrency=8"
+  echo "Sharded nightly example:"
+  echo "  ./run.sh run --skip-bootstrap --skip-discover --concurrency=8 --shard-count=8 --shard-index=3"
+  echo ""
+  echo "Resume only failed/missing cases:"
+  echo "  ./run.sh run --skip-bootstrap --skip-discover --resume-failed --retry-flaky --concurrency=8"
   echo ""
   echo "Test only Fabric mods, pairs mode, top 100:"
   echo "  ./run.sh full --loader=fabric --mode=pairs --top=100 --pairs-top=30"
+  echo ""
+  echo "Run curated alpha slices without Phase 3 full-pack combos:"
+  echo "  ./run.sh run --skip-bootstrap --skip-discover --mode=slices --concurrency=2"
   echo ""
   echo "All flags: ./run.sh help-full"
   echo ""
@@ -173,6 +186,28 @@ fi
 
 # ── Launch ─────────────────────────────────────────────────────────────────────
 
+has_flag_prefix() {
+  local prefix="$1"
+  shift
+  for arg in "$@"; do
+    if [[ "$arg" == "$prefix"* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+EXTRA_ARGS=()
+if ! has_flag_prefix "--intermed-jar=" "$@"; then
+  EXTRA_ARGS+=("--intermed-jar=$INTERMED_JAR")
+fi
+if ! has_flag_prefix "--output=" "$@"; then
+  EXTRA_ARGS+=("--output=$OUTPUT_DIR")
+fi
+if ! has_flag_prefix "--java=" "$@"; then
+  EXTRA_ARGS+=("--java=$JAVA_EXE")
+fi
+
 echo "[Harness] Java  : $JAVA_EXE"
 echo "[Harness] JAR   : $HARNESS_JAR"
 echo "[Harness] InterMed: $INTERMED_JAR"
@@ -184,6 +219,4 @@ exec "$JAVA_EXE" \
   ${JVM_ARGS:-} \
   -jar "$HARNESS_JAR" \
   "$@" \
-  --intermed-jar="$INTERMED_JAR" \
-  --output="$OUTPUT_DIR" \
-  --java="$JAVA_EXE"
+  "${EXTRA_ARGS[@]}"

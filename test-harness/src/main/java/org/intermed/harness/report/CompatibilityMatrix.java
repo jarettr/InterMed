@@ -22,17 +22,35 @@ public final class CompatibilityMatrix {
     // ── Mutation ──────────────────────────────────────────────────────────────
 
     public void add(TestResult result) {
-        results.add(result);
+        upsert(result);
     }
 
     public void addAll(List<TestResult> batch) {
-        results.addAll(batch);
+        if (batch == null) {
+            return;
+        }
+        batch.forEach(this::upsert);
+    }
+
+    public void upsert(TestResult result) {
+        if (result == null) {
+            return;
+        }
+        results.removeIf(existing -> existing.testCase().id().equals(result.testCase().id()));
+        results.add(result);
     }
 
     // ── Queries ────────────────────────────────────────────────────────────────
 
     public List<TestResult> all() {
         return Collections.unmodifiableList(new ArrayList<>(results));
+    }
+
+    public TestResult find(String testId) {
+        return results.stream()
+            .filter(result -> result.testCase().id().equals(testId))
+            .findFirst()
+            .orElse(null);
     }
 
     public int totalCount() { return results.size(); }

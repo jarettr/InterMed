@@ -48,7 +48,9 @@ public final class JsonReportReader {
             object.get("exitCode").getAsInt(),
             object.has("logSnippet") ? object.get("logSnippet").getAsString() : "",
             parseIssues(object.getAsJsonArray("issues")),
-            Instant.parse(object.get("executedAt").getAsString())
+            Instant.parse(object.get("executedAt").getAsString()),
+            object.has("attempt") ? object.get("attempt").getAsInt() : 1,
+            object.has("flakyRetry") && object.get("flakyRetry").getAsBoolean()
         );
     }
 
@@ -60,17 +62,33 @@ public final class JsonReportReader {
         for (var element : mods) {
             JsonObject mod = element.getAsJsonObject();
             parsed.add(new ModCandidate(
-                "",
+                mod.has("projectId") ? mod.get("projectId").getAsString() : "",
                 mod.get("slug").getAsString(),
                 mod.get("name").getAsString(),
                 mod.get("downloads").getAsLong(),
                 List.of(),
-                "",
+                mod.has("versionId") ? mod.get("versionId").getAsString() : "",
                 mod.get("version").getAsString(),
                 "",
                 "",
-                true
+                mod.has("serverSideCompatible") ? mod.get("serverSideCompatible").getAsBoolean() : true,
+                parseCategories(mod.getAsJsonArray("categories")),
+                mod.has("source") ? mod.get("source").getAsString() : "modrinth",
+                mod.has("modrinthUrl") ? mod.get("modrinthUrl").getAsString() : "",
+                mod.has("clientSide") ? mod.get("clientSide").getAsString() : "unknown",
+                mod.has("serverSide") ? mod.get("serverSide").getAsString() : "unknown"
             ));
+        }
+        return parsed;
+    }
+
+    private List<String> parseCategories(JsonArray categories) {
+        List<String> parsed = new ArrayList<>();
+        if (categories == null) {
+            return parsed;
+        }
+        for (var element : categories) {
+            parsed.add(element.getAsString());
         }
         return parsed;
     }

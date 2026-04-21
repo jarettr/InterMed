@@ -14,25 +14,34 @@ This checklist defines what `internal RC` means for the frozen `v8.0-alpha-snaps
 ## Mandatory Gates
 
 - `scripts/alpha_snapshot_audit.sh`
-- `./gradlew :app:test --stacktrace --no-daemon`
-- `./gradlew :app:strictSecurity --stacktrace --no-daemon`
-- `./gradlew :app:verifyRuntime --stacktrace --no-daemon`
+- `./gradlew :app:test :app:coverageGate :app:strictSecurity :app:verifyRuntime --rerun-tasks -Dintermed.allowRemoteForgeRepo=true --console=plain --stacktrace --no-daemon`
+- `./gradlew :test-harness:test --rerun-tasks --console=plain --stacktrace --no-daemon`
 
 ## What Each Gate Means
 
 - `:app:test`
   verifies the frozen runtime path, integration tests, and targeted regression coverage
+- `:app:coverageGate`
+  verifies the machine-enforced alpha coverage baseline and emits JaCoCo HTML/XML artifacts
 - `:app:strictSecurity`
   verifies fail-closed security, sandbox, and runtime-config behavior under strict defaults
 - `:app:verifyRuntime`
   verifies the aggregate runtime lane:
   `compatibilitySmoke`, `registryMicrobench`, and `runtimeSoak`
+- `:test-harness:test`
+  verifies the standalone compatibility harness surface used by public alpha evidence and release jobs
 
 ## Required Evidence Artifacts
 
 - `app/build/reports/tests`
 - `app/build/test-results`
+- `app/build/reports/jacoco/test/html/index.html`
+- `app/build/reports/jacoco/test/jacocoTestReport.xml`
 - `app/build/reports/microbench`
+- `app/build/reports/security/hostile-smoke.txt`
+- `app/build/reports/performance/alpha-performance-snapshot.json`
+- `app/build/reports/performance/native-loader-baseline.json`
+- `app/build/reports/performance/alpha-performance-smoke.jfr`
 - `app/build/reports/soak`
 - `app/build/reports/startup/warm-cache-startup.txt`
 - `app/build/reports/observability/observability-evidence.txt`
@@ -44,10 +53,9 @@ This checklist defines what `internal RC` means for the frozen `v8.0-alpha-snaps
 
 ## CI Expectations
 
-- GitHub Actions `test` job is green
-- GitHub Actions `runtime-verification` job is green
-- GitHub Actions `strict-security` job is green
-- Uploaded artifacts include tests plus startup / observability / microbench / soak reports
+- GitHub Actions `alpha-gate` job is green from a clean checkout
+- GitHub Actions alpha release/evidence jobs use the same frozen-scope gate set without broadening claim language
+- Uploaded artifacts include app + harness test results plus startup / observability / microbench / security / performance / soak reports
 
 ## Documentation Sync
 
@@ -67,4 +75,4 @@ This checklist defines what `internal RC` means for the frozen `v8.0-alpha-snaps
 - the launcher can generate an API gap matrix, and diagnostics bundles include it
 - observability evidence includes both metrics output and a non-empty `.jfr` dump
 - no known critical module remains outside the canonical runtime lifecycle
-- release posture is still `v8.0-alpha-snapshot / internal RC hardening`, pending external field validation
+- release posture is still `v8.0-alpha-snapshot / internal RC hardening`, with public releases described as `alpha` only pending external field validation

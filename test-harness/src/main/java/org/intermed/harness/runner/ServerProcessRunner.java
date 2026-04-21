@@ -159,9 +159,11 @@ public final class ServerProcessRunner {
         Files.createDirectories(runDir);
 
         // Copy base server (Forge or Fabric) into run dir
-        Path baseDir = testCase.loader() == TestCase.Loader.FORGE
-            ? config.serverBaseForge()
-            : config.serverBaseFabric();
+        Path baseDir = switch (testCase.loader()) {
+            case FORGE -> config.serverBaseForge();
+            case FABRIC -> config.serverBaseFabric();
+            case NEOFORGE -> config.serverBaseNeoForge();
+        };
 
         copyBaseServer(baseDir, runDir);
 
@@ -250,16 +252,13 @@ public final class ServerProcessRunner {
         cmd.add("-Dintermed.modsDir=" + runDir.resolve("intermed_mods").toAbsolutePath());
 
         // Server JAR
-        if (testCase.loader() == TestCase.Loader.FORGE) {
-            // Forge 1.20.x uses a @args file; fall back to direct jar if absent
-            Path argsFile = runDir.resolve("libraries/net/minecraftforge/forge/"
-                + config.mcVersion + "-" + config.forgeVersion + "/unix_args.txt");
-            if (Files.exists(argsFile)) {
+        if (testCase.loader() == TestCase.Loader.FORGE || testCase.loader() == TestCase.Loader.NEOFORGE) {
+            Path argsFile = findUnixArgsFile(runDir);
+            if (argsFile != null) {
                 cmd.add("@" + argsFile.toAbsolutePath());
             } else {
-                // Fallback: find the server jar
                 cmd.add("-jar");
-                cmd.add(findServerJar(runDir, "forge"));
+                cmd.add(findServerJar(runDir, testCase.loader() == TestCase.Loader.NEOFORGE ? "neo" : "forge"));
             }
         } else {
             cmd.add("-jar");
@@ -284,10 +283,13 @@ public final class ServerProcessRunner {
 
     private String findServerJar(Path dir, String prefix) {
         try (var stream = Files.list(dir)) {
+            java.util.List<String> prefixes = prefix.equals("neo")
+                ? java.util.List.of("neoforge", "forge")
+                : java.util.List.of(prefix);
             return stream
                 .filter(p -> {
                     String n = p.getFileName().toString();
-                    return n.startsWith(prefix) && n.endsWith(".jar");
+                    return prefixes.stream().anyMatch(n::startsWith) && n.endsWith(".jar");
                 })
                 .map(Path::toAbsolutePath)
                 .map(Path::toString)
@@ -295,6 +297,18 @@ public final class ServerProcessRunner {
                 .orElse("server.jar");
         } catch (IOException e) {
             return "server.jar";
+        }
+    }
+
+    private Path findUnixArgsFile(Path dir) {
+        try (var stream = Files.walk(dir.resolve("libraries"))) {
+            return stream
+                .filter(Files::isRegularFile)
+                .filter(path -> path.getFileName().toString().equals("unix_args.txt"))
+                .findFirst()
+                .orElse(null);
+        } catch (IOException e) {
+            return null;
         }
     }
 

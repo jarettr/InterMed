@@ -1,0 +1,23 @@
+[
+  {
+    "modId": "network-file-config-heavy-mod",
+    "capabilities": [
+      "FILE_READ",
+      "FILE_WRITE",
+      "NETWORK_CONNECT"
+    ],
+    "fileReadPaths": [
+      "config/network-file-config-heavy-mod/**",
+      "resourcepacks/network-file-config-heavy-mod/**"
+    ],
+    "fileWritePaths": [
+      "config/network-file-config-heavy-mod/**",
+      ".intermed/cache/network-file-config-heavy-mod/**"
+    ],
+    "networkHosts": [
+      "api.example.org",
+      "*.cdn.example.org"
+    ],
+    "unsafeMembers": []
+  }
+]

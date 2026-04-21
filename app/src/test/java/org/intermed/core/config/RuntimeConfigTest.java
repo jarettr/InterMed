@@ -122,6 +122,28 @@ class RuntimeConfigTest {
     }
 
     @Test
+    void loadsExternalRuntimeConfigOverridesFromConfigDirectory() throws Exception {
+        Path gameDir = Files.createTempDirectory("intermed-runtime-config");
+        Path configDir = gameDir.resolve("config");
+        Files.createDirectories(configDir);
+        Files.writeString(configDir.resolve("intermed-runtime.properties"), """
+            security.strict.mode=false
+            mixin.conflict.policy=overwrite
+            runtime.mods.dir=external_mods
+            """);
+
+        System.setProperty("runtime.game.dir", gameDir.toString());
+        RuntimeConfig.reload();
+
+        RuntimeConfig config = RuntimeConfig.get();
+        assertFalse(config.isSecurityStrictMode());
+        assertEquals("overwrite", config.getMixinConflictPolicy());
+        assertEquals(gameDir.resolve("external_mods"), config.getModsDir());
+        assertEquals(configDir.resolve("intermed-runtime.properties"), config.getRuntimeConfigFile());
+        assertTrue(config.isExternalRuntimeConfigLoaded());
+    }
+
+    @Test
     void resolvesEnvironmentTypeFromRuntimeProperties() {
         System.setProperty("runtime.env", "server");
         RuntimeConfig.reload();

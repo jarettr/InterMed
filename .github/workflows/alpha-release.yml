@@ -1,0 +1,116 @@
+name: alpha-release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*-alpha*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-alpha-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Clean checkout preparation
+        run: |
+          git clean -ffdx
+          chmod +x gradlew test-harness/run.sh
+
+      - name: Run mandatory public-alpha app gate
+        run: ./gradlew :app:test :app:coverageGate :app:strictSecurity :app:verifyRuntime --rerun-tasks -Dintermed.allowRemoteForgeRepo=true --console=plain
+
+      - name: Run mandatory harness self-test gate
+        run: ./gradlew :test-harness:test --rerun-tasks --console=plain
+
+      - name: Build versioned alpha runtime artifacts
+        run: ./gradlew :app:coreJar :app:coreFabricJar :app:bootstrapJar :test-harness:harnessJar -Dintermed.allowRemoteForgeRepo=true --console=plain
+
+      - name: Capture alpha performance snapshot
+        run: ./test-harness/run.sh performance-baseline --heap=768 --timeout=180
+
+      - name: Generate launcher alpha release reports
+        run: |
+          set -euo pipefail
+          RELEASE_ROOT="$GITHUB_WORKSPACE/build/alpha-release"
+          REPORT_DIR="$RELEASE_ROOT/reports"
+          GAME_DIR="$RELEASE_ROOT/game"
+          MODS_DIR="$RELEASE_ROOT/mods"
+          mkdir -p "$REPORT_DIR" "$GAME_DIR" "$MODS_DIR"
+
+          CORE_JAR="$(find app/build/libs -maxdepth 1 -type f -name 'InterMedCore*.jar' ! -name '*-bootstrap.jar' ! -name '*-fabric.jar' ! -name '*-thin.jar' ! -name '*-sources.jar' | sort | tail -n 1)"
+          if [[ -z "${CORE_JAR:-}" ]]; then
+            echo "[alpha-release] Unable to locate versioned InterMedCore runtime jar."
+            exit 1
+          fi
+
+          java -cp "$CORE_JAR" org.intermed.launcher.InterMedLauncher alpha-release-reports \
+            --project-root "$GITHUB_WORKSPACE" \
+            --game-dir "$GAME_DIR" \
+            --mods-dir "$MODS_DIR" \
+            --output-dir "$REPORT_DIR" \
+            --performance-snapshot "$GITHUB_WORKSPACE/app/build/reports/performance/alpha-performance-snapshot.json"
+
+      - name: Assemble release payload
+        run: |
+          set -euo pipefail
+          RELEASE_ROOT="$GITHUB_WORKSPACE/build/alpha-release"
+          PAYLOAD_DIR="$RELEASE_ROOT/payload"
+          mkdir -p "$PAYLOAD_DIR"
+
+          CORE_JAR="$(find app/build/libs -maxdepth 1 -type f -name 'InterMedCore*.jar' ! -name '*-bootstrap.jar' ! -name '*-fabric.jar' ! -name '*-thin.jar' ! -name '*-sources.jar' | sort | tail -n 1)"
+          FABRIC_JAR="$(find app/build/libs -maxdepth 1 -type f -name 'InterMedCore*-fabric.jar' | sort | tail -n 1)"
+          BOOTSTRAP_JAR="$(find app/build/libs -maxdepth 1 -type f -name 'InterMedCore*-bootstrap.jar' | sort | tail -n 1)"
+          HARNESS_JAR="$(find test-harness/build/libs -maxdepth 1 -type f -name 'intermed-test-harness*.jar' | sort | tail -n 1)"
+
+          cp "$CORE_JAR" "$PAYLOAD_DIR/"
+          cp "$FABRIC_JAR" "$PAYLOAD_DIR/"
+          cp "$BOOTSTRAP_JAR" "$PAYLOAD_DIR/"
+          cp "$HARNESS_JAR" "$PAYLOAD_DIR/"
+          cp "$RELEASE_ROOT/reports/intermed-launch-readiness-report.json" "$PAYLOAD_DIR/"
+          cp "$RELEASE_ROOT/reports/intermed-api-gap-matrix.json" "$PAYLOAD_DIR/"
+          cp "$RELEASE_ROOT/reports/intermed-compatibility-corpus.json" "$PAYLOAD_DIR/"
+          cp "$RELEASE_ROOT/reports/intermed-compatibility-sweep-matrix.json" "$PAYLOAD_DIR/"
+          cp "$RELEASE_ROOT/reports/intermed-sbom.cdx.json" "$PAYLOAD_DIR/"
+          cp "$RELEASE_ROOT/reports/alpha-performance-snapshot.json" "$PAYLOAD_DIR/"
+
+          (
+            cd "$PAYLOAD_DIR"
+            find . -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' -print0 \
+              | sort -z \
+              | xargs -0 sha256sum > SHA256SUMS.txt
+          )
+
+      - name: Upload alpha release payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: intermed-alpha-release-payload
+          path: build/alpha-release/payload
+
+      - name: Upload raw alpha evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: intermed-alpha-release-evidence
+          path: |
+            app/build/reports
+            harness-output
+            build/alpha-release/reports
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          files: build/alpha-release/payload/*

@@ -89,6 +89,22 @@ class ObservabilityEvidenceTest {
         ));
     }
 
+    @Test
+    void pidBackpressureSheddingIsSeparateFromHardModThrottle() {
+        ObservabilityMonitor.resetForTests();
+        TpsPidController.get().resetForTests();
+
+        assertFalse(ObservabilityMonitor.isModThrottled("healthy_mod"));
+
+        TpsPidController.get().update(5_000.0);
+
+        assertTrue(ObservabilityMonitor.shouldShedEvent(false));
+        assertFalse(ObservabilityMonitor.shouldShedEvent(true));
+        assertFalse(ObservabilityMonitor.isModThrottled("healthy_mod"));
+        assertTrue(ObservabilityMonitor.shouldSkipModEvent("healthy_mod", false));
+        assertFalse(ObservabilityMonitor.shouldSkipModEvent("healthy_mod", true));
+    }
+
     private static Path resolveOutputDir() {
         String configured = System.getProperty("intermed.observability.outputDir");
         if (configured == null || configured.isBlank()) {

@@ -34,11 +34,17 @@ class LaunchReadinessReportGeneratorTest {
         assertTrue(report.getAsJsonObject("summary").get("alphaEvidenceComplete").getAsBoolean());
         assertEquals(0, report.getAsJsonObject("summary").get("missingChecks").getAsInt());
         assertEquals(
-            "harness-result-normalization",
+            "BOOTED",
             report.getAsJsonObject("compatibility").get("sweepEvidenceLevel").getAsString()
         );
         assertTrue(report.getAsJsonObject("compatibility").get("harnessResultsPresent").getAsBoolean());
         assertEquals("1.20.1", report.getAsJsonObject("scope").get("minecraft").getAsString());
+        assertEquals("BASELINE_OK", report.getAsJsonObject("truthModel").get("highestLevel").getAsString());
+        assertTrue(arrayContains(report.getAsJsonObject("truthModel").getAsJsonArray("achievedLevels"), "PARSED"));
+        assertTrue(arrayContains(report.getAsJsonObject("truthModel").getAsJsonArray("achievedLevels"), "BOOTED"));
+        assertTrue(arrayContains(report.getAsJsonObject("truthModel").getAsJsonArray("achievedLevels"), "SOAK_OK"));
+        assertTrue(arrayContains(report.getAsJsonObject("truthModel").getAsJsonArray("achievedLevels"), "STRICT_OK"));
+        assertTrue(arrayContains(report.getAsJsonObject("truthModel").getAsJsonArray("achievedLevels"), "BASELINE_OK"));
     }
 
     @Test
@@ -67,11 +73,21 @@ class LaunchReadinessReportGeneratorTest {
     private static void createRequiredArtifacts(Path root) throws Exception {
         write(root.resolve("app/build/reports/tests/index.html"), "tests");
         write(root.resolve("app/build/test-results/test/TEST-demo.xml"), "test-results");
+        write(root.resolve("app/build/test-results/strictSecurity/TEST-strict.xml"),
+            "<testsuite tests=\"1\" failures=\"0\" errors=\"0\" skipped=\"0\"></testsuite>");
+        write(root.resolve("app/build/reports/security/hostile-smoke.txt"), "hostile smoke");
+        write(root.resolve("app/build/test-results/runtimeSoak/TEST-soak.xml"),
+            "<testsuite tests=\"1\" failures=\"0\" errors=\"0\" skipped=\"0\"></testsuite>");
         write(root.resolve("app/build/reports/microbench/registry-hot-path.txt"), "microbench");
+        write(root.resolve("app/build/reports/performance/alpha-performance-snapshot.json"), "{}");
+        write(root.resolve("app/build/reports/performance/native-loader-baseline.json"), "{}");
+        write(root.resolve("app/build/reports/performance/alpha-performance-smoke.jfr"), "jfr");
         write(root.resolve("app/build/reports/soak/runtime-soak.txt"), "soak");
         write(root.resolve("app/build/reports/startup/warm-cache-startup.txt"), "startup");
         write(root.resolve("app/build/reports/observability/observability-evidence.txt"), "observability");
         write(root.resolve("app/build/reports/observability/intermed-metrics.json"), "{\"resourceMetrics\":[]}");
+        write(root.resolve("app/build/reports/jacoco/test/html/index.html"), "coverage");
+        write(root.resolve("app/build/reports/jacoco/test/jacocoTestReport.xml"), "<report name=\"demo\"></report>");
     }
 
     private static void createScopeDocs(Path root) throws Exception {
@@ -133,5 +149,14 @@ class LaunchReadinessReportGeneratorTest {
               ]
             }
             """.formatted(modId, modId, modId, modId);
+    }
+
+    private static boolean arrayContains(com.google.gson.JsonArray array, String expected) {
+        for (var element : array) {
+            if (expected.equals(element.getAsString())) {
+                return true;
+            }
+        }
+        return false;
     }
 }

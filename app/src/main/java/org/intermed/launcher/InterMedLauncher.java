@@ -3,6 +3,7 @@ package org.intermed.launcher;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -52,6 +53,7 @@ public class InterMedLauncher {
             case "compat-report" -> executeCompatReport(request);
             case "compat-corpus" -> executeCompatCorpus(request);
             case "compat-sweep-matrix" -> executeCompatSweepMatrix(request);
+            case "alpha-release-reports" -> executeAlphaReleaseReports(request);
             case "sbom" -> executeSbom(request);
             case "api-gap-matrix" -> executeApiGapMatrix(request);
             case "launch-readiness-report" -> executeLaunchReadinessReport(request);
@@ -214,6 +216,58 @@ public class InterMedLauncher {
             );
         }
         System.out.println("[CompatSweepMatrix] Wrote " + output);
+        return 0;
+    }
+
+    private static int executeAlphaReleaseReports(LaunchRequest request) throws Exception {
+        RuntimeConfig.reload();
+        LaunchPaths paths = resolveLaunchPaths(request);
+        Path projectRoot = request.option("project-root")
+            .map(path -> Path.of(path).toAbsolutePath().normalize())
+            .orElse(Path.of(".").toAbsolutePath().normalize());
+        Path outputDir = request.option("output-dir")
+            .map(path -> Path.of(path).toAbsolutePath().normalize())
+            .orElse(paths.gameDir().resolve("alpha-release-reports").toAbsolutePath().normalize());
+        Files.createDirectories(outputDir);
+
+        List<File> candidateArchives = ModDiscovery.discoverCandidateArchives(paths.modsDir().toFile());
+        Path harnessResults = resolveHarnessResults(request, paths);
+
+        Path compatibilityCorpus = outputDir.resolve("intermed-compatibility-corpus.json");
+        Path compatibilitySweepMatrix = outputDir.resolve("intermed-compatibility-sweep-matrix.json");
+        Path sbom = outputDir.resolve("intermed-sbom.cdx.json");
+        Path apiGapMatrix = outputDir.resolve("intermed-api-gap-matrix.json");
+        Path launchReadiness = outputDir.resolve("intermed-launch-readiness-report.json");
+
+        CompatibilityCorpusGenerator.writeReport(compatibilityCorpus, candidateArchives);
+        CompatibilitySweepMatrixGenerator.writeReport(
+            compatibilitySweepMatrix,
+            compatibilityCorpus,
+            harnessResults
+        );
+        ModSbomGenerator.writeSbom(sbom, candidateArchives);
+        ApiGapMatrixGenerator.writeReport(apiGapMatrix);
+        LaunchReadinessReportGenerator.writeReport(
+            launchReadiness,
+            projectRoot,
+            paths.gameDir(),
+            paths.modsDir(),
+            harnessResults
+        );
+
+        Path performanceSnapshot = resolvePerformanceSnapshot(request, projectRoot);
+        if (performanceSnapshot != null) {
+            Path copiedSnapshot = outputDir.resolve("alpha-performance-snapshot.json");
+            Files.createDirectories(copiedSnapshot.getParent());
+            Files.copy(performanceSnapshot, copiedSnapshot, StandardCopyOption.REPLACE_EXISTING);
+            System.out.println("[AlphaReleaseReports] Copied performance snapshot to " + copiedSnapshot);
+        }
+
+        System.out.println("[AlphaReleaseReports] Wrote " + launchReadiness);
+        System.out.println("[AlphaReleaseReports] Wrote " + apiGapMatrix);
+        System.out.println("[AlphaReleaseReports] Wrote " + compatibilityCorpus);
+        System.out.println("[AlphaReleaseReports] Wrote " + compatibilitySweepMatrix);
+        System.out.println("[AlphaReleaseReports] Wrote " + sbom);
         return 0;
     }
 
@@ -465,13 +519,11 @@ public class InterMedLauncher {
     }
 
     private static List<File> discoverJars(LaunchRequest request) {
-        Path modsDir = Path.of(request.option("mods-dir").orElse(RuntimeConfig.get().getModsDir().toString()));
-        return ModDiscovery.discoverJars(modsDir.toFile());
+        return ModDiscovery.discoverJars(resolveLaunchPaths(request).modsDir().toFile());
     }
 
     private static List<File> discoverCandidateArchives(LaunchRequest request) {
-        Path modsDir = Path.of(request.option("mods-dir").orElse(RuntimeConfig.get().getModsDir().toString()));
-        return ModDiscovery.discoverCandidateArchives(modsDir.toFile());
+        return ModDiscovery.discoverCandidateArchives(resolveLaunchPaths(request).modsDir().toFile());
     }
 
     private static Optional<Path> resolveMappingsPath(LaunchRequest request) throws Exception {
@@ -512,9 +564,26 @@ public class InterMedLauncher {
         if (Files.isRegularFile(self)) {
             return self;
         }
-        Path builtJar = Path.of("app/build/libs/InterMedCore.jar").toAbsolutePath().normalize();
-        if (Files.exists(builtJar)) {
-            return builtJar;
+        Path buildDir = Path.of("app/build/libs").toAbsolutePath().normalize();
+        if (Files.isDirectory(buildDir)) {
+            try (var candidates = Files.list(buildDir)) {
+                Optional<Path> builtJar = candidates
+                    .filter(Files::isRegularFile)
+                    .filter(path -> {
+                        String fileName = path.getFileName().toString();
+                        return fileName.startsWith("InterMedCore")
+                            && fileName.endsWith(".jar")
+                            && !fileName.endsWith("-bootstrap.jar")
+                            && !fileName.endsWith("-fabric.jar")
+                            && !fileName.endsWith("-thin.jar")
+                            && !fileName.endsWith("-sources.jar");
+                    })
+                    .sorted()
+                    .reduce((left, right) -> right);
+                if (builtJar.isPresent()) {
+                    return builtJar.get().toAbsolutePath().normalize();
+                }
+            }
         }
         return self;
     }
@@ -556,11 +625,27 @@ public class InterMedLauncher {
         System.out.println("  compat-report [--mods-dir PATH] [--game-dir PATH] [--output PATH]");
         System.out.println("  compat-corpus [--mods-dir PATH] [--game-dir PATH] [--output PATH]");
         System.out.println("  compat-sweep-matrix [--corpus PATH] [--results PATH] [--mods-dir PATH] [--game-dir PATH] [--output PATH]");
+        System.out.println("  alpha-release-reports [--project-root PATH] [--mods-dir PATH] [--game-dir PATH] [--harness-results PATH] [--performance-snapshot PATH] [--output-dir PATH]");
         System.out.println("  sbom [--mods-dir PATH] [--game-dir PATH] [--output PATH]");
         System.out.println("  api-gap-matrix [--game-dir PATH] [--output PATH]");
         System.out.println("  launch-readiness-report [--project-root PATH] [--mods-dir PATH] [--game-dir PATH] [--harness-results PATH] [--output PATH]");
         System.out.println("  diagnostics-bundle [--mods-dir PATH] [--game-dir PATH] [--harness-results PATH] [--output PATH]");
         System.out.println("  launch (--jar PATH | --main-class CLASS [--classpath CP]) [--agent PATH] [--mods-dir PATH] [--game-dir PATH] [--mappings PATH] [--harness-results PATH] [--dry-run] [--diagnostics-output PATH] [--no-diagnostics-bundle] [-- <minecraft args...>]");
+    }
+
+    private static Path resolvePerformanceSnapshot(LaunchRequest request, Path projectRoot) {
+        if (request.option("performance-snapshot").isPresent()) {
+            Path explicit = Path.of(request.option("performance-snapshot").get()).toAbsolutePath().normalize();
+            if (!Files.isRegularFile(explicit)) {
+                throw new IllegalArgumentException("Performance snapshot not found: " + explicit);
+            }
+            return explicit;
+        }
+        Path defaultSnapshot = projectRoot
+            .resolve("app/build/reports/performance/alpha-performance-snapshot.json")
+            .toAbsolutePath()
+            .normalize();
+        return Files.isRegularFile(defaultSnapshot) ? defaultSnapshot : null;
     }
 
     private record LaunchPaths(Path gameDir, Path modsDir, Path configDir) {}

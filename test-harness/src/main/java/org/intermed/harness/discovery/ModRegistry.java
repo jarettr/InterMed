@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 
@@ -34,6 +35,7 @@ import java.util.List;
 public final class ModRegistry {
 
     private static final String REGISTRY_FILE = "registry.json";
+    private static final String CORPUS_LOCK_FILE = "corpus-lock.json";
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     private final HarnessConfig config;
@@ -50,47 +52,26 @@ public final class ModRegistry {
     // ── Discovery ──────────────────────────────────────────────────────────────
 
     /**
-     * Fetches (or loads from cache) the top-N mod list and downloads all JARs.
-     *
-     * @return list of mods with their local JAR paths resolved and confirmed present
+     * Fetches (or loads from cache) the top-N mod list, downloads missing jars,
+     * and emits a reproducible corpus lockfile.
      */
-    public List<ModCandidate> discoverAndDownload() throws IOException, InterruptedException {
-        Path registryFile = config.modsCache().resolve(REGISTRY_FILE);
-
-        List<ModCandidate> candidates;
-        if (Files.exists(registryFile)) {
-            System.out.println("[Discover] Loading mod registry from cache: " + registryFile);
-            candidates = loadRegistry(registryFile);
-            System.out.println("[Discover] Loaded " + candidates.size() + " cached mod entries.");
-            if (candidates.size() < config.topN) {
-                System.out.println("[Discover] Cached registry is smaller than requested top="
-                    + config.topN + "; refreshing from Modrinth.");
-                candidates = fetchFromModrinth();
-                saveRegistry(registryFile, candidates);
-            }
-        } else {
-            candidates = fetchFromModrinth();
-            saveRegistry(registryFile, candidates);
-        }
-
-        candidates = applyFilters(candidates);
-
-        // Download any missing JARs
-        downloadMissingJars(candidates);
-        return candidates;
+    public ResolvedCorpus discoverAndLock() throws IOException, InterruptedException {
+        return resolveCorpus(false);
     }
 
     /**
-     * Loads the cached registry without hitting the network.
+     * Loads the cached discovery registry without hitting the network, then
+     * rebuilds the corpus lock from the current filtered selection.
      */
-    public List<ModCandidate> loadCached() throws IOException {
-        Path registryFile = config.modsCache().resolve(REGISTRY_FILE);
-        if (!Files.exists(registryFile)) {
-            throw new IOException("Cached registry not found: " + registryFile
-                + " — run 'discover' first or omit --skip-discover");
-        }
-        System.out.println("[Discover] Loading cached registry only: " + registryFile);
-        return applyFilters(loadRegistry(registryFile));
+    public ResolvedCorpus loadCachedCorpus() throws IOException, InterruptedException {
+        return resolveCorpus(true);
+    }
+
+    /**
+     * Returns the most recent cached lockfile if it exists.
+     */
+    public Path corpusLockPath() {
+        return config.modsCache().resolve(CORPUS_LOCK_FILE);
     }
 
     /**
@@ -102,10 +83,45 @@ public final class ModRegistry {
 
     // ── private ────────────────────────────────────────────────────────────────
 
+    private ResolvedCorpus resolveCorpus(boolean cachedOnly)
+            throws IOException, InterruptedException {
+        Path registryFile = config.modsCache().resolve(REGISTRY_FILE);
+
+        List<ModCandidate> candidates;
+        if (Files.exists(registryFile)) {
+            System.out.println("[Discover] Loading mod registry from cache: " + registryFile);
+            candidates = loadRegistry(registryFile);
+            System.out.println("[Discover] Loaded " + candidates.size() + " cached mod entries.");
+            if (!cachedOnly && candidates.size() < config.topN) {
+                System.out.println("[Discover] Cached registry is smaller than requested top="
+                    + config.topN + "; refreshing from Modrinth.");
+                candidates = fetchFromModrinth();
+                saveRegistry(registryFile, candidates);
+            }
+        } else if (cachedOnly) {
+            throw new IOException("Cached registry not found: " + registryFile
+                + " — run 'discover' first or omit --skip-discover");
+        } else {
+            candidates = fetchFromModrinth();
+            saveRegistry(registryFile, candidates);
+        }
+
+        candidates = applyFilters(candidates);
+
+        // Download any missing JARs
+        downloadMissingJars(candidates);
+
+        CorpusLock lock = buildCorpusLock(candidates);
+        new CorpusLockIO().write(lock, corpusLockPath());
+        System.out.println("[Discover] Saved corpus lock to: " + corpusLockPath());
+        return new ResolvedCorpus(lock, lock.runnableMods());
+    }
+
     private List<ModCandidate> fetchFromModrinth() throws IOException, InterruptedException {
         List<String> loaders = switch (config.loaderFilter) {
             case FORGE  -> List.of("forge");
             case FABRIC -> List.of("fabric");
+            case NEOFORGE -> List.of("neoforge");
             case ALL    -> List.of();
         };
         ModrinthClient client = new ModrinthClient();
@@ -138,6 +154,10 @@ public final class ModRegistry {
         }
 
         return deduped.values().stream()
+            .sorted(Comparator
+                .comparingLong(ModCandidate::downloads).reversed()
+                .thenComparing(ModCandidate::slug)
+                .thenComparing(ModCandidate::versionNumber))
             .limit(config.topN)
             .toList();
     }
@@ -201,5 +221,13 @@ public final class ModRegistry {
         Files.createDirectories(file.getParent());
         Files.writeString(file, GSON.toJson(mods));
         System.out.println("[Discover] Saved mod registry to: " + file);
+    }
+
+    private CorpusLock buildCorpusLock(List<ModCandidate> candidates) throws IOException {
+        try {
+            return CorpusLockBuilder.build(config, candidates, this::localJarPath);
+        } catch (IOException e) {
+            throw e;
+        }
     }
 }

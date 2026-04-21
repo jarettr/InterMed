@@ -13,7 +13,12 @@ stage.
 - Current release posture: `internal RC hardening / pre-launch alpha snapshot`
 - Current Minecraft scope: `1.20.1`
 - Current loader scope: `Fabric`, `Forge`, `NeoForge`
-- Current public claim posture: no production stability claim, no `95%` compatibility claim, no general `1.20+` compatibility claim, and no field-proven hostile-mod security claim
+- Current public claim posture: `alpha` only; no `beta`, `stable`, or production-ready claim, no `95%` compatibility claim, no general `1.20+` compatibility claim, and no field-proven hostile-mod security claim
+
+## Scope Authority
+
+- This file is the canonical public-alpha source of truth for frozen scope, mandatory release gates, and release artifacts.
+- `README.md`, `COMPLIANCE.md`, and `ROADMAP.md` must mirror this file and must not broaden it.
 
 ## Evidence Statuses
 
@@ -33,16 +38,20 @@ These items are required before any external alpha or technical preview.
 | Area | Required state |
 | --- | --- |
 | Scope | README, compliance matrix, roadmap, user docs, and this file all describe `v8.0-alpha-snapshot`, Minecraft `1.20.1`, and no broad external guarantees. |
-| Build gates | `./gradlew :app:test`, `./gradlew :app:strictSecurity`, and `./gradlew :app:verifyRuntime` pass from a clean checkout. |
+| Build gates | The combined alpha app gate `./gradlew :app:test :app:coverageGate :app:strictSecurity :app:verifyRuntime --rerun-tasks -Dintermed.allowRemoteForgeRepo=true --console=plain` plus `./gradlew :test-harness:test --rerun-tasks --console=plain` both pass from a clean checkout locally and in CI, so task dependencies cannot hide failures. |
+| Coverage policy | Open-alpha coverage uses a staged gate, not the original 80% target: current machine enforcement is bundle line coverage `>=20%` plus selected launch/report/config classes `>=60%`. This must be documented as an alpha threshold. The next hardening step is package-level gates for `core`, `security`, `registry`, and `remapping` at `60-70%`, then a later move toward broad `80%` coverage before stable language. |
 | Security posture | Strict security remains a separate fail-closed lane; permissive compatibility results are never presented as security proof. |
+| Security alpha posture | Strict mode must be useful to testers: `CapabilityDeniedException` messages include mod/capability/scope/reason/action, example profiles exist under `examples/security-profiles/`, strict/permissive behavior is documented in `docs/user-guide.md`, and synthetic hostile smoke evidence is generated at `app/build/reports/security/hostile-smoke.txt`. |
 | Compatibility language | Reports describe boot/startup evidence only unless real gameplay, client, server, or multiplayer behavior was actually tested. |
+| Alpha compatibility proof | Before external alpha, publish `pass`/`fail`/`unsupported`/`not-run` accounting for expanded single, pair, and curated-slice boot lanes. Do not convert this into a compatibility percentage. The current proof-plan is `build/launch-evidence/intermed-alpha-compatibility-proof-plan.json`; the low-resource continuation plan is documented in `docs/alpha-compatibility-proof-2026-04-20.md`; large local sweeps that were not executed remain `not-run`. |
 | API surface | Known Fabric/Forge/NeoForge API gaps are listed, not hidden behind generic loader-support wording. Current in-repo evidence includes a curated machine-readable `api-gap-matrix` report for alpha bridge symbols and known beta gaps. |
 | Mixin evidence | Real Mixin compatibility claims stay below `Field-tested` until a public-mod corpus is exercised. |
 | VFS evidence | VFS claims distinguish classpath/overlay resource routing from full Minecraft ResourceManager/DataPack lifecycle proof. |
 | Network evidence | Network bridge claims distinguish synthetic packet tests from real client-server handshake/play proof. |
-| Performance evidence | Microbench and soak reports are available, but no `10-15%` steady-state overhead claim is made without native baseline runs. |
+| Performance evidence | Microbench and soak reports are available, and the initial alpha performance snapshot is generated at `app/build/reports/performance/alpha-performance-snapshot.json` with a native-loader mirror at `app/build/reports/performance/native-loader-baseline.json`. Registry/remapper/event-bus microbench reports are internal hot-path evidence only, not real modpack overhead. No `10-15%` steady-state overhead claim is made from this short-smoke baseline. |
 | Diagnostics | A failed external test can produce a `diagnostics-bundle` zip with logs, launch-readiness report, compatibility corpus manifest, compatibility sweep matrix, optional raw harness results, mod list, dependency plan, API gap matrix, security report, and relevant runtime reports. `InterMedLauncher launch` now writes this bundle automatically on non-zero process exit; real external crash uploads remain an alpha exercise. |
 | Triage support | Public alpha reports have issue templates, a known-limitations page, and an alpha triage guide that require diagnostics or a clear reason diagnostics cannot be shared. |
+| Release pipeline | Every public alpha release publishes the versioned `InterMedCore-*.jar`, `InterMedCore-*-fabric.jar`, the matching runtime bootstrap sidecar `InterMedCore-*-bootstrap.jar`, `intermed-test-harness-*.jar`, release checksums, SBOM, and attached launcher-generated `launch-readiness-report`, `api-gap-matrix`, `compat-corpus`, `compat-sweep-matrix`, and `alpha-performance-snapshot` artifacts from a reproducible CI release job. |
 
 ## Must Before Beta
 
@@ -58,7 +67,7 @@ These items are required before calling the project beta-quality.
 | Native/TCCL | Native library routing and thread context ClassLoader propagation are tested with real async/native fixtures. Current in-repo evidence covers native singleton routing/dedup/conflict diagnostics plus common wrapper/transformer async paths; hostile JNA/JNI and custom scheduler use still needs field-style fixtures. |
 | VFS/DataPack | Recipes, tags, loot tables, and reload behavior are validated in a real Minecraft lifecycle. |
 | Performance baseline | Native Forge/Fabric baselines exist for startup, TPS, p95/p99 tick time, heap, metaspace, and GC pauses. |
-| Coverage | Coverage reporting exists, with gates for core/security/registry/remapping packages or a documented staged threshold. |
+| Coverage | Coverage reporting exists, with package-level gates for core/security/registry/remapping raised to at least `60-70%`, or any remaining staged exception is explicitly justified with a dated removal plan. |
 
 ## Must Before Stable
 

@@ -35,11 +35,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * are reset.  Dumps are rate-limited to one per {@value #DUMP_COOLDOWN_MS} ms.
  *
  * <h3>Per-mod throttling</h3>
- * When a mod is identified as the culprit ({@code triggerAnomalyDetection} is
- * called with a non-null modId), it is throttled for {@value #THROTTLE_DURATION_MS}
- * ms.  Callers can check {@link #isModThrottled(String)} before dispatching events
- * to that mod to skip it during the penalty window.  After the window expires the
- * mod resumes normally; accumulated tick time is not reset.
+     * When a mod is identified as the culprit ({@code triggerAnomalyDetection} is
+     * called with a non-null modId), it is hard-throttled for
+     * {@value #THROTTLE_DURATION_MS} ms.  Callers can check
+     * {@link #isModThrottled(String)} before dispatching events to that mod to skip
+     * only that mod during the penalty window.  PID backpressure shedding is exposed
+     * separately through {@link #shouldShedEvent(boolean)} so healthy listeners are
+     * not hidden behind a per-mod throttle query.
  */
 public class ObservabilityMonitor {
 
@@ -140,19 +142,36 @@ public class ObservabilityMonitor {
     // ── Public throttle API ───────────────────────────────────────────────────
 
     /**
-     * Returns {@code true} if the mod is currently in its penalty window and
-     * its event callbacks should be skipped this tick.
-     *
-     * <p>Also applies PID-based probabilistic backpressure shedding (ТЗ 3.5.5):
-     * even outside the hard throttle window, non-critical events are shed with
-     * probability equal to the current backpressure level.
+     * Returns {@code true} only when the mod is inside its hard throttle penalty
+     * window. This method deliberately does not apply PID backpressure shedding:
+     * per-mod throttle checks must not randomly skip healthy listeners.
      */
     public static boolean isModThrottled(String modId) {
+        return isModHardThrottled(modId);
+    }
+
+    /** Alias that makes the hard-throttle-only semantics explicit at call sites. */
+    public static boolean isModHardThrottled(String modId) {
         if (modId == null) return false;
         Long until = throttleUntil.get(modId);
-        if (until != null && System.currentTimeMillis() < until) return true;
-        // PID backpressure shedding for non-critical events
-        return TpsPidController.shouldSkipEvent(/* eventCritical */ false);
+        return until != null && System.currentTimeMillis() < until;
+    }
+
+    /**
+     * Applies only PID-based backpressure shedding (ТЗ 3.5.5). Use this for
+     * explicitly non-critical background events, not for ordinary per-mod throttle
+     * accounting.
+     */
+    public static boolean shouldShedEvent(boolean eventCritical) {
+        return TpsPidController.shouldSkipEvent(eventCritical);
+    }
+
+    /**
+     * Combined helper for callers that intentionally want both hard per-mod
+     * throttling and global non-critical backpressure shedding.
+     */
+    public static boolean shouldSkipModEvent(String modId, boolean eventCritical) {
+        return isModHardThrottled(modId) || shouldShedEvent(eventCritical);
     }
 
     /** Clears throttle state for all mods (e.g. after a server reload). */
@@ -168,6 +187,7 @@ public class ObservabilityMonitor {
         lastDumpTime.set(0);
         throttleUntil.clear();
         modEwma.clear();
+        TpsPidController.get().resetForTests();
         stopJfrRecording();
     }
 

@@ -60,6 +60,10 @@ public final class CompatibilityCorpusGenerator {
         root.addProperty("intermedVersion", InterMedVersion.BUILD_VERSION);
         root.addProperty("generatedAt", Instant.now().toString());
         root.add("scope", scope());
+        root.add("truthModel", EvidenceLevel.truthModel(
+            summary.parsed > 0 ? List.of(EvidenceLevel.PARSED) : List.of(),
+            "Corpus evidence is limited to discovery and manifest parsing until runtime lanes attach stronger proof."
+        ));
         root.add("summary", summary.toJson());
         root.add("candidates", candidates);
         return root;
@@ -68,9 +72,10 @@ public final class CompatibilityCorpusGenerator {
     private static JsonObject scope() {
         JsonObject scope = new JsonObject();
         scope.addProperty("minecraft", "1.20.1");
-        scope.addProperty("evidenceLevel", "manifest-only");
+        scope.addProperty("evidenceLevel", EvidenceLevel.PARSED.name());
+        scope.addProperty("legacyEvidenceLevel", "manifest-only");
         scope.addProperty("claim",
-            "Corpus manifest only; this does not prove boot, gameplay, security, or performance compatibility.");
+            EvidenceLevel.PARSED.description());
         JsonArray ecosystems = new JsonArray();
         ecosystems.add("Fabric");
         ecosystems.add("Forge");

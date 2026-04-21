@@ -1,8 +1,11 @@
 package org.intermed.core.security;
 
 import org.intermed.core.metadata.RuntimeModIndex;
+import org.intermed.core.config.RuntimeConfig;
 
 import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -14,6 +17,7 @@ import java.net.SocketAddress;
 import java.net.URL;
 import java.net.URLConnection;
 import java.net.http.HttpRequest;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.Objects;
 import java.util.Optional;
@@ -34,6 +38,7 @@ public final class CapabilityManager {
     private static final ConcurrentHashMap<Path, String> CODE_SOURCE_MOD_CACHE = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<DecisionKey, Boolean> DECISION_CACHE = new ConcurrentHashMap<>();
     private static final String UNKNOWN_CALLER_ID = "<unknown>";
+    private static final Object AUDIT_LOCK = new Object();
 
     /**
      * Maximum number of entries kept in {@link #DECISION_CACHE}.
@@ -300,8 +305,17 @@ public final class CapabilityManager {
 
     private static void check(SecurityPolicy.SecurityRequest request) {
         String modId = resolveCallerModId();
+        String subject = modId == null ? UNKNOWN_CALLER_ID : modId;
+        if (!RuntimeConfig.get().isSecurityStrictMode()) {
+            boolean trusted = modId == null && isTrustedHostCall();
+            boolean wouldAllow = trusted || SecurityPolicy.allowsInStrictMode(modId, request);
+            if (!wouldAllow) {
+                audit("PERMISSIVE_ALLOW", subject, request, SecurityPolicy.denialReason(modId, request));
+            }
+            return;
+        }
         if (modId == null) {
-            if (SecurityPolicy.hasPermission(null, request) || isTrustedHostCall()) {
+            if (SecurityPolicy.allowsInStrictMode(null, request) || isTrustedHostCall()) {
                 return;
             }
             throw denied(UNKNOWN_CALLER_ID, request, "unattributed caller outside trusted host stack");
@@ -313,23 +327,60 @@ public final class CapabilityManager {
         if (DECISION_CACHE.size() > DECISION_CACHE_MAX) {
             DECISION_CACHE.clear();
         }
-        boolean allowed = DECISION_CACHE.computeIfAbsent(key, ignored -> SecurityPolicy.hasPermission(modId, request));
+        boolean allowed = DECISION_CACHE.computeIfAbsent(key, ignored -> SecurityPolicy.allowsInStrictMode(modId, request));
         if (!allowed) {
-            throw denied(modId, request, null);
+            throw denied(modId, request, SecurityPolicy.denialReason(modId, request));
         }
     }
 
-    private static SecurityException denied(String subject,
-                                            SecurityPolicy.SecurityRequest request,
-                                            String reason) {
-        String suffix = reason == null || reason.isBlank() ? "" : " reason=" + reason;
-        return new SecurityException(
-            "\033[1;31m[InterMed Security] Mod '" + subject + "' DENIED " + request.capability()
-                + " [path=" + request.path()
-                + ", host=" + request.host()
-                + ", detail=" + request.detail()
-                + suffix + "]\033[0m"
-        );
+    private static CapabilityDeniedException denied(String subject,
+                                                    SecurityPolicy.SecurityRequest request,
+                                                    String reason) {
+        CapabilityDeniedException exception = new CapabilityDeniedException(subject, request, reason);
+        audit("DENY", subject, request, exception.reason());
+        return exception;
+    }
+
+    private static void audit(String verdict,
+                              String subject,
+                              SecurityPolicy.SecurityRequest request,
+                              String reason) {
+        try {
+            Path log = RuntimeConfig.get().getGameDir()
+                .resolve("logs")
+                .resolve("intermed-security.log")
+                .toAbsolutePath()
+                .normalize();
+            synchronized (AUDIT_LOCK) {
+                Files.createDirectories(log.getParent());
+                Files.writeString(
+                    log,
+                    Instant.now()
+                        + " verdict=" + sanitize(verdict)
+                        + " mod=" + sanitize(subject)
+                        + " capability=" + sanitize(request == null ? null : request.capability())
+                        + " path=" + sanitize(request == null ? null : request.path())
+                        + " host=" + sanitize(request == null ? null : request.host())
+                        + " detail=" + sanitize(request == null ? null : request.detail())
+                        + " reason=" + sanitize(reason)
+                        + System.lineSeparator(),
+                    StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.APPEND
+                );
+            }
+        } catch (Exception ignored) {
+            // Security checks must not fail open or fail differently because the
+            // audit log path is unavailable.
+        }
+    }
+
+    private static String sanitize(Object value) {
+        if (value == null) {
+            return "-";
+        }
+        String text = String.valueOf(value).replace('\n', ' ').replace('\r', ' ').trim();
+        return text.isBlank() ? "-" : text;
     }
 
     private static boolean isTrustedHostCall() {

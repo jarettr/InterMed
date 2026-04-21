@@ -172,6 +172,59 @@ class InterMedLauncherTest {
     }
 
     @Test
+    void alphaReleaseReportsCommandWritesBundledArtifacts() throws Exception {
+        Path modsDir = Files.createTempDirectory("intermed-alpha-release-mods");
+        Path gameDir = Files.createTempDirectory("intermed-alpha-release-game");
+        Path outputDir = Files.createTempDirectory("intermed-alpha-release-output");
+        Path harnessResults = Files.createTempFile("intermed-alpha-release-results", ".json");
+        Path performanceSnapshot = Files.createTempFile("intermed-alpha-performance", ".json");
+        Files.createDirectories(gameDir.resolve("logs"));
+        Files.writeString(gameDir.resolve("logs/latest.log"), "alpha release diagnostics", StandardCharsets.UTF_8);
+        Files.writeString(harnessResults, harnessResultsJson("alpha_release_mod"), StandardCharsets.UTF_8);
+        Files.writeString(
+            performanceSnapshot,
+            """
+            {
+              "schema": "intermed-alpha-performance-snapshot-v1"
+            }
+            """,
+            StandardCharsets.UTF_8
+        );
+        createFabricJar(modsDir.resolve("alpha-release-mod.jar"), "alpha_release_mod");
+
+        assertEquals(0, InterMedLauncher.execute(new String[] {
+            "alpha-release-reports",
+            "--project-root", Path.of(".").toAbsolutePath().normalize().toString(),
+            "--game-dir", gameDir.toString(),
+            "--mods-dir", modsDir.toString(),
+            "--harness-results", harnessResults.toString(),
+            "--performance-snapshot", performanceSnapshot.toString(),
+            "--output-dir", outputDir.toString()
+        }));
+
+        Path launchReadiness = outputDir.resolve("intermed-launch-readiness-report.json");
+        Path apiGapMatrix = outputDir.resolve("intermed-api-gap-matrix.json");
+        Path compatibilityCorpus = outputDir.resolve("intermed-compatibility-corpus.json");
+        Path compatibilitySweepMatrix = outputDir.resolve("intermed-compatibility-sweep-matrix.json");
+        Path sbom = outputDir.resolve("intermed-sbom.cdx.json");
+        Path copiedPerformanceSnapshot = outputDir.resolve("alpha-performance-snapshot.json");
+
+        assertTrue(Files.isRegularFile(launchReadiness));
+        assertTrue(Files.isRegularFile(apiGapMatrix));
+        assertTrue(Files.isRegularFile(compatibilityCorpus));
+        assertTrue(Files.isRegularFile(compatibilitySweepMatrix));
+        assertTrue(Files.isRegularFile(sbom));
+        assertTrue(Files.isRegularFile(copiedPerformanceSnapshot));
+
+        assertTrue(Files.readString(launchReadiness).contains("\"intermed-launch-readiness-report-v1\""));
+        assertTrue(Files.readString(apiGapMatrix).contains("\"intermed-api-gap-matrix-v1\""));
+        assertTrue(Files.readString(compatibilityCorpus).contains("\"alpha_release_mod\""));
+        assertTrue(Files.readString(compatibilitySweepMatrix).contains("\"PASS\""));
+        assertTrue(Files.readString(sbom).contains("\"alpha_release_mod\""));
+        assertTrue(Files.readString(copiedPerformanceSnapshot).contains("\"intermed-alpha-performance-snapshot-v1\""));
+    }
+
+    @Test
     void launchFailureAutomaticallyWritesDiagnosticsBundle() throws Exception {
         Path root = Files.createTempDirectory("intermed-launcher-failure");
         Path gameDir = root.resolve("game");

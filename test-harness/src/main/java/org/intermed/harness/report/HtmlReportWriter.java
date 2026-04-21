@@ -192,18 +192,18 @@ public final class HtmlReportWriter {
             + "</table>";
 
         // Loader comparison
-        long forgeTotal  = m.countForLoader(TestCase.Loader.FORGE);
-        long fabricTotal = m.countForLoader(TestCase.Loader.FABRIC);
+        StringBuilder loaderRows = new StringBuilder();
+        for (TestCase.Loader loader : TestCase.Loader.values()) {
+            loaderRows.append("<tr><td><span class=\"loader-badge\">")
+                .append(loader.name())
+                .append("</span></td>")
+                .append("<td>").append(m.countForLoader(loader)).append("</td>")
+                .append("<td class=\"").append(passRateClass(m.passRateForLoader(loader))).append("\">")
+                .append(String.format("%.1f%%", m.passRateForLoader(loader))).append("</td></tr>\n");
+        }
         String loaderTable = "<table class=\"inner-tbl\">\n"
             + "<tr><th>Loader</th><th>Tests</th><th>Pass Rate</th></tr>\n"
-            + "<tr><td><span class=\"loader-badge\">FORGE</span></td>"
-            + "<td>" + forgeTotal + "</td>"
-            + "<td class=\"" + passRateClass(m.passRateForLoader(TestCase.Loader.FORGE)) + "\">"
-            + String.format("%.1f%%", m.passRateForLoader(TestCase.Loader.FORGE)) + "</td></tr>\n"
-            + "<tr><td><span class=\"loader-badge\">FABRIC</span></td>"
-            + "<td>" + fabricTotal + "</td>"
-            + "<td class=\"" + passRateClass(m.passRateForLoader(TestCase.Loader.FABRIC)) + "\">"
-            + String.format("%.1f%%", m.passRateForLoader(TestCase.Loader.FABRIC)) + "</td></tr>\n"
+            + loaderRows
             + "</table>";
 
         // Top issue tags
@@ -272,6 +272,7 @@ public final class HtmlReportWriter {
             + "<option value=\"\">All loaders</option>\n"
             + "<option value=\"FORGE\">Forge</option>\n"
             + "<option value=\"FABRIC\">Fabric</option>\n"
+            + "<option value=\"NEOFORGE\">NeoForge</option>\n"
             + "</select>\n"
             + "<button onclick=\"exportCsv()\">⬇ Export CSV</button>\n"
             + "<span id=\"rowCount\" class=\"row-count\"></span>\n"

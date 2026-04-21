@@ -118,11 +118,40 @@ public final class SecurityPolicy {
         if (!RuntimeConfig.get().isSecurityStrictMode()) {
             return true;
         }
+        return allowsInStrictMode(modId, request);
+    }
+
+    static boolean allowsInStrictMode(String modId, SecurityRequest request) {
         if (modId == null) {
             return KernelContext.isActive();
         }
         ModSecurityProfile profile = MOD_PROFILES.get(modId);
         return profile != null && profile.allows(request);
+    }
+
+    static String denialReason(String modId, SecurityRequest request) {
+        if (modId == null) {
+            return "unattributed caller outside trusted host stack";
+        }
+        ModSecurityProfile profile = MOD_PROFILES.get(modId);
+        if (profile == null) {
+            return "no security profile registered for this mod; strict mode defaults to deny";
+        }
+        if (request == null || request.capability() == null) {
+            return "security request is incomplete";
+        }
+        if (!profile.hasCapability(request.capability())) {
+            return "profile does not grant " + request.capability();
+        }
+        return switch (request.capability()) {
+            case FILE_READ -> "FILE_READ is granted, but the path is outside fileReadPaths";
+            case FILE_WRITE -> "FILE_WRITE is granted, but the path is outside fileWritePaths";
+            case NETWORK_CONNECT -> "NETWORK_CONNECT is granted, but the host is outside networkHosts";
+            case MEMORY_ACCESS, UNSAFE_ACCESS ->
+                "memory access is granted, but the member is outside memoryMembers/unsafeMembers";
+            case REFLECTION_ACCESS, PROCESS_SPAWN, NATIVE_LIBRARY ->
+                "profile grant did not allow this operation";
+        };
     }
 
     /**
@@ -269,6 +298,24 @@ public final class SecurityPolicy {
             readStringArray(security, "networkHosts", builder::networkHost);
             readStringArray(security, "unsafeMembers", builder::unsafeMember);
             readStringArray(security, "memoryMembers", builder::unsafeMember);
+        }
+
+        boolean hasExternalShape = modJson != null
+            && (modJson.has("capabilities")
+                || modJson.has("fileReadPaths")
+                || modJson.has("fileWritePaths")
+                || modJson.has("networkHosts")
+                || modJson.has("unsafeMembers")
+                || modJson.has("memoryMembers"));
+        if (hasExternalShape) {
+            if (modJson.has("capabilities") && modJson.get("capabilities").isJsonArray()) {
+                readCapabilities(builder, modJson.getAsJsonArray("capabilities"), false);
+            }
+            readStringArray(modJson, "fileReadPaths", builder::fileReadPath);
+            readStringArray(modJson, "fileWritePaths", builder::fileWritePath);
+            readStringArray(modJson, "networkHosts", builder::networkHost);
+            readStringArray(modJson, "unsafeMembers", builder::unsafeMember);
+            readStringArray(modJson, "memoryMembers", builder::unsafeMember);
         }
 
         return builder.build();

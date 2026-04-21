@@ -34,9 +34,10 @@ class CompatibilitySweepMatrixGeneratorTest {
 
         assertEquals("intermed-compatibility-sweep-matrix-v1", matrix.get("schema").getAsString());
         assertEquals(
-            "harness-result-normalization",
+            "BOOTED",
             matrix.getAsJsonObject("scope").get("evidenceLevel").getAsString()
         );
+        assertEquals("BOOTED", matrix.getAsJsonObject("truthModel").get("highestLevel").getAsString());
         assertEquals(2, summary.get("corpusTotal").getAsInt());
         assertEquals(1, summary.get("linkedCandidates").getAsInt());
         assertEquals(1, summary.get("untestedCandidates").getAsInt());

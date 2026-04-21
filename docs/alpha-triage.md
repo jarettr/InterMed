@@ -76,9 +76,13 @@ Use the closest issue template:
   maintainers distinguish a known missing bridge symbol from a regression in an
   implemented shim.
 - Performance regression: startup, TPS, memory, GC, or hot-path timing is worse
-  than a comparable native-loader baseline.
+  than a comparable native-loader baseline. Attach
+  `app/build/reports/performance/alpha-performance-snapshot.json` when available,
+  but do not treat internal microbench reports as native-loader overhead proof.
 - Security hardening: strict-mode behavior, capability boundaries, sandbox
-  routing, or denial diagnostics need attention.
+  routing, or denial diagnostics need attention. Attach
+  `logs/intermed-security.log` and `app/build/reports/security/hostile-smoke.txt`
+  if the report concerns the strict-security lane.
 
 ## Privacy Checklist
 

@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 
 /**
@@ -66,16 +67,18 @@ public final class LaunchReadinessReportGenerator {
         }
 
         ArtifactSummary artifactSummary = new ArtifactSummary();
+        JsonObject truthModel = truthModel(root, corpus, sweepMatrix);
         JsonObject rootJson = new JsonObject();
         rootJson.addProperty("schema", "intermed-launch-readiness-report-v1");
         rootJson.addProperty("intermedVersion", InterMedVersion.BUILD_VERSION);
         rootJson.addProperty("generatedAt", Instant.now().toString());
-        rootJson.add("scope", scope());
+        rootJson.add("scope", scope(truthModel.get("highestLevel").getAsString()));
         rootJson.add("claimGuardrail", claimGuardrail());
         rootJson.add("gateCommands", gateCommands());
         rootJson.add("evidenceArtifacts", evidenceArtifacts(root, artifactSummary));
         rootJson.add("documentationGuardrails", documentationGuardrails(root, artifactSummary));
         rootJson.add("compatibility", compatibility(apiGapMatrix, corpus, sweepMatrix, results));
+        rootJson.add("truthModel", truthModel);
         rootJson.add("summary", artifactSummary.toJson());
         rootJson.addProperty("gameDir", game == null ? "" : game.toString());
         rootJson.addProperty("modsDir", mods == null ? "" : mods.toString());
@@ -83,12 +86,16 @@ public final class LaunchReadinessReportGenerator {
         return rootJson;
     }
 
-    private static JsonObject scope() {
+    private static JsonObject scope(String highestEvidenceLevel) {
         JsonObject scope = new JsonObject();
         scope.addProperty("releaseLine", "v8.0-alpha-snapshot");
         scope.addProperty("minecraft", "1.20.1");
         scope.addProperty("loaderScope", "Fabric, Forge, NeoForge");
-        scope.addProperty("evidenceLevel", "artifact-presence");
+        scope.addProperty("evidenceLevel",
+            highestEvidenceLevel == null || highestEvidenceLevel.isBlank()
+                ? EvidenceLevel.PARSED.name()
+                : highestEvidenceLevel);
+        scope.addProperty("legacyEvidenceLevel", "artifact-presence");
         return scope;
     }
 
@@ -105,6 +112,7 @@ public final class LaunchReadinessReportGenerator {
     private static com.google.gson.JsonArray gateCommands() {
         com.google.gson.JsonArray commands = new com.google.gson.JsonArray();
         commands.add("./gradlew :app:test --stacktrace --no-daemon");
+        commands.add("./gradlew :app:coverageGate --stacktrace --no-daemon");
         commands.add("./gradlew :app:strictSecurity --stacktrace --no-daemon");
         commands.add("./gradlew :app:verifyRuntime --stacktrace --no-daemon");
         return commands;
@@ -114,11 +122,19 @@ public final class LaunchReadinessReportGenerator {
         com.google.gson.JsonArray artifacts = new com.google.gson.JsonArray();
         artifacts.add(artifact(projectRoot, "app/build/reports/tests", true, summary));
         artifacts.add(artifact(projectRoot, "app/build/test-results", true, summary));
+        artifacts.add(artifact(projectRoot, "app/build/test-results/strictSecurity", true, summary));
+        artifacts.add(artifact(projectRoot, "app/build/reports/security/hostile-smoke.txt", true, summary));
+        artifacts.add(artifact(projectRoot, "app/build/test-results/runtimeSoak", true, summary));
         artifacts.add(artifact(projectRoot, "app/build/reports/microbench", true, summary));
+        artifacts.add(artifact(projectRoot, "app/build/reports/performance/alpha-performance-snapshot.json", true, summary));
+        artifacts.add(artifact(projectRoot, "app/build/reports/performance/native-loader-baseline.json", true, summary));
+        artifacts.add(artifact(projectRoot, "app/build/reports/performance/alpha-performance-smoke.jfr", true, summary));
         artifacts.add(artifact(projectRoot, "app/build/reports/soak", true, summary));
         artifacts.add(artifact(projectRoot, "app/build/reports/startup/warm-cache-startup.txt", true, summary));
         artifacts.add(artifact(projectRoot, "app/build/reports/observability/observability-evidence.txt", true, summary));
         artifacts.add(artifact(projectRoot, "app/build/reports/observability/intermed-metrics.json", true, summary));
+        artifacts.add(artifact(projectRoot, "app/build/reports/jacoco/test/html/index.html", true, summary));
+        artifacts.add(artifact(projectRoot, "app/build/reports/jacoco/test/jacocoTestReport.xml", true, summary));
         return artifacts;
     }
 
@@ -145,8 +161,44 @@ public final class LaunchReadinessReportGenerator {
             sweepMatrix.has("scope") && sweepMatrix.get("scope").isJsonObject()
                 ? sweepMatrix.getAsJsonObject("scope").get("evidenceLevel").getAsString()
                 : "unknown");
+        JsonObject truthModel = sweepMatrix.has("truthModel") && sweepMatrix.get("truthModel").isJsonObject()
+            ? sweepMatrix.getAsJsonObject("truthModel")
+            : null;
+        compatibility.add("achievedEvidenceLevels",
+            truthModel != null && truthModel.has("achievedLevels") && truthModel.get("achievedLevels").isJsonArray()
+                ? truthModel.getAsJsonArray("achievedLevels").deepCopy()
+                : EvidenceLevel.names(List.of()));
         compatibility.addProperty("harnessResultsPresent", harnessResults != null && Files.isRegularFile(harnessResults));
         return compatibility;
+    }
+
+    private static JsonObject truthModel(Path projectRoot, JsonObject corpus, JsonObject sweepMatrix) {
+        EnumSet<EvidenceLevel> achieved = EnumSet.noneOf(EvidenceLevel.class);
+        if (intProp(copyObject(corpus, "summary"), "parsed", 0) > 0) {
+            achieved.add(EvidenceLevel.PARSED);
+        }
+        if (intProp(copyObject(sweepMatrix, "summary"), "linkedCandidates", 0) > 0) {
+            achieved.add(EvidenceLevel.BOOTED);
+        }
+        if (junitTaskPassed(projectRoot, "runtimeSoak")) {
+            achieved.add(EvidenceLevel.SOAK_OK);
+        }
+        if (junitTaskPassed(projectRoot, "strictSecurity")) {
+            achieved.add(EvidenceLevel.STRICT_OK);
+        }
+        if (artifactPresent(projectRoot, "app/build/reports/session/session-evidence.json")
+                || artifactPresent(projectRoot, "build/reports/session/session-evidence.json")) {
+            achieved.add(EvidenceLevel.SESSION_OK);
+        }
+        if (artifactPresent(projectRoot, "app/build/reports/performance/native-loader-baseline.json")
+                || artifactPresent(projectRoot, "app/build/reports/baseline/native-loader-baseline.json")
+                || artifactPresent(projectRoot, "build/reports/baseline/native-loader-baseline.json")) {
+            achieved.add(EvidenceLevel.BASELINE_OK);
+        }
+        return EvidenceLevel.truthModel(
+            achieved,
+            "Claims must not exceed the machine-readable evidence levels attached to this readiness report."
+        );
     }
 
     private static JsonObject artifact(Path projectRoot,
@@ -212,12 +264,59 @@ public final class LaunchReadinessReportGenerator {
         }
     }
 
+    private static boolean artifactPresent(Path projectRoot, String relativePath) {
+        return nonEmpty(projectRoot.resolve(relativePath).normalize());
+    }
+
+    private static boolean junitTaskPassed(Path projectRoot, String taskName) {
+        for (Path candidate : junitTaskDirs(projectRoot, taskName)) {
+            if (!Files.isDirectory(candidate)) {
+                continue;
+            }
+            try (var stream = Files.walk(candidate)) {
+                List<Path> suites = stream
+                    .filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().startsWith("TEST-"))
+                    .filter(path -> path.getFileName().toString().endsWith(".xml"))
+                    .toList();
+                if (suites.isEmpty()) {
+                    continue;
+                }
+                boolean allPassing = true;
+                for (Path suite : suites) {
+                    String xml = Files.readString(suite, StandardCharsets.UTF_8);
+                    if (!xml.contains("failures=\"0\"") || !xml.contains("errors=\"0\"")) {
+                        allPassing = false;
+                        break;
+                    }
+                }
+                if (allPassing) {
+                    return true;
+                }
+            } catch (Exception ignored) {
+                // Readiness reports should degrade to "evidence missing" instead of failing outright.
+            }
+        }
+        return false;
+    }
+
+    private static List<Path> junitTaskDirs(Path projectRoot, String taskName) {
+        return List.of(
+            projectRoot.resolve("app/build/test-results").resolve(taskName).normalize(),
+            projectRoot.resolve("build/test-results").resolve(taskName).normalize()
+        );
+    }
+
     private static boolean contains(Path path, String text) {
         try {
             return Files.readString(path, StandardCharsets.UTF_8).contains(text);
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private static int intProp(JsonObject object, String key, int defaultValue) {
+        return object != null && object.has(key) ? object.get(key).getAsInt() : defaultValue;
     }
 
     private static Path normalize(Path path) {

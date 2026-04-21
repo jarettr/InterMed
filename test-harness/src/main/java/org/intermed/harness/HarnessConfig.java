@@ -17,18 +17,22 @@ public final class HarnessConfig {
         SINGLE,
         /** Test every pair of the top-N mods (n*(n-1)/2 pairs). */
         PAIRS,
+        /** Run fixed curated alpha slices without invoking full pack/Phase 3 combos. */
+        SLICES,
         /** SINGLE + PAIRS + popular-pack combos. */
         FULL
     }
 
     public enum LoaderFilter {
-        ALL, FORGE, FABRIC
+        ALL, FORGE, FABRIC, NEOFORGE
     }
 
     // ── Minecraft / loader versions ────────────────────────────────────────────
     public final String mcVersion;
     /** Forge build number for mcVersion, e.g. "47.3.0". */
     public final String forgeVersion;
+    /** NeoForge build number for mcVersion, e.g. "47.1.106" on 1.20.1. */
+    public final String neoforgeVersion;
 
     // ── Discovery ──────────────────────────────────────────────────────────────
     /** How many top-downloaded mods to fetch from Modrinth. */
@@ -65,10 +69,21 @@ public final class HarnessConfig {
     // ── Pairs phase settings ───────────────────────────────────────────────────
     /** Limit for pair-testing: only the top-K mods from SINGLE pass are paired. */
     public final int pairsTopK;
+    /** Split the generated test plan into N deterministic shards. */
+    public final int shardCount;
+    /** Zero-based index of the current shard. */
+    public final int shardIndex;
+    /** Reuse existing passing results and rerun only failed or missing cases. */
+    public final boolean resumeFailed;
+    /** Number of additional retries for transient/flaky failures. */
+    public final int retryFlaky;
+    /** Logical evidence lane name used to namespace run artifacts. */
+    public final HarnessEvidenceLevel evidenceLevel;
 
     private HarnessConfig(Builder b) {
         this.mcVersion       = b.mcVersion;
         this.forgeVersion    = b.forgeVersion;
+        this.neoforgeVersion = b.neoforgeVersion;
         this.topN            = b.topN;
         this.loaderFilter    = b.loaderFilter;
         this.mode            = b.mode;
@@ -83,6 +98,11 @@ public final class HarnessConfig {
         this.skipRun         = b.skipRun;
         this.excludeSlugs    = List.copyOf(b.excludeSlugs);
         this.pairsTopK       = b.pairsTopK;
+        this.shardCount      = b.shardCount;
+        this.shardIndex      = b.shardIndex;
+        this.resumeFailed    = b.resumeFailed;
+        this.retryFlaky      = b.retryFlaky;
+        this.evidenceLevel   = b.evidenceLevel;
     }
 
     // ── Derived paths ──────────────────────────────────────────────────────────
@@ -91,8 +111,13 @@ public final class HarnessConfig {
     public Path modsCache()       { return cacheDir().resolve("mods"); }
     public Path serverBaseForge() { return cacheDir().resolve("server-base-forge"); }
     public Path serverBaseFabric(){ return cacheDir().resolve("server-base-fabric"); }
+    public Path serverBaseNeoForge() { return cacheDir().resolve("server-base-neoforge"); }
     public Path runsDir()         { return outputDir.resolve("runs"); }
     public Path reportDir()       { return outputDir.resolve("report"); }
+    public Path corpusLockPath()  { return modsCache().resolve("corpus-lock.json"); }
+    public Path reportCorpusPath(){ return reportDir().resolve("corpus-lock.json"); }
+    public Path resultsJsonPath() { return reportDir().resolve("results-" + evidenceLevel.fileToken() + ".json"); }
+    public Path legacyResultsJsonPath() { return reportDir().resolve("results.json"); }
 
     // ── Builder ────────────────────────────────────────────────────────────────
 
@@ -101,6 +126,7 @@ public final class HarnessConfig {
     public static final class Builder {
         String mcVersion      = "1.20.1";
         String forgeVersion   = "47.3.0";
+        String neoforgeVersion = "47.1.106";
         int topN              = 1000;
         LoaderFilter loaderFilter = LoaderFilter.ALL;
         TestMode mode         = TestMode.SINGLE;
@@ -115,9 +141,15 @@ public final class HarnessConfig {
         boolean skipRun       = false;
         List<String> excludeSlugs = new ArrayList<>();
         int pairsTopK         = 50;
+        int shardCount        = 1;
+        int shardIndex        = 0;
+        boolean resumeFailed  = false;
+        int retryFlaky        = 0;
+        HarnessEvidenceLevel evidenceLevel = HarnessEvidenceLevel.BOOTED;
 
         public Builder mcVersion(String v)          { mcVersion = v;        return this; }
         public Builder forgeVersion(String v)       { forgeVersion = v;     return this; }
+        public Builder neoforgeVersion(String v)    { neoforgeVersion = v;  return this; }
         public Builder topN(int n)                  { topN = n;             return this; }
         public Builder loaderFilter(LoaderFilter f) { loaderFilter = f;     return this; }
         public Builder mode(TestMode m)             { mode = m;             return this; }
@@ -132,11 +164,25 @@ public final class HarnessConfig {
         public Builder skipRun(boolean v)           { skipRun = v;          return this; }
         public Builder exclude(String slug)         { excludeSlugs.add(slug); return this; }
         public Builder pairsTopK(int k)             { pairsTopK = k;        return this; }
+        public Builder shardCount(int c)            { shardCount = c;       return this; }
+        public Builder shardIndex(int i)            { shardIndex = i;       return this; }
+        public Builder resumeFailed(boolean v)      { resumeFailed = v;     return this; }
+        public Builder retryFlaky(int v)            { retryFlaky = v;       return this; }
+        public Builder evidenceLevel(HarnessEvidenceLevel v) { evidenceLevel = v; return this; }
 
         public HarnessConfig build() {
             if (!intermedJar.toFile().exists()) {
                 System.err.println("[WARN] InterMed JAR not found at: " + intermedJar +
                     " — set --intermed-jar=/path/to/intermed.jar");
+            }
+            if (shardCount <= 0) {
+                throw new IllegalArgumentException("shardCount must be >= 1");
+            }
+            if (shardIndex < 0 || shardIndex >= shardCount) {
+                throw new IllegalArgumentException("shardIndex must be in range [0, shardCount)");
+            }
+            if (retryFlaky < 0) {
+                throw new IllegalArgumentException("retryFlaky must be >= 0");
             }
             return new HarnessConfig(this);
         }

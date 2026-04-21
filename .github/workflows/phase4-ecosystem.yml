@@ -1,44 +1,57 @@
-name: Phase4 Ecosystem
+name: alpha-evidence-rehearsal
 
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
   schedule:
     - cron: "0 2 * * *"
 
 jobs:
-  verify:
+  rehearse:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
+          cache: gradle
 
-      - name: Prepare
-        run: chmod +x gradlew
-
-      - name: Test Suite
-        run: ./gradlew :app:test --stacktrace
-
-      - name: Registry Microbench
-        run: ./gradlew :app:registryMicrobench --stacktrace
-
-      - name: Build Core Jar
-        run: ./gradlew :app:coreJar --stacktrace
-
-      - name: Generate Ecosystem Artifacts
+      - name: Clean checkout preparation
         run: |
-          mkdir -p build/reports/phase4 .intermed-empty-mods
-          java -cp app/build/libs/InterMedCore.jar org.intermed.launcher.InterMedLauncher compat-report --mods-dir .intermed-empty-mods --output build/reports/phase4/compat-report.json
-          java -cp app/build/libs/InterMedCore.jar org.intermed.launcher.InterMedLauncher sbom --mods-dir .intermed-empty-mods --output build/reports/phase4/intermed-sbom.cdx.json
+          git clean -ffdx
+          chmod +x gradlew test-harness/run.sh
 
-      - name: Upload Ecosystem Artifacts
+      - name: Build launcher/runtime artifacts
+        run: ./gradlew :app:coreJar :app:coreFabricJar :app:bootstrapJar :test-harness:harnessJar -Dintermed.allowRemoteForgeRepo=true --console=plain
+
+      - name: Generate nightly alpha evidence rehearsal artifacts
+        run: |
+          set -euo pipefail
+          REPORT_DIR="$GITHUB_WORKSPACE/build/reports/phase4"
+          GAME_DIR="$GITHUB_WORKSPACE/build/phase4/game"
+          MODS_DIR="$GITHUB_WORKSPACE/build/phase4/mods"
+          mkdir -p "$REPORT_DIR" "$GAME_DIR" "$MODS_DIR"
+
+          CORE_JAR="$(find app/build/libs -maxdepth 1 -type f -name 'InterMedCore*.jar' ! -name '*-bootstrap.jar' ! -name '*-fabric.jar' ! -name '*-thin.jar' ! -name '*-sources.jar' | sort | tail -n 1)"
+          if [[ -z "${CORE_JAR:-}" ]]; then
+            echo "[phase4] Unable to locate versioned InterMedCore runtime jar."
+            exit 1
+          fi
+
+          java -cp "$CORE_JAR" org.intermed.launcher.InterMedLauncher alpha-release-reports \
+            --project-root "$GITHUB_WORKSPACE" \
+            --game-dir "$GAME_DIR" \
+            --mods-dir "$MODS_DIR" \
+            --output-dir "$REPORT_DIR"
+
+      - name: Upload rehearsal artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: intermed-phase4-artifacts
+          name: intermed-alpha-evidence-rehearsal
           path: |
             build/reports/phase4
-            app/build/reports/microbench
+            app/build/libs
+            test-harness/build/libs

@@ -35,6 +35,13 @@ listed here even when code exists in the repository.
 - Harness reports currently prove startup/boot behavior under documented
   conditions; they do not prove real gameplay, multiplayer, or long-session
   correctness.
+- The expanded Phase 2 local sweep is not complete in this workspace. The
+  harness now supports curated alpha slices, but the large `top=500` local run
+  was stopped due to memory pressure and remains `not-run` evidence until
+  completed in shards or on a larger runner.
+- Harness `--mode=full` Phase 3 popular-pack combos are intentionally not part
+  of the current alpha proof. The code remains available, but no result should
+  be cited unless that mode is explicitly run later.
 - Public-mod Mixin stacks are still below `Field-tested`. Unsupported or unusual
   Mixin features may fail safely or require a targeted bridge/fork update.
 - Reflection remapping covers common string/reflection patterns, but names built
@@ -61,6 +68,10 @@ listed here even when code exists in the repository.
   sweeps must never be cited as secure-by-default proof.
 - Capability checks now fail closed for unattributed non-host callers, but
   hostile public-mod validation is still required.
+- `:app:strictSecurity` now includes synthetic hostile smoke for file, network,
+  reflection, process, native, Unsafe/VarHandle/FFM, and common async attribution
+  paths. This is still not a pentest and does not prove arbitrary hostile-mod
+  containment.
 - Native/JNI/JNA behavior has in-repo singleton-routing and dedup/conflict
   diagnostics, but real native-heavy public mods still need field-style testing.
 - Espresso and Wasm sandboxes are intended for high-level logic, not hot render,
@@ -71,6 +82,11 @@ listed here even when code exists in the repository.
 
 - Microbench and soak gates exist in-repo, but the `10-15%` overhead target is
   not claimed until native Forge/Fabric/NeoForge baseline comparisons exist.
+- The alpha performance snapshot is a short dedicated-server smoke. It records
+  native Fabric, native Forge, and InterMed-attached lanes when
+  `performance-baseline` is executed, but it is still not real modpack overhead
+  evidence. Internal registry/remapper/event-bus microbench reports are hot-path
+  evidence only.
 - Startup behavior with warm AOT cache has synthetic evidence. Real modpack-scale
   cold/warm startup measurements are still required.
 - Long-running 48-hour client/server pack soaks are not yet field evidence.
