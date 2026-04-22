@@ -62,6 +62,11 @@ jobs:
             --name clean-checkout-hard-gate \
             --outcome pass \
             --reason ci-dashboard-smoke
+          cat > "$tmpdir/ci-core/GATE-001/gradle-summary.txt" <<'EOF'
+          source=ci-dashboard-smoke
+          evidence=synthetic
+          lane=quick-dashboard-smoke
+          EOF
           testing/collect_artifacts.sh ci-core "$tmpdir/ci-core"
           testing/promote_results.py \
             --summary "$tmpdir/ci-core/suite-summary.json" \
