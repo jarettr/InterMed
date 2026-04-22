@@ -418,6 +418,14 @@ def specs() -> list[dict]:
             },
         },
         {
+            "id": "MIXIN-003",
+            "sources": [
+                test.format("org.intermed.core.mixin.MixinIntegrationTest"),
+                test.format("org.intermed.core.mixin.MixinTransformerTest"),
+            ],
+            "reason": "imported mixin chain/order fixture evidence from passing Gradle tests",
+        },
+        {
             "id": "REG-001",
             "sources": [
                 test.format("org.intermed.core.registry.VirtualRegistryServiceTest"),
@@ -542,6 +550,16 @@ def specs() -> list[dict]:
             "extras": {"security-report.json": ("security-report", security_note)},
         },
         {
+            "id": "SEC-007",
+            "sources": [
+                test.format("org.intermed.core.classloading.LazyInterMedClassLoaderTest"),
+                strict.format("org.intermed.core.security.HostileSecuritySmokeTest"),
+                strict.format("org.intermed.core.security.SecurityHookTransformerTest"),
+            ],
+            "reason": "imported native library routing, dedupe, and conflict diagnostic evidence from passing Gradle tests",
+            "extras": {"security-report.json": ("security-report", security_note)},
+        },
+        {
             "id": "SEC-008",
             "sources": [
                 strict.format("org.intermed.core.security.HostileSecuritySmokeTest"),
@@ -565,6 +583,11 @@ def specs() -> list[dict]:
             ],
             "reason": "imported sandbox denial/grant behavior evidence from passing strictSecurity tests",
             "extras": {"security-report.json": ("security-report", security_note)},
+        },
+        {
+            "id": "NATIVE-002",
+            "sources": [test.format("org.intermed.core.classloading.TcclInterceptorTest")],
+            "reason": "imported custom async scheduler/TCCL propagation fixture evidence from passing Gradle tests",
         },
     ]
 
@@ -606,21 +629,21 @@ def write_known_gap_markers(root: Path, out_root: Path, suite: str, names: dict[
     """
 
     gaps = {
-        "BOOT-001": "real minimal Fabric dedicated server boot was not executed by the Gradle evidence importer",
-        "BOOT-002": "real minimal Forge dedicated server boot was not executed by the Gradle evidence importer",
-        "BOOT-003": "real minimal NeoForge dedicated server boot was not executed by the Gradle evidence importer",
-        "BOOT-004": "real mixed-loader dedicated server boot was not executed by the Gradle evidence importer",
-        "MIXIN-003": "redirect/wrap chain-order fixture is not yet frozen as beta evidence",
-        "MIXIN-004": "public-mod mixin corpus classification must come from the corpus runner",
-        "MIXIN-005": "unsupported public mixin safe-fail fixtures are not frozen yet",
-        "SEC-007": "native library routing conflict diagnostics require a dedicated native smoke fixture",
-        "NATIVE-001": "JNI/JNA native smoke fixture is not wired yet",
-        "NATIVE-002": "custom scheduler async/native fixture is not wired yet",
-        "CORPUS-002": "pair-mod external corpus shard has not been executed yet",
-        "CORPUS-003": "curated slice-pack external corpus shard has not been executed yet",
+        "BOOT-001": ("not-run", "real minimal Fabric dedicated server boot was not executed by the Gradle evidence importer"),
+        "BOOT-002": ("not-run", "real minimal Forge dedicated server boot was not executed by the Gradle evidence importer"),
+        "BOOT-003": ("not-run", "real minimal NeoForge dedicated server boot was not executed by the Gradle evidence importer"),
+        "BOOT-004": ("not-run", "real mixed-loader dedicated server boot was not executed by the Gradle evidence importer"),
+        "MIXIN-004": ("not-run", "public-mod mixin corpus classification must come from the corpus runner"),
+        "MIXIN-005": ("not-run", "unsupported public mixin safe-fail fixtures are not frozen yet"),
+        "NATIVE-001": (
+            "unsupported",
+            "documented unsupported: real JNI/JNA host-library smoke fixture is not wired into the current beta-prep runner; synthetic native routing remains covered by SEC-007",
+        ),
+        "CORPUS-002": ("not-run", "pair-mod external corpus shard has not been executed yet"),
+        "CORPUS-003": ("not-run", "curated slice-pack external corpus shard has not been executed yet"),
     }
-    for case_id, reason in gaps.items():
-        write_case(root, out_root, suite, case_id, names.get(case_id, case_id), "not-run", reason, None)
+    for case_id, (outcome, reason) in gaps.items():
+        write_case(root, out_root, suite, case_id, names.get(case_id, case_id), outcome, reason, None)
 
 
 def main() -> int:
