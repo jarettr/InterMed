@@ -26,6 +26,7 @@ import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 /**
  * Generates a crowdsourcing-friendly compatibility report for discovered mods.
@@ -51,8 +52,8 @@ public final class CompatibilityReportGenerator {
         root.addProperty("intermedVersion", InterMedVersion.BUILD_VERSION);
         root.addProperty("generatedAt", Instant.now().toString());
         root.addProperty("javaVersion", System.getProperty("java.version", "unknown"));
-        root.add("hostContracts", WitContractCatalog.toJson());
-        root.add("runtime", runtimeSummary());
+        root.add("hostContracts", safeReportSection("hostContracts", WitContractCatalog::toJson));
+        root.add("runtime", safeReportSection("runtime", CompatibilityReportGenerator::runtimeSummary));
 
         JsonArray mods = new JsonArray();
         for (File jar : jars) {
@@ -61,6 +62,21 @@ public final class CompatibilityReportGenerator {
         root.add("mods", mods);
         root.addProperty("count", jars.size());
         return root;
+    }
+
+    private static JsonObject safeReportSection(String section, Supplier<JsonObject> generator) {
+        try {
+            return generator.get();
+        } catch (RuntimeException | LinkageError failure) {
+            JsonObject unavailable = new JsonObject();
+            unavailable.addProperty("status", "unavailable");
+            unavailable.addProperty("section", section);
+            unavailable.addProperty("errorType", failure.getClass().getName());
+            unavailable.addProperty("error", failure.getMessage() == null ? "" : failure.getMessage());
+            unavailable.addProperty("diagnosticNote",
+                "This compatibility report section failed to render, but diagnostics bundle generation must remain fail-closed and attach the error.");
+            return unavailable;
+        }
     }
 
     private static JsonObject runtimeSummary() {
