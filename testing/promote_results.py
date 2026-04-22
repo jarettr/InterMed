@@ -14,6 +14,13 @@ from pathlib import Path
 
 
 OUTCOMES = ["pass", "fail", "unsupported", "not-run", "blocked"]
+OUTCOME_STRENGTH = {
+    "not-run": 0,
+    "blocked": 1,
+    "pass": 2,
+    "fail": 2,
+    "unsupported": 2,
+}
 
 SECTION_RULES = {
     "hard_gates": {
@@ -97,8 +104,11 @@ def latest_results(summaries: list[Path]) -> tuple[dict[str, dict], list[dict], 
     by_case: dict[str, dict] = {}
     loaded = []
     missing_required: dict[str, list[str]] = {}
-    for path in summaries:
+    selected_mtime: dict[str, float] = {}
+    selected_strength: dict[str, int] = {}
+    for path in sorted(summaries, key=lambda item: (item.stat().st_mtime, str(item))):
         summary = load_json(path)
+        summary_mtime = path.stat().st_mtime
         summary_missing = summary.get("missing_required_artifacts", {})
         loaded.append({
             "path": str(path),
@@ -110,11 +120,20 @@ def latest_results(summaries: list[Path]) -> tuple[dict[str, dict], list[dict], 
             case_id = result.get("case_id")
             if not case_id:
                 continue
+            outcome = result.get("outcome", "not-run")
+            strength = OUTCOME_STRENGTH.get(outcome, 0)
+            current_strength = selected_strength.get(case_id, -1)
+            current_mtime = selected_mtime.get(case_id, -1.0)
+            if strength < current_strength or (strength == current_strength and summary_mtime < current_mtime):
+                continue
+            selected_mtime[case_id] = summary_mtime
+            selected_strength[case_id] = strength
             by_case[case_id] = {
                 **result,
                 "summary_path": str(path),
                 "suite": summary.get("suite", "unknown"),
                 "date": summary.get("date", "unknown"),
+                "summary_mtime": summary_mtime,
             }
             if case_id in summary_missing:
                 missing_required[case_id] = list(summary_missing[case_id])
