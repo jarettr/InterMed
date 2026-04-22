@@ -325,6 +325,35 @@ fun Jar.configureCoreRuntimeManifest() {
     }
 }
 
+fun CopySpec.excludeProvidedRuntimeContent() {
+    // The javaagent must not shadow Minecraft or loader-owned runtime classes.
+    exclude(
+        "net/minecraft/**",
+        "com/mojang/**",
+        "assets/**",
+        "data/**",
+        "pack.mcmeta",
+        "version.json",
+        "cpw/mods/**",
+        "net/minecraftforge/**",
+        "net/neoforged/**"
+    )
+    // Keep only InterMed's own metadata/resources from sourceSets.main; dependency
+    // jars must not contribute extra loader descriptors or launch services.
+    exclude(
+        "mods.toml",
+        "fabric.mod.json",
+        "META-INF/mods.toml",
+        "META-INF/neoforge.mods.toml",
+        "META-INF/jarjar/**",
+        "META-INF/accesstransformer.cfg",
+        "META-INF/services/cpw.mods.*",
+        "META-INF/services/net.minecraftforge.*",
+        "META-INF/services/net.neoforged.*",
+        "META-INF/services/com.mojang.*"
+    )
+}
+
 // New task to create the fat "Core" jar
 tasks.register<Jar>("coreJar") {
     archiveBaseName.set(archivesBaseName)
@@ -344,8 +373,7 @@ tasks.register<Jar>("coreJar") {
         .map { if (it.isDirectory) it else zipTree(it) }) {
         // Exclude signature files
         exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA")
-        // Exclude mod metadata that will be provided by the loader
-        exclude("mods.toml", "fabric.mod.json")
+        excludeProvidedRuntimeContent()
         // Exclude oshi-core — Forge bundles its own copy; duplicate oshi.properties
         // on the classpath causes noisy warnings and potential classpath shadowing.
         exclude("oshi/**")
@@ -385,7 +413,7 @@ tasks.register<Jar>("coreFabricJar") {
         .filter { it.isDirectory || it.name.endsWith(".jar") }
         .map { if (it.isDirectory) it else zipTree(it) }) {
         exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA")
-        exclude("mods.toml", "fabric.mod.json")
+        excludeProvidedRuntimeContent()
         exclude("net/fabricmc/loader/**")
         exclude("net/fabricmc/fabric/**")
         exclude("org/objectweb/asm/**")

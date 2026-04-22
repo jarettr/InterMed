@@ -72,6 +72,7 @@ public class FabricLifecycleBridge {
     public void onServerStarting(ServerStartingEvent event) {
         Object server = extractServer(event);
         System.out.println("[FabricLifecycleBridge] SERVER_STARTING");
+        LifecycleManager.startPhase1_BackgroundAssembly();
         safeInvoke(() ->
             ServerLifecycleEvents.SERVER_STARTING.invoker().onServerStarting(server));
     }

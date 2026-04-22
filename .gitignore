@@ -9,6 +9,10 @@ app/bin/
 .vscode/
 .codex
 
+# Python helper scripts
+__pycache__/
+*.pyc
+
 # InterMed Runtime (Кэш и моды)
 .intermed/
 intermed_mods/

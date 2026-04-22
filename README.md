@@ -91,6 +91,9 @@ Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening alpha issues or PR
 - Alpha risk register: [docs/alpha-risk-register-2026-04-20.md](docs/alpha-risk-register-2026-04-20.md)
 - Alpha security posture: [docs/alpha-security-posture-2026-04-21.md](docs/alpha-security-posture-2026-04-21.md)
 - Alpha performance snapshot: [docs/alpha-performance-snapshot-2026-04-21.md](docs/alpha-performance-snapshot-2026-04-21.md)
+- Alpha-to-beta test plan: [docs/test-plan-v8-alpha-to-beta.md](docs/test-plan-v8-alpha-to-beta.md)
+- Beta-prep test matrix: [docs/test-matrix.md](docs/test-matrix.md)
+- Beta readiness dashboard rules: [docs/beta-readiness-dashboard-rules.md](docs/beta-readiness-dashboard-rules.md)
 - Alpha.1 release notes: [docs/release-notes-v8.0.0-alpha.1.md](docs/release-notes-v8.0.0-alpha.1.md)
 - Alpha triage guide: [docs/alpha-triage.md](docs/alpha-triage.md)
 - Known limitations: [docs/known-limitations.md](docs/known-limitations.md)
@@ -104,3 +107,30 @@ Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening alpha issues or PR
 - Loader compatibility work in this freeze is shared across `Fabric`, `Forge`, and `NeoForge` on the `1.20.1` baseline.
 - Public-alpha release posture stays `alpha` only; this freeze must not be described as `beta`, `stable`, or production-ready.
 - Internal/public alpha sign-off commands for this freeze are `:app:test`, `:app:coverageGate`, `:app:strictSecurity`, `:app:verifyRuntime`, and `:test-harness:test`.
+
+## Beta-Prep Test Entry Points
+
+- Local hard gates: `testing/run_local_gates.sh`
+- Synthetic and metadata smoke accounting: `testing/run_smoke_suite.sh`
+- Client/server lifecycle session prep plus observation import: `testing/run_client_server_smoke.sh`
+- Strict security suite accounting: `testing/run_security_suite.sh`
+- External corpus shard wrapper: `testing/run_corpus_shard.sh`
+- Performance baseline wrapper: `testing/run_perf_baseline.sh`
+- Soak wrapper: `testing/run_soak.sh`
+- Gradle/JUnit evidence importer: `testing/import_gradle_evidence.py`
+- Harness boot evidence importer: `testing/import_harness_boot_evidence.py`
+- Suite summary collector: `testing/collect_artifacts.sh`
+- Dashboard generator: `testing/promote_results.py`
+- Testing command guide: [testing/README.md](testing/README.md)
+
+These scripts write artifacts under `build/test-runs/<date>/<suite>/`. A
+supporting synthetic artifact is not treated as beta evidence for a real
+dedicated server, client/server lifecycle, datapack reload, or performance
+baseline unless that scenario actually ran.
+
+Most beta-prep wrappers are safe-by-default: they emit `not-run` accounting
+unless a heavy lane is explicitly enabled with variables such as
+`INTERMED_RUN_LOCAL_GATES=true`, `INTERMED_RUN_SMOKE_SUITE=true`,
+`INTERMED_RUN_SECURITY_SUITE=true`, `INTERMED_RUN_CLIENT_SERVER_SMOKE=true`,
+`INTERMED_RUN_SOAK=true`, `INTERMED_RUN_EXTERNAL_CORPUS=true`, or
+`INTERMED_RUN_PERF_BASELINE=true`.

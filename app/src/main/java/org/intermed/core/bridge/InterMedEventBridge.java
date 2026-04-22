@@ -5,12 +5,14 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import org.intermed.core.InterMedKernel;
+import org.intermed.core.classloading.TcclInterceptor;
 import org.intermed.core.event.MainThreadAffinityDispatcher;
 import org.intermed.core.lifecycle.LifecycleManager;
 import org.intermed.core.monitor.ObservabilityMonitor;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 /**
@@ -64,6 +66,7 @@ import java.util.function.Consumer;
 public class InterMedEventBridge {
 
     private static volatile boolean initialized = false;
+    private static final AtomicBoolean REGISTRATION_PROBE_RUNNING = new AtomicBoolean(false);
 
     /**
      * Registers this bridge on the Forge game event bus. Idempotent.
@@ -71,30 +74,79 @@ public class InterMedEventBridge {
      * context classloader (i.e. from the TitleScreen class-load trigger).
      */
     public static void initialize() {
-        if (initialized) return;
-        initialized = true;
-        System.out.println("\033[1;36m[InterMed] Initializing event bridge (Forge → Fabric)...\033[0m");
+        if (registerIfAvailable()) {
+            return;
+        }
+        System.err.println("[InterMedEventBridge] Forge game event bus is not ready yet.");
+    }
 
-        // The context classloader at this point is Forge's ModuleClassLoader.
-        // Event classes obtained from it have already been through
-        // EventSubclassTransformer and carry the LISTENER_LIST field.
-        ClassLoader forgeCl = Thread.currentThread().getContextClassLoader();
-        InterMedEventBridge bridge = new InterMedEventBridge();
-        registerBusListeners(forgeCl, bridge);
+    public static void scheduleRegistrationProbe() {
+        if (initialized || !REGISTRATION_PROBE_RUNNING.compareAndSet(false, true)) {
+            return;
+        }
+
+        Thread probe = TcclInterceptor.contextAwareFactory().newThread(() -> {
+            try {
+                for (int attempt = 0; attempt < 200 && !initialized; attempt++) {
+                    if (registerIfAvailable()) {
+                        return;
+                    }
+                    Thread.sleep(attempt < 20 ? 25L : 50L);
+                }
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            } finally {
+                if (!initialized) {
+                    REGISTRATION_PROBE_RUNNING.set(false);
+                }
+            }
+        });
+        probe.setName("intermed-forge-event-bridge-probe");
+        probe.setDaemon(true);
+        probe.start();
     }
 
     public static void resetForTests() {
         initialized = false;
+        REGISTRATION_PROBE_RUNNING.set(false);
         ServerTickEvents.resetForTests();
         ServerPlayConnectionEvents.resetForTests();
         ServerLifecycleEvents.resetForTests();
         ServerWorldEvents.resetForTests();
     }
 
+    private static boolean registerIfAvailable() {
+        if (initialized) {
+            return true;
+        }
+
+        synchronized (InterMedEventBridge.class) {
+            if (initialized) {
+                return true;
+            }
+
+            ClassLoader forgeCl = Thread.currentThread().getContextClassLoader();
+            if (forgeCl == null) {
+                return false;
+            }
+
+            InterMedEventBridge bridge = new InterMedEventBridge();
+            if (!registerBusListeners(forgeCl, bridge)) {
+                return false;
+            }
+
+            initialized = true;
+            REGISTRATION_PROBE_RUNNING.set(true);
+            System.out.println("\033[1;36m[InterMed] Initializing event bridge (Forge → Fabric)...\033[0m");
+            System.out.println("\033[1;36m[InterMed] Event bridge registered (9 listeners).\033[0m");
+            return true;
+        }
+    }
+
     // ── Registration ──────────────────────────────────────────────────────────
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private static void registerBusListeners(ClassLoader forgeCl, InterMedEventBridge bridge) {
+    private static boolean registerBusListeners(ClassLoader forgeCl, InterMedEventBridge bridge) {
         try {
             // Obtain the real Forge MinecraftForge.EVENT_BUS through forgeCl so we get
             // the bus that Forge actually fires events on (not a dead copy from the fat JAR).
@@ -119,8 +171,7 @@ public class InterMedEventBridge {
                 }
             }
             if (addListenerM == null) {
-                System.err.println("[InterMedEventBridge] addListener(4-arg) not found on EventBus");
-                return;
+                return false;
             }
             final Method addListener = addListenerM;
 
@@ -153,11 +204,9 @@ public class InterMedEventBridge {
             register(addListener, eventBus, normal, forgeCl,
                 "net.minecraftforge.event.entity.player.PlayerEvent$PlayerLoggedOutEvent",
                 e -> bridge.onPlayerLeave(e));
-
-            System.out.println("\033[1;36m[InterMed] Event bridge registered (9 listeners).\033[0m");
+            return true;
         } catch (Exception e) {
-            System.err.printf("\033[1;31m[InterMedEventBridge] Bridge setup failed: %s\033[0m%n",
-                e.getMessage());
+            return false;
         }
     }
 
@@ -206,6 +255,7 @@ public class InterMedEventBridge {
 
     public void onServerStarting(Object event) {
         Object server = extractServer(event);
+        LifecycleManager.startPhase1_BackgroundAssembly();
         safeInvoke("ServerLifecycleEvents.SERVER_STARTING", () ->
             ServerLifecycleEvents.SERVER_STARTING.invoker().onServerStarting(server));
     }

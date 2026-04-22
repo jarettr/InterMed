@@ -1,0 +1,107 @@
+name: beta-prep validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate-beta-prep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Validate beta-prep JSON, Python, and shell syntax
+        run: |
+          set -euo pipefail
+          python3 -m json.tool testing/test-cases.json >/tmp/intermed-test-cases.json
+          python3 -m json.tool testing/frozen-beta-candidate.json >/tmp/intermed-frozen-beta-candidate.json
+          python3 -m json.tool testing/waivers.json >/tmp/intermed-waivers.json
+          python3 -m py_compile testing/_case_runner.py testing/import_gradle_evidence.py testing/import_harness_boot_evidence.py testing/promote_results.py
+          bash -n testing/collect_artifacts.sh
+          bash -n testing/run_local_gates.sh
+          bash -n testing/run_smoke_suite.sh
+          bash -n testing/run_client_server_smoke.sh
+          bash -n testing/run_security_suite.sh
+          bash -n testing/run_corpus_shard.sh
+          bash -n testing/run_perf_baseline.sh
+          bash -n testing/run_soak.sh
+
+      - name: Verify frozen beta candidate catalog consistency
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          cases = json.load(open("testing/test-cases.json", encoding="utf-8"))["cases"]
+          known = {case["id"] for case in cases}
+          beta = {case["id"] for case in cases if case.get("beta_critical")}
+          candidate = set(json.load(open("testing/frozen-beta-candidate.json", encoding="utf-8"))["case_ids"])
+          missing = sorted(candidate - known)
+          omitted = sorted(beta - candidate)
+          if missing or omitted:
+              raise SystemExit(f"candidate mismatch missing={missing} omitted={omitted}")
+          print(f"candidate_count={len(candidate)}")
+          PY
+
+      - name: Quick dashboard smoke
+        run: |
+          set -euo pipefail
+          tmpdir="$(mktemp -d)"
+          testing/_case_runner.py mark \
+            --suite ci-core \
+            --out-root "$tmpdir/ci-core" \
+            --case-id GATE-001 \
+            --name clean-checkout-hard-gate \
+            --outcome pass \
+            --reason ci-dashboard-smoke
+          testing/collect_artifacts.sh ci-core "$tmpdir/ci-core"
+          testing/promote_results.py \
+            --summary "$tmpdir/ci-core/suite-summary.json" \
+            --output "$tmpdir/dashboard.json" \
+            --markdown-output "$tmpdir/dashboard.md"
+          test -s "$tmpdir/dashboard.md"
+          python3 - <<'PY' "$tmpdir/dashboard.json"
+          import json
+          import sys
+          dashboard = json.load(open(sys.argv[1], encoding="utf-8"))
+          candidate_count = len(json.load(open("testing/frozen-beta-candidate.json", encoding="utf-8"))["case_ids"])
+          assert dashboard["frozen_beta_candidate"]["pass"] == 1, dashboard
+          assert dashboard["frozen_beta_candidate"]["not_run"] == candidate_count - 1, dashboard
+          assert dashboard["state"] == "beta-prep", dashboard
+          print("dashboard-smoke-ok")
+          PY
+
+      - name: Verify safe-default suite wrappers
+        run: |
+          set -euo pipefail
+          tmpdir="$(mktemp -d)"
+          INTERMED_TEST_DATE=20260422 INTERMED_TEST_RUN_ROOT="$tmpdir/ci-core" testing/run_local_gates.sh
+          INTERMED_TEST_DATE=20260422 INTERMED_TEST_RUN_ROOT="$tmpdir/nightly-smoke" testing/run_smoke_suite.sh
+          INTERMED_TEST_DATE=20260422 INTERMED_TEST_RUN_ROOT="$tmpdir/security" testing/run_security_suite.sh
+          INTERMED_TEST_DATE=20260422 INTERMED_TEST_RUN_ROOT="$tmpdir/client-server" testing/run_client_server_smoke.sh
+          INTERMED_TEST_DATE=20260422 INTERMED_TEST_RUN_ROOT="$tmpdir/nightly-corpus" testing/run_corpus_shard.sh
+          INTERMED_TEST_DATE=20260422 INTERMED_TEST_RUN_ROOT="$tmpdir/weekly-perf" testing/run_perf_baseline.sh
+          INTERMED_TEST_DATE=20260422 INTERMED_TEST_RUN_ROOT="$tmpdir/weekly-soak" testing/run_soak.sh
+          testing/promote_results.py \
+            --run-root "$tmpdir" \
+            --output "$tmpdir/dashboard.json" \
+            --markdown-output "$tmpdir/dashboard.md"
+          test -s "$tmpdir/dashboard.md"
+          python3 - <<'PY' "$tmpdir/dashboard.json"
+          import json
+          import sys
+          dashboard = json.load(open(sys.argv[1], encoding="utf-8"))
+          candidate_count = len(json.load(open("testing/frozen-beta-candidate.json", encoding="utf-8"))["case_ids"])
+          assert dashboard["state"] == "beta-prep", dashboard
+          assert dashboard["frozen_beta_candidate"]["not_run"] >= candidate_count - 1, dashboard
+          assert dashboard["blocker_count"] >= candidate_count - 1, dashboard
+          print("safe-default-wrappers-ok")
+          PY

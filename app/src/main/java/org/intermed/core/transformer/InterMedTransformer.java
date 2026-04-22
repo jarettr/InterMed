@@ -31,6 +31,8 @@ public class InterMedTransformer implements ClassFileTransformer {
 
         String realName = MappingManager.translate(className);
         String nameToCheck = (realName != null) ? realName : className;
+        boolean titleScreenTrigger = nameToCheck.contains("gui/screens/TitleScreen");
+        boolean dedicatedServerTrigger = nameToCheck.contains("server/MinecraftServer");
 
         if (nameToCheck.startsWith("net/neoforged/") || nameToCheck.startsWith("net.neoforged.")) {
             NeoForgeEventBridge.scheduleRegistrationProbe();
@@ -39,28 +41,37 @@ public class InterMedTransformer implements ClassFileTransformer {
 
         if (!deferredBootstrapReleased
             && Boolean.getBoolean("intermed.deferDeepBootstrap")
-            && (nameToCheck.contains("gui/screens/TitleScreen")
-                || nameToCheck.contains("server/MinecraftServer"))) {
+            && (titleScreenTrigger || dedicatedServerTrigger)) {
             deferredBootstrapReleased = true;
             System.out.println("[Kernel] Releasing deferred Phase 0 bootstrap at: " + nameToCheck);
             LifecycleManager.startPhase0_Preloader();
         }
 
         // --- ТРИГГЕР ГЛАВНОГО МЕНЮ (Снятие барьера Фазы 0) ---
-        if (!bridgeStarted && (nameToCheck.contains("gui/screens/TitleScreen") || nameToCheck.contains("server/MinecraftServer"))) {
+        if (!bridgeStarted && (titleScreenTrigger || dedicatedServerTrigger)) {
             System.out.println("\033[1;35m[Lifecycle] CRITICAL GAME STATE REACHED: " + nameToCheck + "\033[0m");
             bridgeStarted = true;
             
-            // Включаем скрытый хук событий Forge
+            // Client-only render hooks must not be resolved on dedicated server.
             try {
-                org.intermed.core.bridge.events.ForgeEventProxy.hookIntoForge();
-                org.intermed.core.bridge.InterMedEventBridge.initialize();
+                if (titleScreenTrigger) {
+                    org.intermed.core.bridge.events.ForgeEventProxy.hookIntoForge();
+                    org.intermed.core.bridge.InterMedEventBridge.initialize();
+                } else {
+                    org.intermed.core.bridge.InterMedEventBridge.scheduleRegistrationProbe();
+                }
             } catch (Exception e) {
                 System.err.println("[Kernel] Failed to inject Forge hook: " + e.getMessage());
             }
 
-            // ЗАПУСКАЕМ ФАЗУ 1: Фоновая асинхронная подготовка модов (ТЗ 3.1.3)
-            LifecycleManager.startPhase1_BackgroundAssembly();
+            // The dedicated-server path is still defining MinecraftServer at this
+            // point. Starting Phase 1 here can re-enter loader work too early, so
+            // the real server path resumes from the lifecycle callbacks instead.
+            if (titleScreenTrigger) {
+                LifecycleManager.startPhase1_BackgroundAssembly();
+            } else {
+                System.out.println("[Lifecycle] Dedicated server trigger detected; deferring Phase 1 until SERVER_STARTING.");
+            }
         }
 
         // Возвращаем null. JVM сама загрузит классы без изменений.
