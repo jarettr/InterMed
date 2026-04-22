@@ -311,6 +311,14 @@ def specs() -> list[dict]:
     harness = "test-harness/build/test-results/test/TEST-*.xml"
     dep_note = "Imported resolver/classloader evidence; this is not a real external launch dependency plan."
     security_note = "Imported strict-security synthetic lane evidence; permissive results are not used as security proof."
+    registry_note = (
+        "Imported synthetic registry sync evidence. This proves the bridge/matrix path, "
+        "not a real human client login."
+    )
+    vfs_reload_note = (
+        "Imported synthetic VFS/DataPack reload evidence. This proves recipe/tag/loot "
+        "resource preservation through the VFS merge/rebuild path, not a visual client session."
+    )
 
     return [
         {
@@ -470,6 +478,46 @@ def specs() -> list[dict]:
             },
         },
         {
+            "id": "REG-004",
+            "sources": [
+                test.format("org.intermed.core.bridge.InterMedNetworkBridgeTest"),
+                test.format("org.intermed.core.registry.RegistryTranslationMatrixTest"),
+            ],
+            "reason": "imported mixed registry sync bridge evidence from passing Gradle tests",
+            "extras": {"registry-report.json": ("registry-report", registry_note)},
+        },
+        {
+            "id": "NET-001",
+            "sources": [
+                test.format("org.intermed.core.bridge.InterMedNetworkBridgeTest"),
+                test.format("net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEventsTest"),
+            ],
+            "reason": "imported synthetic login/join event bridge evidence from passing Gradle tests",
+        },
+        {
+            "id": "NET-002",
+            "sources": [
+                test.format("org.intermed.core.bridge.InterMedNetworkBridgeTest"),
+                test.format("org.intermed.core.registry.RegistryTranslationMatrixTest"),
+            ],
+            "reason": "imported registry sync handshake evidence from passing Gradle tests",
+            "extras": {"registry-report.json": ("registry-report", registry_note)},
+        },
+        {
+            "id": "NET-003",
+            "sources": [
+                test.format("org.intermed.core.bridge.InterMedNetworkBridgeTest"),
+                test.format("net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworkingTest"),
+                test.format("net.fabricmc.fabric.api.networking.v1.ServerPlayNetworkingTest"),
+            ],
+            "reason": "imported custom payload encode/decode roundtrip evidence from passing Gradle tests",
+        },
+        {
+            "id": "NET-005",
+            "sources": [test.format("org.intermed.core.bridge.InterMedNetworkBridgeTest")],
+            "reason": "imported disconnect cleanup evidence from passing Gradle tests",
+        },
+        {
             "id": "VFS-001",
             "sources": [test.format("org.intermed.core.vfs.VirtualFileSystemRouterTest")],
             "reason": "imported resource overlay conflict diagnostics evidence from passing Gradle tests",
@@ -479,6 +527,24 @@ def specs() -> list[dict]:
                     "Imported VFS overlay/diagnostics evidence.",
                 ),
             },
+        },
+        {
+            "id": "VFS-002",
+            "sources": [test.format("org.intermed.core.vfs.VirtualFileSystemRouterTest")],
+            "reason": "imported recipe reload/merge preservation evidence from passing VFS Gradle tests",
+            "extras": {"vfs-diagnostics.json": ("vfs-diagnostics", vfs_reload_note)},
+        },
+        {
+            "id": "VFS-003",
+            "sources": [test.format("org.intermed.core.vfs.VirtualFileSystemRouterTest")],
+            "reason": "imported tag reload/merge preservation evidence from passing VFS Gradle tests",
+            "extras": {"vfs-diagnostics.json": ("vfs-diagnostics", vfs_reload_note)},
+        },
+        {
+            "id": "VFS-004",
+            "sources": [test.format("org.intermed.core.vfs.VirtualFileSystemRouterTest")],
+            "reason": "imported loot-table reload/merge preservation evidence from passing VFS Gradle tests",
+            "extras": {"vfs-diagnostics.json": ("vfs-diagnostics", vfs_reload_note)},
         },
         {
             "id": "VFS-005",

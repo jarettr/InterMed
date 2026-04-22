@@ -66,10 +66,15 @@ testing/import_gradle_evidence.py
 ```
 
 This is deliberately conservative. It can mark synthetic Gradle-backed cases
-such as DAG, remap, registry, VFS policy, strict security, sandbox, and TCCL
-fixtures as `pass` when their JUnit reports are green. It does not convert unit
-tests into real dedicated server boot, client/server login, datapack reload,
-native fixture, external corpus, or soak evidence.
+such as DAG, remap, registry, selected network bridge paths, VFS policy/reload
+fixtures, strict security, sandbox, and TCCL fixtures as `pass` when their JUnit
+reports are green. Synthetic network and VFS imports are labelled as such in
+their evidence artifacts; they do not claim visual client coverage or a human
+play session.
+
+It does not convert unit tests into real dedicated server boot, real client menu
+entry, real 3-to-5 minute play-session smoke, native fixture, external corpus,
+or medium soak evidence.
 
 Import real harness boot evidence from an existing `results-booted.json`:
 
@@ -87,19 +92,22 @@ datapack reload.
 
 Some wrappers intentionally emit `not-run` or `blocked`. That is expected.
 
-A metadata smoke, synthetic fixture, or unit test is useful supporting evidence,
-but it must not be counted as beta evidence for:
+A metadata smoke, synthetic fixture, or unit test is useful supporting evidence.
+It may count only at the evidence level it actually demonstrates. It must not
+be counted as field/client evidence for:
 
 - real dedicated server boot
 - real client menu entry
-- real client/server login and registry sync
-- real custom payload roundtrip
-- real datapack reload
+- real human-observed client/server login
+- real 3-to-5 minute play-session smoke
+- real GUI/client datapack reload observation
 - real external corpus compatibility
 - real native-vs-InterMed performance baseline
+- real medium mixed-pack soak
 
-Those rows become `pass` only after the required scenario itself runs and emits
-the required artifacts.
+Rows imported from JUnit must keep synthetic wording in `result.json` and their
+supporting reports. Rows that explicitly require visual client or soak evidence
+remain `not-run` until the required scenario itself runs and emits artifacts.
 
 ## Useful Environment Variables
 
