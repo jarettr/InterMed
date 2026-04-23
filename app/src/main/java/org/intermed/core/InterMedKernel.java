@@ -3,6 +3,7 @@ package org.intermed.core;
 import org.intermed.core.lifecycle.LifecycleManager;
 import org.intermed.core.bridge.NeoForgeEventBridge;
 import org.intermed.core.bridge.NeoForgeNetworkBridge;
+import org.intermed.core.bridge.ForgeEventBridge;
 import org.intermed.core.mixin.MixinTransmogrifier;
 import org.intermed.core.transformer.InterMedTransformer;
 import org.intermed.core.security.KernelContext;
@@ -73,6 +74,7 @@ public class InterMedKernel {
 
                 // 2a. Proactively attach NeoForge bridge listeners as soon as
                 // the runtime exposes the NeoForge mod event bus.
+                ForgeEventBridge.scheduleRegistrationProbe();
                 NeoForgeEventBridge.scheduleRegistrationProbe();
                 NeoForgeNetworkBridge.scheduleRegistrationProbe();
 
@@ -140,11 +142,52 @@ public class InterMedKernel {
         if (!Files.isRegularFile(sibling)) {
             Path genericSibling = resolveGenericBootstrapSibling(codeSource, fileName);
             if (genericSibling != null && Files.isRegularFile(genericSibling)) {
+                ensureBootstrapJarCompatibility(codeSource, genericSibling);
                 return genericSibling;
             }
             throw new IllegalStateException("Missing bootstrap support jar: " + sibling);
         }
+        ensureBootstrapJarCompatibility(codeSource, sibling);
         return sibling;
+    }
+
+    private static void ensureBootstrapJarCompatibility(Path codeSource, Path bootstrapJar) {
+        try {
+            String agentBuildId = readManifestAttribute(codeSource, "InterMed-Build-Id");
+            String bootstrapBuildId = readManifestAttribute(bootstrapJar, "InterMed-Build-Id");
+            if (agentBuildId == null || bootstrapBuildId == null) {
+                System.out.println("[Kernel] Bootstrap compatibility metadata missing; continuing without build-id validation.");
+                return;
+            }
+            if (!agentBuildId.equals(bootstrapBuildId)) {
+                throw new IllegalStateException(
+                    "Bootstrap support jar was built from a different InterMed build. " +
+                        "Rebuild both artifacts before launching. agent=" + codeSource.getFileName() +
+                        " [" + agentBuildId + "], bootstrap=" + bootstrapJar.getFileName() +
+                        " [" + bootstrapBuildId + "]"
+                );
+            }
+        } catch (IllegalStateException incompatible) {
+            throw incompatible;
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                "Unable to validate bootstrap support jar compatibility for " + bootstrapJar,
+                e
+            );
+        }
+    }
+
+    private static String readManifestAttribute(Path jarPath, String attributeName) throws Exception {
+        try (JarFile jarFile = new JarFile(jarPath.toFile())) {
+            if (jarFile.getManifest() == null) {
+                return null;
+            }
+            String value = jarFile.getManifest().getMainAttributes().getValue(attributeName);
+            if (value == null || value.isBlank()) {
+                return null;
+            }
+            return value.trim();
+        }
     }
 
     private static Path resolveGenericBootstrapSibling(Path codeSource, String fileName) {

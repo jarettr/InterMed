@@ -52,6 +52,51 @@ class ModDiscoveryTest {
         assertTrue(candidateArchives.stream().anyMatch(file -> file.getName().equals("Terralith_1.20_v2.5.4.zip")));
     }
 
+    @Test
+    void dedupesIdenticalNestedJarsAcrossDifferentParents() throws Exception {
+        Path modsDir = Files.createTempDirectory("intermed-discovery-dedup");
+        writeParentJar(modsDir.resolve("parent-a.jar"), "shared");
+        writeParentJar(modsDir.resolve("parent-b.jar"), "shared");
+
+        ModDiscovery.DiscoveryLayout layout = ModDiscovery.discoverLayout(modsDir.toFile());
+
+        long rootJars = layout.jars().stream()
+            .filter(jar -> layout.ownerOf(jar) == null)
+            .count();
+        long nestedJars = layout.jars().stream()
+            .filter(jar -> layout.ownerOf(jar) != null)
+            .count();
+
+        assertEquals(2, rootJars);
+        assertEquals(1, nestedJars, "Identical nested jars should be reused instead of duplicated");
+    }
+
+    @Test
+    void dedupesGeneratedNestedFabricLibrariesByMetadataIdentity() throws Exception {
+        Path modsDir = Files.createTempDirectory("intermed-discovery-metadata-dedup");
+        writeParentJarWithNestedJar(
+            modsDir.resolve("parent-a.jar"),
+            createGeneratedLibraryJar("org_reflections_reflections", "0.10.2", "a")
+        );
+        writeParentJarWithNestedJar(
+            modsDir.resolve("parent-b.jar"),
+            createGeneratedLibraryJar("org_reflections_reflections", "0.10.2", "b")
+        );
+
+        ModDiscovery.DiscoveryLayout layout = ModDiscovery.discoverLayout(modsDir.toFile());
+
+        long rootJars = layout.jars().stream()
+            .filter(jar -> layout.ownerOf(jar) == null)
+            .count();
+        long nestedJars = layout.jars().stream()
+            .filter(jar -> layout.ownerOf(jar) != null)
+            .count();
+
+        assertEquals(2, rootJars);
+        assertEquals(1, nestedJars,
+            "Generated nested Fabric libraries with the same id/version should be reused");
+    }
+
     private static java.io.File findNestedJar(ModDiscovery.DiscoveryLayout layout) {
         return layout.jars().stream()
             .filter(jar -> layout.ownerOf(jar) != null)
@@ -60,7 +105,10 @@ class ModDiscoveryTest {
     }
 
     private static void writeParentJar(Path parentJar, String marker) throws Exception {
-        byte[] nestedJar = createNestedJar(marker);
+        writeParentJarWithNestedJar(parentJar, createNestedJar(marker));
+    }
+
+    private static void writeParentJarWithNestedJar(Path parentJar, byte[] nestedJar) throws Exception {
         try (JarOutputStream output = new JarOutputStream(Files.newOutputStream(parentJar))) {
             output.putNextEntry(new JarEntry("fabric.mod.json"));
             output.write("""
@@ -81,6 +129,30 @@ class ModDiscoveryTest {
     private static byte[] createNestedJar(String marker) throws Exception {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         try (JarOutputStream output = new JarOutputStream(buffer)) {
+            output.putNextEntry(new JarEntry("marker.txt"));
+            output.write(marker.getBytes(StandardCharsets.UTF_8));
+            output.closeEntry();
+        }
+        return buffer.toByteArray();
+    }
+
+    private static byte[] createGeneratedLibraryJar(String modId, String version, String marker) throws Exception {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        try (JarOutputStream output = new JarOutputStream(buffer)) {
+            output.putNextEntry(new JarEntry("fabric.mod.json"));
+            output.write(("""
+                {
+                  "schemaVersion": 1,
+                  "id": "%s",
+                  "version": "%s",
+                  "name": "generated-lib",
+                  "custom": {
+                    "fabric-loom:generated": true
+                  }
+                }
+                """.formatted(modId, version)).getBytes(StandardCharsets.UTF_8));
+            output.closeEntry();
+
             output.putNextEntry(new JarEntry("marker.txt"));
             output.write(marker.getBytes(StandardCharsets.UTF_8));
             output.closeEntry();

@@ -24,6 +24,7 @@ class MixinTransformerTest {
     @AfterEach
     void tearDown() {
         MixinTransformer.resetForTests();
+        InterMedPlatformAgent.resetForTests();
         System.clearProperty("runtime.env");
         RuntimeConfig.resetForTests();
     }
@@ -120,6 +121,60 @@ class MixinTransformerTest {
         assertTrue(registered.get(0).getRegistrationOrder() < registered.get(1).getRegistrationOrder());
     }
 
+    @Test
+    void registersNativeMixinConfigForPlatformTargets() throws Exception {
+        RuntimeConfig.reload();
+
+        Path jar = Files.createTempFile("intermed-mixin-native-", ".jar");
+        createMixinJar(
+            jar,
+            """
+            {
+              "required": true,
+              "package": "demo.mixin",
+              "priority": 1400,
+              "mixins": ["CriteriaAccessorMixin"]
+            }
+            """,
+            Map.of(
+                "demo/mixin/CriteriaAccessorMixin.class",
+                createInvisibleTargetMixin("demo/mixin/CriteriaAccessorMixin", "net.minecraft.advancements.CriteriaTriggers")
+            )
+        );
+
+        MixinTransformer.registerModMixins(jar.toFile());
+
+        assertTrue(InterMedPlatformAgent.registeredExternalConfigsForTests().contains("phase3.mixins.json"));
+    }
+
+    @Test
+    void doesNotRegisterNativeMixinConfigForJarLocalTargets() throws Exception {
+        RuntimeConfig.reload();
+
+        Path jar = Files.createTempFile("intermed-mixin-local-", ".jar");
+        createMixinJar(
+            jar,
+            """
+            {
+              "required": true,
+              "package": "demo.mixin",
+              "priority": 1400,
+              "mixins": ["LocalTargetMixin"]
+            }
+            """,
+            Map.of(
+                "demo/mixin/LocalTargetMixin.class",
+                createInvisibleTargetMixin("demo/mixin/LocalTargetMixin", "demo.targets.LocalTarget"),
+                "demo/targets/LocalTarget.class",
+                createPlainClass("demo/targets/LocalTarget")
+            )
+        );
+
+        MixinTransformer.registerModMixins(jar.toFile());
+
+        assertTrue(InterMedPlatformAgent.registeredExternalConfigsForTests().isEmpty());
+    }
+
     private static void createMixinJar(Path jarPath,
                                        String mixinConfig,
                                        Map<String, byte[]> classEntries) throws Exception {
@@ -156,6 +211,22 @@ class MixinTransformerTest {
         targets.visit(null, targetName);
         targets.visitEnd();
         mixin.visitEnd();
+
+        MethodVisitor constructor = writer.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+        constructor.visitCode();
+        constructor.visitVarInsn(Opcodes.ALOAD, 0);
+        constructor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        constructor.visitInsn(Opcodes.RETURN);
+        constructor.visitMaxs(1, 1);
+        constructor.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private static byte[] createPlainClass(String internalName) {
+        ClassWriter writer = new ClassWriter(0);
+        writer.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, internalName, null, "java/lang/Object", null);
 
         MethodVisitor constructor = writer.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
         constructor.visitCode();

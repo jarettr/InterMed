@@ -1,7 +1,7 @@
 # InterMed v8.0 — Compatibility Testing Report
 
 > **Run date:** 2026-04-13
-> **InterMed version:** 8.0.0-alpha.1
+> **InterMed version:** 8.0.0-alpha.2
 > **MC version:** 1.20.1
 > **Forge:** 47.3.0 · **Fabric Loader:** 0.19.1
 > **Machine:** Linux x86\_64, Temurin JDK 21.0.10, ZGC
@@ -45,12 +45,12 @@ This means a `PASS` in this report should be read narrowly as:
 ```
 JVM launch line (Forge example):
   java -Xmx2g -Xms512m -XX:+UseZGC -XX:+ZGenerational
-       -javaagent:InterMedCore-8.0.0-alpha.1.jar      ← InterMed as agent
+       -javaagent:InterMedCore-8.0.0-alpha.2.jar      ← InterMed as agent
        --add-opens=java.base/java.lang=ALL-UNNAMED
        @unix_args.txt nogui
 ```
 
-Fabric tests use `InterMedCore-8.0.0-alpha.1-fabric.jar` (the Fabric-specific variant of the agent).
+Fabric tests use `InterMedCore-8.0.0-alpha.2-fabric.jar` (the Fabric-specific variant of the agent).
 
 ### 1.2 Mod selection criteria
 

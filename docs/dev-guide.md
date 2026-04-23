@@ -1,6 +1,6 @@
-# InterMed v8.0.0-alpha.1 Open Alpha Developer Guide
+# InterMed v8.0.0-alpha.2 Open Alpha Developer Guide
 
-This guide covers the current `v8.0.0-alpha.1` runtime surface for mod authors experimenting with InterMed: how the ClassLoader DAG works, how to write Mixins that are easier to diagnose in multi-loader conflict resolution, how to work with the remapping and reflection layers, and how to use the polyglot sandbox API. It documents the alpha surface, not a full Forge/Fabric/NeoForge parity guarantee.
+This guide covers the current `v8.0.0-alpha.2` runtime surface for mod authors experimenting with InterMed: how the ClassLoader DAG works, how to write Mixins that are easier to diagnose in multi-loader conflict resolution, how to work with the remapping and reflection layers, and how to use the polyglot sandbox API. It documents the alpha surface, not a full Forge/Fabric/NeoForge parity guarantee.
 
 ---
 

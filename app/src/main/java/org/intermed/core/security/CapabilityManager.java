@@ -1,7 +1,6 @@
 package org.intermed.core.security;
 
 import org.intermed.core.metadata.RuntimeModIndex;
-import org.intermed.core.config.RuntimeConfig;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -306,7 +305,7 @@ public final class CapabilityManager {
     private static void check(SecurityPolicy.SecurityRequest request) {
         String modId = resolveCallerModId();
         String subject = modId == null ? UNKNOWN_CALLER_ID : modId;
-        if (!RuntimeConfig.get().isSecurityStrictMode()) {
+        if (!BootstrapRuntimeConfig.isSecurityStrictMode()) {
             boolean trusted = modId == null && isTrustedHostCall();
             boolean wouldAllow = trusted || SecurityPolicy.allowsInStrictMode(modId, request);
             if (!wouldAllow) {
@@ -346,7 +345,7 @@ public final class CapabilityManager {
                               SecurityPolicy.SecurityRequest request,
                               String reason) {
         try {
-            Path log = RuntimeConfig.get().getGameDir()
+            Path log = BootstrapRuntimeConfig.getGameDir()
                 .resolve("logs")
                 .resolve("intermed-security.log")
                 .toAbsolutePath()

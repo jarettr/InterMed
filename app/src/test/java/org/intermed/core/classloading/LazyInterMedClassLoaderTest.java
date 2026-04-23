@@ -11,13 +11,20 @@ import org.intermed.core.metadata.RuntimeModIndex;
 import org.intermed.core.vfs.VirtualFileSystemRouter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.spongepowered.asm.launch.MixinBootstrap;
+import org.spongepowered.asm.mixin.MixinEnvironment;
+import org.spongepowered.asm.mixin.transformer.IMixinTransformer;
+import org.objectweb.asm.tree.ClassNode;
 
 import javax.tools.JavaCompiler;
 import javax.tools.ToolProvider;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.Field;
+import java.lang.reflect.Proxy;
 import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -46,6 +53,10 @@ class LazyInterMedClassLoaderTest {
         RuntimeConfig.resetForTests();
         VirtualFileSystemRouter.invalidateCache();
         NativeLinkerNode.resetForTests();
+        LazyInterMedClassLoader.resetRuntimeClassLoadersForTests();
+        LifecycleManager.DICTIONARY.clear();
+        org.intermed.core.remapping.InterMedRemapper.clearCaches();
+        clearActiveMixinTransformer();
     }
 
     @Test
@@ -143,6 +154,194 @@ class LazyInterMedClassLoaderTest {
         assertNull(foreignBytes, "A loader must not expose parent-owned bytecode as its own");
         assertNotNull(dependencyBytes);
         assertFalse(Arrays.equals(ownBytes, dependencyBytes));
+    }
+
+    @Test
+    void delegatesRemappedMinecraftClassNameToRuntimeParent() throws Exception {
+        Path tempDir = Files.createTempDirectory("intermed-loader-remapped-parent");
+        FileBundle platform = createJar(tempDir, "platform-runtime",
+            Map.of("sample.platform.RuntimeType", "package sample.platform; public class RuntimeType { }"));
+        FileBundle main = createJar(tempDir, "main-remapped-parent",
+            Map.of("sample.main.OwnType", "package sample.main; public class OwnType { }"));
+
+        LifecycleManager.DICTIONARY.addClass("net/minecraft/class_7151", "sample/platform/RuntimeType");
+        org.intermed.core.remapping.InterMedRemapper.installDictionary(LifecycleManager.DICTIONARY);
+
+        try (URLClassLoader parent = new URLClassLoader(new URL[] {platform.jar.toUri().toURL()}, getClass().getClassLoader())) {
+            LazyInterMedClassLoader mainLoader = new LazyInterMedClassLoader(
+                "main", main.jar.toFile(), Set.of(), parent);
+
+            Class<?> remapped = mainLoader.loadClass("net.minecraft.class_7151");
+
+            assertEquals("sample.platform.RuntimeType", remapped.getName());
+            assertSame(parent, remapped.getClassLoader());
+        }
+    }
+
+    @Test
+    void internalDagTraversalDelegatesRuntimeClassesToPlatformParent() throws Exception {
+        Path tempDir = Files.createTempDirectory("intermed-loader-internal-platform");
+        FileBundle platform = createJar(tempDir, "platform-runtime-internal",
+            Map.of("sample.platform.RuntimeType", "package sample.platform; public class RuntimeType { }"));
+        FileBundle dependency = createJar(tempDir, "dependency-internal",
+            Map.of("sample.dependency.DependencyType", "package sample.dependency; public class DependencyType { }"));
+        FileBundle main = createJar(tempDir, "main-internal-platform",
+            Map.of("sample.main.OwnType", "package sample.main; public class OwnType { }"));
+
+        try (URLClassLoader parent = new URLClassLoader(new URL[] {platform.jar.toUri().toURL()}, getClass().getClassLoader())) {
+            LazyInterMedClassLoader dependencyLoader = new LazyInterMedClassLoader(
+                "dependency", dependency.jar.toFile(), Set.of(), parent);
+            LazyInterMedClassLoader mainLoader = new LazyInterMedClassLoader(
+                "main", main.jar.toFile(), Set.of(dependencyLoader), parent);
+
+            Class<?> runtimeType = mainLoader.loadClass("sample.platform.RuntimeType");
+
+            assertEquals("sample.platform.RuntimeType", runtimeType.getName());
+            assertSame(parent, runtimeType.getClassLoader());
+        }
+    }
+
+    @Test
+    void delegatesRuntimeClassesToRegisteredGameClassLoader() throws Exception {
+        Path tempDir = Files.createTempDirectory("intermed-loader-game-runtime");
+        FileBundle gameRuntime = createJar(tempDir, "game-runtime",
+            Map.of("net.minecraft.world.level.levelgen.structure.StructureType",
+                "package net.minecraft.world.level.levelgen.structure; public class StructureType { }"));
+        FileBundle main = createJar(tempDir, "main-game-runtime",
+            Map.of("sample.main.OwnType", "package sample.main; public class OwnType { }"));
+
+        try (URLClassLoader gameLoader = new URLClassLoader(new URL[] {gameRuntime.jar.toUri().toURL()}, null)) {
+            LazyInterMedClassLoader.registerRuntimeClassLoader(gameLoader);
+            LazyInterMedClassLoader mainLoader = new LazyInterMedClassLoader(
+                "main", main.jar.toFile(), Set.of(), ClassLoader.getSystemClassLoader());
+
+            Class<?> structureType = mainLoader.loadClass("net.minecraft.world.level.levelgen.structure.StructureType");
+
+            assertEquals("net.minecraft.world.level.levelgen.structure.StructureType", structureType.getName());
+            assertSame(gameLoader, structureType.getClassLoader());
+        }
+    }
+
+    @Test
+    void intermedRuntimeClassesPreferAgentParentOverRegisteredGameClassLoader() throws Exception {
+        Path tempDir = Files.createTempDirectory("intermed-loader-agent-runtime");
+        FileBundle fakeRuntime = createJar(tempDir, "fake-intermed-runtime",
+            Map.of("org.intermed.core.config.RuntimeConfig",
+                "package org.intermed.core.config; public final class RuntimeConfig { public static String marker() { return \"fake\"; } }"));
+        FileBundle main = createJar(tempDir, "main-agent-runtime",
+            Map.of("sample.main.OwnType", "package sample.main; public class OwnType { }"));
+
+        try (URLClassLoader gameLoader = new URLClassLoader(new URL[] {fakeRuntime.jar.toUri().toURL()}, null)) {
+            LazyInterMedClassLoader.registerRuntimeClassLoader(gameLoader);
+            LazyInterMedClassLoader mainLoader = new LazyInterMedClassLoader(
+                "main", main.jar.toFile(), Set.of(), getClass().getClassLoader());
+
+            Class<?> runtimeConfig = mainLoader.loadClass("org.intermed.core.config.RuntimeConfig");
+
+            assertSame(RuntimeConfig.class, runtimeConfig);
+            assertSame(RuntimeConfig.class.getClassLoader(), runtimeConfig.getClassLoader());
+        }
+    }
+
+    @Test
+    void bridgeLoaderHostsCoreFabricApiShimsWithoutShadowingIntermedRuntime() throws Exception {
+        Path tempDir = Files.createTempDirectory("intermed-loader-bridge-support");
+        FileBundle gameRuntime = createJar(tempDir, "game-runtime-shims",
+            Map.of(
+                "net.minecraft.server.packs.resources.PreparableReloadListener",
+                "package net.minecraft.server.packs.resources; public interface PreparableReloadListener { }",
+                "net.minecraft.resources.ResourceLocation",
+                "package net.minecraft.resources; public class ResourceLocation { }"
+            ));
+
+        try (URLClassLoader gameLoader = new URLClassLoader(new URL[] {gameRuntime.jar.toUri().toURL()}, null)) {
+            LazyInterMedClassLoader.registerRuntimeClassLoader(gameLoader);
+
+            LazyInterMedClassLoader bridgeLoader = new LazyInterMedClassLoader(
+                "intermed-fabric-bridge", null, Set.of(), getClass().getClassLoader());
+            bridgeLoader.addOwnedClassPrefix("net.fabricmc.api.");
+            bridgeLoader.addOwnedClassPrefix("net.fabricmc.loader.api.");
+            bridgeLoader.addOwnedClassPrefix("net.fabricmc.fabric.api.");
+            bridgeLoader.addJar(codeSourceLocation());
+
+            LazyInterMedClassLoader consumerLoader = new LazyInterMedClassLoader(
+                "consumer", null, Set.of(bridgeLoader), getClass().getClassLoader());
+
+            Class<?> fabricListener = consumerLoader.loadClass("net.fabricmc.fabric.api.resource.IdentifiableResourceReloadListener");
+
+            assertSame(bridgeLoader, fabricListener.getClassLoader());
+            assertEquals(1, fabricListener.getInterfaces().length);
+            assertEquals("net.minecraft.server.packs.resources.PreparableReloadListener",
+                fabricListener.getInterfaces()[0].getName());
+            assertSame(gameLoader, fabricListener.getInterfaces()[0].getClassLoader());
+
+            Class<?> runtimeConfig = bridgeLoader.loadClass("org.intermed.core.config.RuntimeConfig");
+            assertSame(RuntimeConfig.class, runtimeConfig);
+            assertSame(RuntimeConfig.class.getClassLoader(), runtimeConfig.getClassLoader());
+        }
+    }
+
+    @Test
+    void platformApiPeersPreferRealProviderModulesOverBuiltInBridgeFallback() throws Exception {
+        Path tempDir = Files.createTempDirectory("intermed-loader-platform-provider");
+        FileBundle gameRuntime = createJar(tempDir, "game-runtime-intermediary",
+            Map.of(
+                "net.minecraft.class_3302",
+                "package net.minecraft; public interface class_3302 { }",
+                "net.minecraft.class_2960",
+                "package net.minecraft; public class class_2960 { }"
+            ));
+        FileBundle fabricResourceProvider = createJar(
+            tempDir,
+            "fabric-resource-provider",
+            Map.of(
+                "net.fabricmc.fabric.api.resource.IdentifiableResourceReloadListener",
+                """
+                    package net.fabricmc.fabric.api.resource;
+
+                    import java.util.Collection;
+                    import java.util.Collections;
+                    import net.minecraft.class_2960;
+                    import net.minecraft.class_3302;
+
+                    public interface IdentifiableResourceReloadListener extends class_3302 {
+                        class_2960 getFabricId();
+
+                        default Collection<class_2960> getFabricDependencies() {
+                            return Collections.emptyList();
+                        }
+                    }
+                    """
+            ),
+            Map.of(),
+            List.of(gameRuntime.jar)
+        );
+
+        try (URLClassLoader gameLoader = new URLClassLoader(new URL[] {gameRuntime.jar.toUri().toURL()}, null)) {
+            LazyInterMedClassLoader.registerRuntimeClassLoader(gameLoader);
+
+            LazyInterMedClassLoader bridgeLoader = new LazyInterMedClassLoader(
+                "intermed-fabric-bridge", null, Set.of(), getClass().getClassLoader());
+            bridgeLoader.addOwnedClassPrefix("net.fabricmc.api.");
+            bridgeLoader.addOwnedClassPrefix("net.fabricmc.loader.api.");
+            bridgeLoader.addOwnedClassPrefix("net.fabricmc.fabric.api.");
+            bridgeLoader.addJar(codeSourceLocation());
+
+            LazyInterMedClassLoader fabricApiLoader = new LazyInterMedClassLoader(
+                "fabric-resource-loader-v0", fabricResourceProvider.jar.toFile(), Set.of(), getClass().getClassLoader());
+
+            LazyInterMedClassLoader consumerLoader = new LazyInterMedClassLoader(
+                "consumer", null, Set.of(), getClass().getClassLoader());
+            consumerLoader.addPeer(bridgeLoader);
+            consumerLoader.addPeer(fabricApiLoader);
+
+            Class<?> fabricListener = consumerLoader.loadClass("net.fabricmc.fabric.api.resource.IdentifiableResourceReloadListener");
+
+            assertSame(fabricApiLoader, fabricListener.getClassLoader(),
+                "Real Fabric API modules must win over built-in bridge fallbacks for shared API classes");
+            assertEquals("net.minecraft.class_3302", fabricListener.getInterfaces()[0].getName());
+            assertSame(gameLoader, fabricListener.getInterfaces()[0].getClassLoader());
+        }
     }
 
     @Test
@@ -516,12 +715,51 @@ class LazyInterMedClassLoaderTest {
             () -> consumerLoader.loadClass("sample.provider.impl.HiddenImpl"));
     }
 
+    @Test
+    void appliesActiveNativeMixinTransformerBeforeDefiningClass() throws Exception {
+        Path tempDir = Files.createTempDirectory("intermed-loader-native-mixin");
+        FileBundle original = createJar(
+            tempDir,
+            "native-mixin-original",
+            Map.of("sample.mixin.NativeTarget",
+                "package sample.mixin; public class NativeTarget { public static final String VALUE = \"original\"; }")
+        );
+        FileBundle transformed = createJar(
+            tempDir,
+            "native-mixin-transformed",
+            Map.of("sample.mixin.NativeTarget",
+                "package sample.mixin; public class NativeTarget { public static final String VALUE = \"mixed\"; }")
+        );
+
+        byte[] transformedBytes = readJarEntryBytes(transformed.jar, "sample/mixin/NativeTarget.class");
+        installActiveMixinTransformer((environment, name, classBytes) ->
+            "sample.mixin.NativeTarget".equals(name) ? transformedBytes : classBytes);
+
+        LazyInterMedClassLoader loader = new LazyInterMedClassLoader(
+            "native-mixin", original.jar.toFile(), Set.of(), getClass().getClassLoader());
+
+        Class<?> targetClass = loader.loadClass("sample.mixin.NativeTarget");
+
+        assertEquals("mixed", targetClass.getField("VALUE").get(null));
+        assertSame(loader, targetClass.getClassLoader());
+    }
+
     private static FileBundle createJar(Path root, String name, Map<String, String> sources) throws Exception {
         return createJar(root, name, sources, Map.of());
     }
 
+    private static File codeSourceLocation() throws Exception {
+        return new File(RuntimeConfig.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+    }
+
     private static FileBundle createJar(Path root, String name, Map<String, String> sources,
                                         Map<String, String> resources) throws Exception {
+        return createJar(root, name, sources, resources, List.of());
+    }
+
+    private static FileBundle createJar(Path root, String name, Map<String, String> sources,
+                                        Map<String, String> resources,
+                                        List<Path> classpathEntries) throws Exception {
         Path sourceRoot = root.resolve(name + "-src");
         Path classesRoot = root.resolve(name + "-classes");
         Files.createDirectories(sourceRoot);
@@ -538,6 +776,13 @@ class LazyInterMedClassLoaderTest {
         ArrayList<String> args = new ArrayList<>();
         args.add("-d");
         args.add(classesRoot.toString());
+        if (classpathEntries != null && !classpathEntries.isEmpty()) {
+            args.add("-classpath");
+            args.add(classpathEntries.stream()
+                .map(Path::toString)
+                .reduce((left, right) -> left + File.pathSeparator + right)
+                .orElse(""));
+        }
         args.addAll(Files.walk(sourceRoot)
             .filter(p -> p.toString().endsWith(".java"))
             .map(Path::toString)
@@ -566,6 +811,66 @@ class LazyInterMedClassLoaderTest {
         assertNotNull(stream);
         try (InputStream in = stream) {
             return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    private static byte[] readJarEntryBytes(Path jar, String entryName) throws IOException {
+        try (java.util.jar.JarFile jarFile = new java.util.jar.JarFile(jar.toFile())) {
+            JarEntry entry = jarFile.getJarEntry(entryName);
+            assertNotNull(entry, "Missing test entry " + entryName);
+            try (InputStream stream = jarFile.getInputStream(entry)) {
+                return stream.readAllBytes();
+            }
+        }
+    }
+
+    private static void installActiveMixinTransformer(NativeMixinTransform callback) {
+        MixinBootstrap.init();
+        IMixinTransformer transformer = (IMixinTransformer) Proxy.newProxyInstance(
+            LazyInterMedClassLoaderTest.class.getClassLoader(),
+            new Class<?>[] { IMixinTransformer.class },
+            (proxy, method, args) -> {
+                String methodName = method.getName();
+                if ("transformClass".equals(methodName)
+                    && method.getParameterCount() == 3
+                    && method.getParameterTypes()[2] == byte[].class) {
+                    return callback.apply(
+                        (MixinEnvironment) args[0],
+                        (String) args[1],
+                        (byte[]) args[2]
+                    );
+                }
+                if ("transformClassBytes".equals(methodName)) {
+                    return callback.apply(
+                        MixinEnvironment.getCurrentEnvironment(),
+                        (String) args[1],
+                        (byte[]) args[2]
+                    );
+                }
+                if ("computeFramesForClass".equals(methodName)) {
+                    return false;
+                }
+                if ("transformClass".equals(methodName) || "generateClass".equals(methodName)) {
+                    return false;
+                }
+                if ("reload".equals(methodName)) {
+                    return List.of();
+                }
+                if ("getExtensions".equals(methodName) || "audit".equals(methodName)) {
+                    return null;
+                }
+                throw new UnsupportedOperationException(methodName);
+            }
+        );
+        MixinEnvironment.getCurrentEnvironment().setActiveTransformer(transformer);
+    }
+
+    private static void clearActiveMixinTransformer() {
+        try {
+            Field field = MixinEnvironment.class.getDeclaredField("transformer");
+            field.setAccessible(true);
+            field.set(null, null);
+        } catch (ReflectiveOperationException ignored) {
         }
     }
 
@@ -598,6 +903,11 @@ class LazyInterMedClassLoaderTest {
         public void loadLibrary(String libName) {
             loadLibraryCalls++;
         }
+    }
+
+    @FunctionalInterface
+    private interface NativeMixinTransform {
+        byte[] apply(MixinEnvironment environment, String name, byte[] classBytes);
     }
 
     private record FileBundle(Path jar) {}

@@ -1,4 +1,4 @@
-# InterMed v8.0.0-alpha.1 Open Alpha Configuration Reference
+# InterMed v8.0.0-alpha.2 Open Alpha Configuration Reference
 
 All active alpha settings live in `intermed-runtime.properties`, loaded from the classpath root (inside the InterMed JAR) and overridable by a file placed in `<gameDir>/config/intermed-runtime.properties`. Every key can also be set as a JVM system property (`-Dkey=value`), which takes highest precedence. TOML/YAML configuration and GUI override flows are deferred launch criteria, not active alpha surfaces.
 

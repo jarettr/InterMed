@@ -46,7 +46,10 @@ public final class InterMedNetworkBridge {
 
     public static final int NETWORK_PROTOCOL_VERSION = 1;
     private static final int ENVELOPE_MAGIC = 0x494D4E42; // IMNB
-    private static final ResourceLocation TRANSPORT_CHANNEL = new ResourceLocation("intermed", "network_bridge");
+    private static final String TRANSPORT_CHANNEL_NAMESPACE = "intermed";
+    private static final String TRANSPORT_CHANNEL_PATH = "network_bridge";
+    private static final String REGISTRY_SYNC_CHANNEL_NAMESPACE = "intermed";
+    private static final String REGISTRY_SYNC_CHANNEL_PATH = "registry_sync";
     private static final byte[] EMPTY_PAYLOAD = new byte[0];
     private static final Object REGISTRATION_LOCK = new Object();
 
@@ -157,7 +160,7 @@ public final class InterMedNetworkBridge {
     public static NetworkBridgeDiagnostics diagnostics() {
         return new NetworkBridgeDiagnostics(
             NETWORK_PROTOCOL_VERSION,
-            TRANSPORT_CHANNEL,
+            transportChannel(),
             snapshotChannelDescriptors().size(),
             ENCODED_ENVELOPES.get(),
             DECODED_ENVELOPES.get(),
@@ -171,12 +174,22 @@ public final class InterMedNetworkBridge {
         return NETWORK_PROTOCOL_VERSION;
     }
 
+    public static boolean canLinkMinecraftNetworkTypes() {
+        try {
+            Class.forName("net.minecraft.resources.ResourceLocation", false, InterMedNetworkBridge.class.getClassLoader());
+            Class.forName("net.minecraft.network.FriendlyByteBuf", false, InterMedNetworkBridge.class.getClassLoader());
+            return true;
+        } catch (ClassNotFoundException | LinkageError ignored) {
+            return false;
+        }
+    }
+
     public static ResourceLocation transportChannel() {
-        return TRANSPORT_CHANNEL;
+        return new ResourceLocation(TRANSPORT_CHANNEL_NAMESPACE, TRANSPORT_CHANNEL_PATH);
     }
 
     public static ResourceLocation registrySyncChannel() {
-        return REGISTRY_SYNC_CHANNEL;
+        return new ResourceLocation(REGISTRY_SYNC_CHANNEL_NAMESPACE, REGISTRY_SYNC_CHANNEL_PATH);
     }
 
     public static <T> InterMedPacketEnvelope createClientboundEnvelope(ResourceLocation channelId,
@@ -376,8 +389,6 @@ public final class InterMedNetworkBridge {
 
     // ── Registry translation matrix handshake (ТЗ 3.5.3) ─────────────────────
 
-    private static final ResourceLocation REGISTRY_SYNC_CHANNEL =
-        new ResourceLocation("intermed", "registry_sync");
     private static final Map<Object, byte[]> REGISTRY_SYNC_SERVER_SNAPSHOTS = new ConcurrentHashMap<>();
     private static volatile Supplier<byte[]> registrySyncServerSnapshotSupplier =
         RegistryTranslationMatrix::buildLocalSnapshot;
@@ -428,9 +439,11 @@ public final class InterMedNetworkBridge {
             return;
         }
 
+        ResourceLocation registrySyncChannel = registrySyncChannel();
+
         // Serverbound: client → server — client sends its own snapshot during handshake.
         // Server builds the translation matrix from the two snapshots.
-        registerServerReceiver(REGISTRY_SYNC_CHANNEL, (server, player, handler, buf, responseSender) -> {
+        registerServerReceiver(registrySyncChannel, (server, player, handler, buf, responseSender) -> {
             if (!(buf instanceof byte[])) return;
             byte[] clientSnapshotBytes = sanitizePayloadBytes((byte[]) buf);
             try {
@@ -446,7 +459,7 @@ public final class InterMedNetworkBridge {
 
         // Clientbound: server → client — broadcast server snapshot on player join
         // so the client can also build its local translation view.
-        registerClientReceiver(REGISTRY_SYNC_CHANNEL, (client, handler, buf, responseSender) -> {
+        registerClientReceiver(registrySyncChannel, (client, handler, buf, responseSender) -> {
             if (!(buf instanceof byte[])) return;
             byte[] serverSnapshotBytes = sanitizePayloadBytes((byte[]) buf);
             try {
@@ -454,7 +467,7 @@ public final class InterMedNetworkBridge {
                 RegistryTranslationMatrix matrix = buildTranslationMatrix(serverSnapshotBytes, clientSnapshotBytes);
                 RegistryTranslationMatrix.install(matrix);
                 byte[] replyFrame = encodeServerbound(
-                    REGISTRY_SYNC_CHANNEL,
+                    registrySyncChannel,
                     "intermed",
                     clientSnapshotBytes,
                     PayloadCodec.bytes()
@@ -644,6 +657,7 @@ public final class InterMedNetworkBridge {
 
         ServerLifecycleEvents.SERVER_STARTED.register(server -> refreshRegistrySyncServerSnapshot());
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
+            ResourceLocation registrySyncChannel = registrySyncChannel();
             byte[] serverSnapshot = refreshRegistrySyncServerSnapshot();
             if (serverSnapshot.length == 0) {
                 return;
@@ -652,7 +666,7 @@ public final class InterMedNetworkBridge {
                 REGISTRY_SYNC_SERVER_SNAPSHOTS.put(handler, serverSnapshot);
             }
             byte[] frame = encodeClientbound(
-                REGISTRY_SYNC_CHANNEL,
+                registrySyncChannel,
                 "intermed",
                 serverSnapshot,
                 PayloadCodec.bytes()
@@ -740,8 +754,9 @@ public final class InterMedNetworkBridge {
             frameSender.sendFrame(frame);
             return true;
         }
+        ResourceLocation transportChannel = transportChannel();
         if (sender instanceof ChannelFrameSender frameSender) {
-            frameSender.send(TRANSPORT_CHANNEL, frame);
+            frameSender.send(transportChannel, frame);
             return true;
         }
         if (sender instanceof Consumer<?> consumer) {
@@ -751,11 +766,11 @@ public final class InterMedNetworkBridge {
         if (invokeMatchingMethod(sender, new String[]{"sendFrame", "send", "accept"}, frame)) {
             return true;
         }
-        if (invokeMatchingMethod(sender, new String[]{"send", "sendPacket"}, TRANSPORT_CHANNEL, frame)) {
+        if (invokeMatchingMethod(sender, new String[]{"send", "sendPacket"}, transportChannel, frame)) {
             return true;
         }
         FriendlyByteBuf rawBuffer = new FriendlyByteBuf(Unpooled.wrappedBuffer(Arrays.copyOf(frame, frame.length)));
-        if (invokeMatchingMethod(sender, new String[]{"send", "sendPacket"}, TRANSPORT_CHANNEL, rawBuffer)) {
+        if (invokeMatchingMethod(sender, new String[]{"send", "sendPacket"}, transportChannel, rawBuffer)) {
             return true;
         }
 
@@ -773,9 +788,10 @@ public final class InterMedNetworkBridge {
 
     private static Object createMinecraftTransportPacket(DeliveryDirection direction, byte[] encodedEnvelope) {
         FriendlyByteBuf buffer = new FriendlyByteBuf(Unpooled.wrappedBuffer(Arrays.copyOf(encodedEnvelope, encodedEnvelope.length)));
+        ResourceLocation transportChannel = transportChannel();
         return switch (direction) {
-            case CLIENTBOUND -> new ClientboundCustomPayloadPacket(TRANSPORT_CHANNEL, buffer);
-            case SERVERBOUND -> new ServerboundCustomPayloadPacket(TRANSPORT_CHANNEL, buffer);
+            case CLIENTBOUND -> new ClientboundCustomPayloadPacket(transportChannel, buffer);
+            case SERVERBOUND -> new ServerboundCustomPayloadPacket(transportChannel, buffer);
         };
     }
 

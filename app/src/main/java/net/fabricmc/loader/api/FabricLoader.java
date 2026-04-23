@@ -5,33 +5,38 @@ import net.fabricmc.loader.api.entrypoint.EntrypointContainer;
 import org.intermed.core.bridge.platform.FabricLoaderBridge;
 import org.intermed.core.config.RuntimeConfig;
 import java.nio.file.Path;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
-public class FabricLoader {
-    private static final FabricLoader INSTANCE = new FabricLoader();
-    private final FabricLoaderBridge bridge = FabricLoaderBridge.getInstance();
+public interface FabricLoader {
+    FabricLoader INSTANCE = new FabricLoader() {};
+    FabricLoaderBridge BRIDGE = FabricLoaderBridge.getInstance();
     
-    public static FabricLoader getInstance() { return INSTANCE; }
+    static FabricLoader getInstance() { return INSTANCE; }
 
-    public Path getConfigDir() { return bridge.getConfigDir(); }
-    public Path getGameDir() { return bridge.getGameDir(); }
+    default Path getConfigDir() { return BRIDGE.getConfigDir(); }
+    default Path getGameDir() { return BRIDGE.getGameDir(); }
     
-    public boolean isModLoaded(String id) { return bridge.isModLoaded(id); }
-    public boolean isDevelopmentEnvironment() {
+    default boolean isModLoaded(String id) { return BRIDGE.isModLoaded(id); }
+    default boolean isDevelopmentEnvironment() {
         return Boolean.getBoolean("intermed.dev") || Boolean.getBoolean("fabric.development");
     }
-    public EnvType getEnvironmentType() { return RuntimeConfig.get().getEnvironmentType(); }
+    default EnvType getEnvironmentType() { return RuntimeConfig.get().getEnvironmentType(); }
     
-    public Optional<ModContainer> getModContainer(String id) {
-        return bridge.getModContainer(id);
+    default Optional<ModContainer> getModContainer(String id) {
+        return BRIDGE.getModContainer(id);
     }
 
-    public <T> List<T> getEntrypoints(String key, Class<T> type) {
-        return bridge.getEntrypoints(key, type);
+    default Collection<ModContainer> getAllMods() {
+        return BRIDGE.getAllMods();
     }
 
-    public <T> List<EntrypointContainer<T>> getEntrypointContainers(String key, Class<T> type) {
-        return bridge.getEntrypointContainers(key, type);
+    default <T> List<T> getEntrypoints(String key, Class<T> type) {
+        return BRIDGE.getEntrypoints(key, type);
+    }
+
+    default <T> List<EntrypointContainer<T>> getEntrypointContainers(String key, Class<T> type) {
+        return BRIDGE.getEntrypointContainers(key, type);
     }
 }

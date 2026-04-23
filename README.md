@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-InterMed `v8.0.0-alpha.1` is an open-alpha Minecraft mod hypervisor preview targeting one frozen runtime scope:
+InterMed `v8.0.0-alpha.2` is an open-alpha Minecraft mod hypervisor preview targeting one frozen runtime scope:
 
 - Minecraft `1.20.1`
 - cross-loader compatibility foundations for `Fabric`, `Forge`, and `NeoForge`
@@ -10,7 +10,7 @@ InterMed `v8.0.0-alpha.1` is an open-alpha Minecraft mod hypervisor preview targ
 
 ## Status
 
-- Release status: `v8.0.0-alpha.1 / open alpha`
+- Release status: `v8.0.0-alpha.2 / open alpha`
 - Target Minecraft baseline: `1.20.1`
 - Loader families under alpha scope: `Fabric`, `Forge`, `NeoForge`
 - Frozen runtime claim: this alpha applies to `1.20.1` only. It must not be read as a compatibility claim for `1.20+` until real-world validation exists.
@@ -94,7 +94,7 @@ Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening alpha issues or PR
 - Alpha-to-beta test plan: [docs/test-plan-v8-alpha-to-beta.md](docs/test-plan-v8-alpha-to-beta.md)
 - Beta-prep test matrix: [docs/test-matrix.md](docs/test-matrix.md)
 - Beta readiness dashboard rules: [docs/beta-readiness-dashboard-rules.md](docs/beta-readiness-dashboard-rules.md)
-- Alpha.1 release notes: [docs/release-notes-v8.0.0-alpha.1.md](docs/release-notes-v8.0.0-alpha.1.md)
+- Alpha.2 release notes: [docs/release-notes-v8.0.0-alpha.2.md](docs/release-notes-v8.0.0-alpha.2.md)
 - Alpha triage guide: [docs/alpha-triage.md](docs/alpha-triage.md)
 - Known limitations: [docs/known-limitations.md](docs/known-limitations.md)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)

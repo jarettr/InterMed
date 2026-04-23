@@ -5,6 +5,7 @@ import java.io.InputStream;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
@@ -12,11 +13,15 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.jar.Manifest;
 import org.intermed.core.lifecycle.LifecycleManager;
 import org.intermed.core.remapping.InterMedRemapper;
+import org.intermed.core.resolver.RuntimeModuleKind;
 import org.intermed.core.vfs.VirtualFileSystemRouter;
+import org.spongepowered.asm.mixin.MixinEnvironment;
+import org.spongepowered.asm.mixin.transformer.IMixinTransformer;
 
 /**
  * A classloader that implements a Directed Acyclic Graph (DAG) structure for mod isolation
@@ -43,6 +48,7 @@ public class LazyInterMedClassLoader extends URLClassLoader {
      * Additional prefixes can be registered at boot time via {@link #addPlatformApiPrefix}.
      */
     static final Set<String> PLATFORM_API_PREFIXES = ConcurrentHashMap.newKeySet();
+    private static final CopyOnWriteArrayList<ClassLoader> RUNTIME_CLASS_LOADERS = new CopyOnWriteArrayList<>();
 
     static {
         PLATFORM_API_PREFIXES.add("org.intermed.");                 // InterMed bridge interfaces
@@ -59,6 +65,20 @@ public class LazyInterMedClassLoader extends URLClassLoader {
         PLATFORM_API_PREFIXES.add(prefix);
     }
 
+    public static void registerRuntimeClassLoader(ClassLoader loader) {
+        if (loader == null || loader instanceof LazyInterMedClassLoader) {
+            return;
+        }
+        if (!RUNTIME_CLASS_LOADERS.contains(loader)) {
+            RUNTIME_CLASS_LOADERS.add(loader);
+            System.out.println("[DAG] Runtime platform ClassLoader registered: " + loader);
+        }
+    }
+
+    static void resetRuntimeClassLoadersForTests() {
+        RUNTIME_CLASS_LOADERS.clear();
+    }
+
     private final String nodeId;
     private final Set<LazyInterMedClassLoader> parents; // Represents explicit dependency edges
     private final Map<LazyInterMedClassLoader, ParentLinkPolicy> parentPolicies;
@@ -68,6 +88,7 @@ public class LazyInterMedClassLoader extends URLClassLoader {
     private final Map<LazyInterMedClassLoader, WeakPeerPolicy> weakPeers = new ConcurrentHashMap<>();
     private final Set<LazyInterMedClassLoader> incomingWeakPeers = ConcurrentHashMap.newKeySet();
     private final List<BytecodeTransformer> transformers = new ArrayList<>();
+    private final Set<String> ownedClassPrefixes = ConcurrentHashMap.newKeySet();
     final Map<String, Class<?>> classCache = new ConcurrentHashMap<>();
 
     public LazyInterMedClassLoader(String nodeId, File initialJar, Set<LazyInterMedClassLoader> parents, ClassLoader platformClassLoader) {
@@ -328,12 +349,26 @@ public class LazyInterMedClassLoader extends URLClassLoader {
         }
     }
 
+    public void addOwnedClassPrefix(String prefix) {
+        if (prefix == null) {
+            return;
+        }
+        String normalized = prefix.trim().replace('/', '.');
+        if (normalized.isEmpty()) {
+            return;
+        }
+        ownedClassPrefixes.add(normalized.endsWith(".") ? normalized : normalized + ".");
+    }
+
     /**
      * Returns the class bytes only if the bytecode is physically hosted by this loader.
      * Parent/platform delegation is intentionally bypassed so callers can reason
      * about class ownership inside the DAG.
      */
     public byte[] readLocalClassBytes(String binaryClassName) {
+        if (!canDefineLocally(binaryClassName)) {
+            return null;
+        }
         return loadBytes(binaryClassName);
     }
 
@@ -341,6 +376,9 @@ public class LazyInterMedClassLoader extends URLClassLoader {
      * Returns a resource only if it is hosted by this node.
      */
     public URL findLocalResource(String name) {
+        if (!isAllowedLocalClassResource(name)) {
+            return null;
+        }
         return super.findResource(name);
     }
 
@@ -515,14 +553,14 @@ public class LazyInterMedClassLoader extends URLClassLoader {
 
             // --- 5. If not found anywhere in the DAG, delegate to the platform classloader ---
             // This will find game classes, system classes, and anything from the base classpath.
-            return super.loadClass(name, resolve);
+            return loadFromPlatform(name, resolve);
         }
     }
 
     private Class<?> tryLoadFrom(Set<LazyInterMedClassLoader> loaders, String name, boolean resolve,
                                  Set<LazyInterMedClassLoader> visited,
                                  LazyInterMedClassLoader requester) throws ClassNotFoundException {
-        for (LazyInterMedClassLoader candidate : loaders) {
+        for (LazyInterMedClassLoader candidate : orderedCandidates(loaders, name)) {
             if (candidate == null || visited.contains(candidate)) {
                 continue;
             }
@@ -543,7 +581,7 @@ public class LazyInterMedClassLoader extends URLClassLoader {
                                           boolean resolve,
                                           Set<LazyInterMedClassLoader> visited,
                                           LazyInterMedClassLoader requester) throws ClassNotFoundException {
-        for (Map.Entry<LazyInterMedClassLoader, WeakPeerPolicy> entry : weakPeers.entrySet()) {
+        for (Map.Entry<LazyInterMedClassLoader, WeakPeerPolicy> entry : orderedWeakPeerCandidates(name)) {
             LazyInterMedClassLoader candidate = entry.getKey();
             WeakPeerPolicy policy = entry.getValue();
             if (candidate == null || policy == null || visited.contains(candidate) || !policy.allows(name, candidate)) {
@@ -558,6 +596,37 @@ public class LazyInterMedClassLoader extends URLClassLoader {
             }
         }
         return null;
+    }
+
+    private List<LazyInterMedClassLoader> orderedCandidates(Set<LazyInterMedClassLoader> loaders, String name) {
+        if (loaders == null || loaders.isEmpty()) {
+            return List.of();
+        }
+        if (!isPlatformApiClass(name)) {
+            return List.copyOf(loaders);
+        }
+        return loaders.stream()
+            .sorted(platformApiCandidateComparator(name))
+            .toList();
+    }
+
+    private List<Map.Entry<LazyInterMedClassLoader, WeakPeerPolicy>> orderedWeakPeerCandidates(String name) {
+        if (weakPeers.isEmpty()) {
+            return List.of();
+        }
+        if (!isPlatformApiClass(name)) {
+            return List.copyOf(weakPeers.entrySet());
+        }
+        return weakPeers.entrySet().stream()
+            .sorted(Map.Entry.comparingByKey(platformApiCandidateComparator(name)))
+            .toList();
+    }
+
+    private Comparator<LazyInterMedClassLoader> platformApiCandidateComparator(String name) {
+        return Comparator
+            .comparing((LazyInterMedClassLoader candidate) -> candidate.hasLocalClassResource(name)).reversed()
+            .thenComparing(candidate -> candidate.isBuiltInRuntimeNode())
+            .thenComparing(LazyInterMedClassLoader::getNodeId);
     }
 
     private URL findResourceFrom(Set<LazyInterMedClassLoader> loaders, String name,
@@ -636,9 +705,75 @@ public class LazyInterMedClassLoader extends URLClassLoader {
                     } catch (ClassNotFoundException ignored) {}
                 }
             }
+
+            return loadFromPlatform(name, resolve);
+        }
+    }
+
+    private Class<?> loadFromPlatform(String name, boolean resolve) throws ClassNotFoundException {
+        String remappedName = remapClassName(name);
+        ClassNotFoundException lastFailure = null;
+
+        for (String candidateName : platformCandidateNames(name, remappedName)) {
+            for (ClassLoader loader : platformLookupOrder(candidateName)) {
+                try {
+                    Class<?> c = Class.forName(candidateName, false, loader);
+                    cachePlatformAlias(name, candidateName, c);
+                    return c;
+                } catch (ClassNotFoundException e) {
+                    lastFailure = e;
+                }
+            }
         }
 
-        throw new ClassNotFoundException(name);
+        throw lastFailure != null ? lastFailure : new ClassNotFoundException(name);
+    }
+
+    private List<ClassLoader> platformLookupOrder(String name) {
+        LinkedHashSet<ClassLoader> loaders = new LinkedHashSet<>();
+        ClassLoader platform = getParent();
+        ClassLoader tccl = Thread.currentThread().getContextClassLoader();
+
+        if (isInterMedRuntimeClass(name)) {
+            addIfUsable(loaders, platform);
+            addIfUsable(loaders, LazyInterMedClassLoader.class.getClassLoader());
+            addIfUsable(loaders, tccl);
+            loaders.addAll(RUNTIME_CLASS_LOADERS);
+        } else {
+            loaders.addAll(RUNTIME_CLASS_LOADERS);
+            addIfUsable(loaders, platform);
+            addIfUsable(loaders, tccl);
+        }
+        loaders.remove(this);
+        loaders.removeIf(LazyInterMedClassLoader.class::isInstance);
+        return List.copyOf(loaders);
+    }
+
+    private static void addIfUsable(Set<ClassLoader> loaders, ClassLoader loader) {
+        if (loader != null) {
+            loaders.add(loader);
+        }
+    }
+
+    private static boolean isInterMedRuntimeClass(String name) {
+        return name != null
+            && (name.startsWith("org.intermed.core.")
+                || name.startsWith("org.intermed.mixin.")
+                || name.startsWith("org.intermed.api."));
+    }
+
+    private List<String> platformCandidateNames(String originalName, String remappedName) {
+        if (remappedName == null || remappedName.equals(originalName)) {
+            return List.of(originalName);
+        }
+        return List.of(remappedName, originalName);
+    }
+
+    private void cachePlatformAlias(String requestedName, String loadedName, Class<?> loadedClass) {
+        classCache.put(requestedName, loadedClass);
+        if (!requestedName.equals(loadedName)) {
+            classCache.put(loadedName, loadedClass);
+        }
     }
 
     private URL findResourceInternal(String name, Set<LazyInterMedClassLoader> visited,
@@ -700,6 +835,9 @@ public class LazyInterMedClassLoader extends URLClassLoader {
     protected Class<?> findClass(String name) throws ClassNotFoundException {
         // --- 1. Remapping hook ---
         String targetName = remapClassName(name);
+        if (!canDefineLocally(targetName)) {
+            throw new ClassNotFoundException(name);
+        }
 
         // --- 2. Load and transform bytes ---
         byte[] bytes = loadBytes(targetName);
@@ -712,12 +850,35 @@ public class LazyInterMedClassLoader extends URLClassLoader {
                         System.err.println("[Transformer] Failed on " + targetName + ": " + ex.getMessage());
                     }
                 }
+                bytes = applyNativeMixinTransform(targetName, bytes);
             }
             definePackageIfNecessary(targetName);
             return defineClass(targetName, bytes, 0, bytes.length);
         }
         // If all attempts fail, throw.
         throw new ClassNotFoundException(name);
+    }
+
+    private byte[] applyNativeMixinTransform(String className, byte[] bytes) {
+        if (bytes == null) {
+            return null;
+        }
+        try {
+            MixinEnvironment environment = MixinEnvironment.getCurrentEnvironment();
+            if (environment == null) {
+                return bytes;
+            }
+            Object activeTransformer = environment.getActiveTransformer();
+            if (!(activeTransformer instanceof IMixinTransformer transformer)) {
+                return bytes;
+            }
+            byte[] transformed = transformer.transformClass(environment, className, bytes);
+            return transformed != null ? transformed : bytes;
+        } catch (Throwable throwable) {
+            System.err.println("[MixinFork] Native transform failed for " + className + ": "
+                + throwable.getClass().getSimpleName() + ": " + throwable.getMessage());
+            return bytes;
+        }
     }
 
     /**
@@ -747,6 +908,42 @@ public class LazyInterMedClassLoader extends URLClassLoader {
 
     private String remapClassName(String name) {
         return InterMedRemapper.remapBinaryClassName(name);
+    }
+
+    private boolean canDefineLocally(String binaryName) {
+        if (binaryName == null || binaryName.isBlank() || ownedClassPrefixes.isEmpty()) {
+            return true;
+        }
+        for (String prefix : ownedClassPrefixes) {
+            if (binaryName.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isAllowedLocalClassResource(String resourceName) {
+        if (resourceName == null || !resourceName.endsWith(".class")) {
+            return true;
+        }
+        String binaryName = resourceName.substring(0, resourceName.length() - 6).replace('/', '.');
+        return canDefineLocally(binaryName);
+    }
+
+    private boolean hasLocalClassResource(String binaryName) {
+        if (binaryName == null || binaryName.isBlank()) {
+            return false;
+        }
+        String targetName = remapClassName(binaryName);
+        if (!canDefineLocally(targetName)) {
+            return false;
+        }
+        String path = targetName.replace('.', '/') + ".class";
+        return findLocalResource(path) != null;
+    }
+
+    private boolean isBuiltInRuntimeNode() {
+        return RuntimeModuleKind.forModuleId(nodeId).isBuiltInRuntime();
     }
 
     private byte[] loadBytes(String name) {

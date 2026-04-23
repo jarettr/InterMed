@@ -4,13 +4,19 @@ import net.bytebuddy.agent.builder.AgentBuilder;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.dynamic.ClassFileLocator;
+import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.matcher.ElementMatcher;
 import net.bytebuddy.matcher.ElementMatchers;
+import net.bytebuddy.utility.JavaModule;
 import org.intermed.core.registry.RegistryCompatibilityContract;
 import org.intermed.core.registry.RegistryGetAdvice;
 import org.intermed.core.registry.RegistryOptionalGetAdvice;
 import org.intermed.core.registry.RegistryRawIdAdvice;
 import org.intermed.core.registry.RegistryRegisterAdvice;
+import org.intermed.core.bridge.forge.ForgeModListCrashReportAdvice;
+import org.intermed.core.bridge.forge.ForgeModListMirrorAdvice;
+import org.intermed.core.bridge.forge.ForgeModListScreenAdvice;
 
 import java.lang.instrument.Instrumentation;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -45,6 +51,7 @@ public final class InterMedAgent {
 
         new AgentBuilder.Default()
             .with(AgentBuilder.RedefinitionStrategy.RETRANSFORMATION)
+            .with(new BridgeTargetListener())
             .disableClassFormatChanges()
             .ignore(ElementMatchers.nameStartsWith("net.bytebuddy."))
 
@@ -260,6 +267,23 @@ public final class InterMedAgent {
                     .visit(Advice.to(RegistryRawIdAdvice.class)
                         .on(rawIdReturningRegistryReadMethods())))
 
+            .type(ElementMatchers.named("net.minecraftforge.fml.ModList"))
+            .transform((builder, td, cl, module, pd) ->
+                builder
+                    .visit(bridgeAdvice(ForgeModListMirrorAdvice.class)
+                        .on(ElementMatchers.named("getMods")
+                            .and(ElementMatchers.takesArguments(0))))
+                    .visit(bridgeAdvice(ForgeModListCrashReportAdvice.class)
+                        .on(ElementMatchers.named("crashReport")
+                            .and(ElementMatchers.takesArguments(0)))))
+
+            .type(ElementMatchers.named("net.minecraftforge.client.gui.ModListScreen"))
+            .transform((builder, td, cl, module, pd) ->
+                builder.visit(bridgeAdvice(ForgeModListScreenAdvice.class)
+                    .on(ElementMatchers.isConstructor()
+                        .or(ElementMatchers.namedOneOf("reloadMods", "m_86600_")
+                            .and(ElementMatchers.takesArguments(0))))))
+
             .type(ElementMatchers.named("java.lang.ProcessBuilder"))
             .transform((builder, td, cl, module, pd) ->
                 builder.visit(Advice.to(ProcessSecurityAdvice.class)
@@ -334,6 +358,54 @@ public final class InterMedAgent {
 
     private static ElementMatcher.Junction<? super TypeDescription> hasForeignSuperType(String binaryName) {
         return ElementMatchers.hasSuperType(ElementMatchers.named(binaryName));
+    }
+
+    private static Advice bridgeAdvice(Class<?> adviceClass) {
+        return Advice.to(adviceClass, new ClassFileLocator.Compound(
+            locatorFor(adviceClass),
+            locatorFor(InterMedAgent.class),
+            ClassFileLocator.ForClassLoader.ofSystemLoader(),
+            ClassFileLocator.ForClassLoader.ofBootLoader()
+        ));
+    }
+
+    private static ClassFileLocator locatorFor(Class<?> type) {
+        ClassLoader loader = type.getClassLoader();
+        return loader == null
+            ? ClassFileLocator.ForClassLoader.ofBootLoader()
+            : ClassFileLocator.ForClassLoader.of(loader);
+    }
+
+    private static boolean isBridgeTarget(String typeName) {
+        return "net.minecraftforge.fml.ModList".equals(typeName)
+            || "net.minecraftforge.client.gui.ModListScreen".equals(typeName);
+    }
+
+    private static final class BridgeTargetListener extends AgentBuilder.Listener.Adapter {
+        @Override
+        public void onTransformation(TypeDescription typeDescription,
+                                     ClassLoader classLoader,
+                                     JavaModule module,
+                                     boolean loaded,
+                                     DynamicType dynamicType) {
+            if (isBridgeTarget(typeDescription.getName())) {
+                System.out.println("[InterMed Agent] Transformed bridge target: "
+                    + typeDescription.getName());
+            }
+        }
+
+        @Override
+        public void onError(String typeName,
+                            ClassLoader classLoader,
+                            JavaModule module,
+                            boolean loaded,
+                            Throwable throwable) {
+            if (isBridgeTarget(typeName)) {
+                System.err.println("[InterMed Agent] Failed to transform bridge target "
+                    + typeName + ": " + throwable.getClass().getSimpleName()
+                    + ": " + throwable.getMessage());
+            }
+        }
     }
 
     private static ElementMatcher.Junction<? super MethodDescription> dangerousVarHandleMethods() {

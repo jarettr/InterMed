@@ -35,6 +35,7 @@ public final class InterMedRemapper {
 
     public static void clearCaches() {
         STRING_CACHE.clear();
+        SymbolicTranslationTlb.clear();
     }
 
     public static String remapBinaryClassName(String binaryName) {
@@ -65,6 +66,9 @@ public final class InterMedRemapper {
         if (!dictionary.hasMappings()) {
             return rawBytes;
         }
+        if (SelectiveRemapBypassPolicy.useSymbolicOnly(className)) {
+            return transformSymbolicOnlyClassBytes(className, rawBytes, instrumentReflectionStrings);
+        }
         try {
             ClassReader reader = new ClassReader(rawBytes);
             ClassWriter writer = DagAwareClassWriter.create(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
@@ -80,6 +84,14 @@ public final class InterMedRemapper {
             System.err.println("[Remapper] Failed to transform " + className + ": " + t.getMessage());
             return rawBytes;
         }
+    }
+
+    static byte[] transformSymbolicOnlyClassBytes(String className, byte[] rawBytes, boolean instrumentReflectionStrings) {
+        Objects.requireNonNull(rawBytes, "rawBytes");
+        if (!instrumentReflectionStrings) {
+            return rawBytes;
+        }
+        return ReflectionOnlyTransformer.instrument(className, rawBytes);
     }
 
     private static String translateRuntimeStringUncached(String original) {

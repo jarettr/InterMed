@@ -1,6 +1,6 @@
-# InterMed v8.0.0-alpha.1 Open Alpha User Guide
+# InterMed v8.0.0-alpha.2 Open Alpha User Guide
 
-InterMed `v8.0.0-alpha.1` is an experimental JVM hypervisor for Minecraft `1.20.1` that is being hardened for mixed Fabric, Forge, and NeoForge compatibility. This guide describes the current alpha path, not a production-ready compatibility guarantee.
+InterMed `v8.0.0-alpha.2` is an experimental JVM hypervisor for Minecraft `1.20.1` that is being hardened for mixed Fabric, Forge, and NeoForge compatibility. This guide describes the current alpha path, not a production-ready compatibility guarantee.
 
 ---
 
@@ -46,7 +46,7 @@ InterMed does not support Java 8 or Java 11. The GraalVM Espresso sandbox requir
 2. Generate a local launch kit once for the target game directory:
 
    ```bash
-   java -jar app/build/libs/InterMedCore-8.0.0-alpha.1.jar launch-kit \
+   java -jar app/build/libs/InterMedCore-8.0.0-alpha.2.jar launch-kit \
      --game-dir /path/to/.minecraft
    ```
 
@@ -84,13 +84,13 @@ InterMed does not support Java 8 or Java 11. The GraalVM Espresso sandbox requir
 
 If you prefer to wire the process yourself, keep the same runtime model as the launch kit:
 
-- `-javaagent:/path/to/InterMedCore-8.0.0-alpha.1.jar`
+- `-javaagent:/path/to/InterMedCore-8.0.0-alpha.2.jar`
 - `--add-opens=java.base/java.lang=ALL-UNNAMED`
 - `--add-opens=java.base/sun.nio.ch=ALL-UNNAMED`
 - `-Druntime.game.dir=/path/to/gameDir`
 - `-Druntime.mods.dir=/path/to/gameDir/intermed_mods`
 
-For Fabric launcher profiles, swap the agent JAR for `InterMedCore-8.0.0-alpha.1-fabric.jar`.
+For Fabric launcher profiles, swap the agent JAR for `InterMedCore-8.0.0-alpha.2-fabric.jar`.
 
 ### 2.3 Gradle / Maven integration (for server operators)
 
@@ -99,7 +99,7 @@ Add the InterMed artifact to your build:
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("org.intermed:intermed-runtime:8.0.0-alpha.1")
+    implementation("org.intermed:intermed-runtime:8.0.0-alpha.2")
 }
 ```
 
@@ -382,7 +382,7 @@ Recommended JVM flags for controlled alpha/server testing:
 --enable-preview
 --add-opens java.base/java.lang=ALL-UNNAMED
 --add-opens java.base/sun.nio.ch=ALL-UNNAMED
--javaagent:/path/to/InterMedCore-8.0.0-alpha.1.jar
+-javaagent:/path/to/InterMedCore-8.0.0-alpha.2.jar
 ```
 
 If you generated a launch kit, those InterMed-specific flags are already included

@@ -238,6 +238,7 @@ public final class ApiGapMatrixGenerator {
         symbols.add(method("Fabric", "loader", "alpha", "P0", "net.fabricmc.loader.api.FabricLoader", "getInstance", "()Lnet/fabricmc/loader/api/FabricLoader;"));
         symbols.add(method("Fabric", "loader", "alpha", "P0", "net.fabricmc.loader.api.FabricLoader", "isModLoaded", "(Ljava/lang/String;)Z"));
         symbols.add(method("Fabric", "loader", "alpha", "P0", "net.fabricmc.loader.api.FabricLoader", "getModContainer", "(Ljava/lang/String;)Ljava/util/Optional;"));
+        symbols.add(method("Fabric", "loader", "alpha", "P0", "net.fabricmc.loader.api.FabricLoader", "getAllMods", "()Ljava/util/Collection;"));
         symbols.add(method("Fabric", "loader", "alpha", "P1", "net.fabricmc.loader.api.FabricLoader", "getEntrypoints", "(Ljava/lang/String;Ljava/lang/Class;)Ljava/util/List;"));
         symbols.add(method("Fabric", "loader", "alpha", "P1", "net.fabricmc.loader.api.FabricLoader", "getEntrypointContainers", "(Ljava/lang/String;Ljava/lang/Class;)Ljava/util/List;"));
         symbols.add(method("Fabric", "loader", "alpha", "P1", "net.fabricmc.loader.api.FabricLoader", "getConfigDir", "()Ljava/nio/file/Path;"));
@@ -251,8 +252,15 @@ public final class ApiGapMatrixGenerator {
         symbols.add(method("Fabric", "loader", "alpha", "P1", "net.fabricmc.loader.api.ModContainer", "getRootPaths", "()Ljava/util/List;"));
         symbols.add(cls("Fabric", "loader", "alpha", "P0", "net.fabricmc.loader.api.metadata.ModMetadata"));
         symbols.add(method("Fabric", "loader", "alpha", "P0", "net.fabricmc.loader.api.metadata.ModMetadata", "getId", "()Ljava/lang/String;"));
-        symbols.add(method("Fabric", "loader", "alpha", "P1", "net.fabricmc.loader.api.metadata.ModMetadata", "getVersion", "()Ljava/lang/String;"));
+        symbols.add(method("Fabric", "loader", "alpha", "P1", "net.fabricmc.loader.api.metadata.ModMetadata", "getVersion", "()Lnet/fabricmc/loader/api/Version;"));
         symbols.add(method("Fabric", "loader", "alpha", "P1", "net.fabricmc.loader.api.metadata.ModMetadata", "getName", "()Ljava/lang/String;"));
+        symbols.add(method("Fabric", "loader", "alpha", "P1", "net.fabricmc.loader.api.metadata.ModMetadata", "containsCustomValue", "(Ljava/lang/String;)Z"));
+        symbols.add(method("Fabric", "loader", "alpha", "P1", "net.fabricmc.loader.api.metadata.ModMetadata", "getCustomValue", "(Ljava/lang/String;)Lnet/fabricmc/loader/api/metadata/CustomValue;"));
+        symbols.add(method("Fabric", "loader", "alpha", "P1", "net.fabricmc.loader.api.metadata.ModMetadata", "getCustomValues", "()Ljava/util/Map;"));
+        symbols.add(cls("Fabric", "loader", "alpha", "P1", "net.fabricmc.loader.api.Version"));
+        symbols.add(method("Fabric", "loader", "alpha", "P1", "net.fabricmc.loader.api.Version", "getFriendlyString", "()Ljava/lang/String;"));
+        symbols.add(cls("Fabric", "loader", "alpha", "P1", "net.fabricmc.loader.api.metadata.CustomValue"));
+        symbols.add(method("Fabric", "loader", "alpha", "P1", "net.fabricmc.loader.api.metadata.CustomValue", "getAsBoolean", "()Z"));
         symbols.add(cls("Fabric", "loader", "alpha", "P1", "net.fabricmc.loader.api.entrypoint.EntrypointContainer"));
         symbols.add(method("Fabric", "loader", "alpha", "P1", "net.fabricmc.loader.api.entrypoint.EntrypointContainer", "getEntrypoint", "()Ljava/lang/Object;"));
         symbols.add(method("Fabric", "loader", "alpha", "P1", "net.fabricmc.loader.api.entrypoint.EntrypointContainer", "getProvider", "()Lnet/fabricmc/loader/api/ModContainer;"));
@@ -301,8 +309,9 @@ public final class ApiGapMatrixGenerator {
         symbols.add(cls("Forge", "resources", "alpha", "P1", "net.minecraftforge.event.AddPackFindersEvent"));
 
         symbols.add(cls("Forge", "bridge", "alpha", "P0", "org.intermed.core.bridge.ForgeEventBridge"));
-        symbols.add(method("Forge", "bridge", "alpha", "P0", "org.intermed.core.bridge.ForgeEventBridge", "onRegister", "(Lnet/minecraftforge/registries/RegisterEvent;)V"));
-        symbols.add(method("Forge", "bridge", "alpha", "P1", "org.intermed.core.bridge.ForgeEventBridge", "onPackFinder", "(Lnet/minecraftforge/event/AddPackFindersEvent;)V"));
+        symbols.add(method("Forge", "bridge", "alpha", "P0", "org.intermed.core.bridge.ForgeEventBridge", "registerIfAvailable", "()Z"));
+        symbols.add(method("Forge", "bridge", "alpha", "P0", "org.intermed.core.bridge.ForgeEventBridge", "onRegister", "(Ljava/lang/Object;)V"));
+        symbols.add(method("Forge", "bridge", "alpha", "P1", "org.intermed.core.bridge.ForgeEventBridge", "onPackFinder", "(Ljava/lang/Object;)V"));
         symbols.add(cls("Forge", "network", "alpha", "P1", "org.intermed.core.bridge.ForgeNetworkBridge"));
         symbols.add(method("Forge", "network", "alpha", "P1", "org.intermed.core.bridge.ForgeNetworkBridge", "channel", "(Lnet/minecraft/resources/ResourceLocation;Ljava/lang/String;)Lorg/intermed/core/bridge/ForgeNetworkBridge$SimpleChannelHandle;"));
         symbols.add(method("Forge", "network", "alpha", "P1", "org.intermed.core.bridge.ForgeNetworkBridge", "diagnostics", "()Lorg/intermed/core/bridge/ForgeNetworkBridge$ForgeNetworkDiagnostics;"));

@@ -1,10 +1,12 @@
 package org.intermed.core.lifecycle;
 
 import org.intermed.core.classloading.LazyInterMedClassLoader;
+import org.intermed.core.classloading.InterMedClassLoader;
 import org.intermed.core.classloading.ParentLinkPolicy;
 import org.intermed.core.classloading.ShaderClassLoader;
 import org.intermed.core.bridge.BridgeRuntime;
 import org.intermed.core.registry.VirtualRegistryService;
+import org.intermed.core.metadata.RuntimeModIndex;
 import org.intermed.core.sandbox.GraalVMSandbox;
 import org.intermed.core.sandbox.PolyglotSandboxManager;
 import org.intermed.core.sandbox.SandboxExecutionResult;
@@ -16,9 +18,13 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.AnnotationVisitor;
+import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
+import org.objectweb.asm.tree.AnnotationNode;
+import org.objectweb.asm.tree.ClassNode;
 
 import javax.tools.JavaCompiler;
 import javax.tools.ToolProvider;
@@ -41,6 +47,7 @@ class LifecycleManagerIntegrationTest {
             "intermed.modsDir",
             "intermed.mappings.tiny",
             "intermed.smoke.loaded",
+            "intermed.fabric.static.method.loaded",
             "intermed.forge.smoke.loaded",
             "intermed.security.probe.file",
             "intermed.security.blocked",
@@ -59,8 +66,11 @@ class LifecycleManagerIntegrationTest {
             "intermed.consumer.api",
             "intermed.peer.provider.loaded",
             "intermed.peer.consumer.api",
+            "intermed.fabric.api.peer",
+            "intermed.bridge.version.loaded",
             "intermed.server.loaded",
             "intermed.sandbox.loaded",
+            "intermed.partial.good.loaded",
             "sandbox.native.fallback.enabled",
             "runtime.env"
         );
@@ -98,6 +108,33 @@ class LifecycleManagerIntegrationTest {
     }
 
     @Test
+    void assemblesDagAndBootsFabricStaticMethodEntrypoint() throws Exception {
+        Path modsDir = Files.createTempDirectory("intermed-static-entrypoint-mods");
+        System.setProperty("intermed.modsDir", modsDir.toString());
+
+        createFabricModJarFromClasses(
+            modsDir.resolve("static-entrypoint-mod.jar"),
+            "static_entrypoint_mod",
+            "test.mods.StaticEntrypoint::init",
+            Map.of(
+                "test/mods/StaticEntrypoint.class",
+                createStaticMethodEntrypointClass(
+                    "test/mods/StaticEntrypoint",
+                    "intermed.fabric.static.method.loaded"
+                )
+            )
+        );
+
+        LifecycleManager.startPhase0_Preloader();
+        LifecycleManager.assembleNow();
+
+        assertEquals("true", System.getProperty("intermed.fabric.static.method.loaded"));
+        assertTrue(BridgeRuntime.getEntrypoints("main").stream()
+            .anyMatch(entry -> entry.modId().equals("static_entrypoint_mod")
+                && entry.definition().equals("test.mods.StaticEntrypoint::init")));
+    }
+
+    @Test
     @Tag("compat-smoke")
     void assemblesDagAndBootsForgeEntrypointByConstructingAnnotatedMod() throws Exception {
         Path modsDir = Files.createTempDirectory("intermed-smoke-forge-mods");
@@ -112,6 +149,152 @@ class LifecycleManagerIntegrationTest {
         Map<String, LazyInterMedClassLoader> loaders = LifecycleManager.getModClassLoaders();
         assertTrue(loaders.containsKey("forge_smoke"));
         assertNotNull(loaders.get("forge_smoke").loadClass("test.mods.ForgeSmoke"));
+    }
+
+    @Test
+    void assemblesResolvableSubsetWhenOneModHasHardMissingDependency() throws Exception {
+        Path modsDir = Files.createTempDirectory("intermed-partial-resolve-mods");
+        System.setProperty("intermed.modsDir", modsDir.toString());
+
+        createFabricModJar(
+            modsDir.resolve("healthy-mod.jar"),
+            "healthy_mod",
+            "test.mods.HealthyMod",
+            """
+            package test.mods;
+            public class HealthyMod implements net.fabricmc.api.ModInitializer {
+                @Override
+                public void onInitialize() {
+                    System.setProperty("intermed.partial.good.loaded", "true");
+                }
+            }
+            """
+        );
+
+        createFabricModJar(
+            modsDir.resolve("broken-mod.jar"),
+            "broken_mod",
+            "test.mods.BrokenMod",
+            """
+            package test.mods;
+            public class BrokenMod implements net.fabricmc.api.ModInitializer {
+                @Override
+                public void onInitialize() {
+                    System.setProperty("intermed.partial.good.loaded", "broken-should-not-load");
+                }
+            }
+            """,
+            """
+            "depends": {
+              "missing_api": "*"
+            }
+            """
+        );
+
+        LifecycleManager.startPhase0_Preloader();
+        LifecycleManager.assembleNow();
+
+        assertEquals("true", System.getProperty("intermed.partial.good.loaded"));
+        assertTrue(LifecycleManager.getModClassLoaders().containsKey("healthy_mod"));
+        assertFalse(LifecycleManager.getModClassLoaders().containsKey("broken_mod"));
+        assertTrue(RuntimeModIndex.isLoaded("healthy_mod"));
+        assertFalse(RuntimeModIndex.isLoaded("broken_mod"));
+        assertEquals(
+            "Missing dependency 'missing_api' required by broken_mod@1.0.0",
+            RuntimeModIndex.loadFailure("broken_mod").orElseThrow()
+        );
+        assertTrue(RuntimeModIndex.visibleModsForUi().stream()
+            .map(metadata -> metadata.id())
+            .anyMatch("broken_mod"::equals));
+    }
+
+    @Test
+    void resolvesFabricBridgeVersionFromDiscoveredFabricApiModule() throws Exception {
+        Path modsDir = Files.createTempDirectory("intermed-fabric-bridge-version-mods");
+        System.setProperty("intermed.modsDir", modsDir.toString());
+
+        createFabricModJarWithVersion(
+            modsDir.resolve("fabric-api.jar"),
+            "fabric-api",
+            "0.92.3+1.20.1",
+            "test.mods.FabricApiRoot",
+            """
+            package test.mods;
+            public class FabricApiRoot implements net.fabricmc.api.ModInitializer {
+                @Override
+                public void onInitialize() {
+                }
+            }
+            """
+        );
+
+        createFabricModJar(
+            modsDir.resolve("fabric-consumer.jar"),
+            "fabric_bridge_consumer",
+            "test.mods.FabricBridgeConsumer",
+            """
+            package test.mods;
+            public class FabricBridgeConsumer implements net.fabricmc.api.ModInitializer {
+                @Override
+                public void onInitialize() {
+                    System.setProperty("intermed.bridge.version.loaded", "true");
+                }
+            }
+            """,
+            """
+            "depends": {
+              "fabric-api": ">=0.92.2"
+            }
+            """
+        );
+
+        LifecycleManager.startPhase0_Preloader();
+        LifecycleManager.assembleNow();
+
+        assertEquals("true", System.getProperty("intermed.bridge.version.loaded"));
+        assertTrue(RuntimeModIndex.isLoaded("fabric_bridge_consumer"));
+        assertTrue(LifecycleManager.getModClassLoaders().containsKey("fabric_bridge_consumer"));
+    }
+
+    @Test
+    void dagClassBytesForMixinAnalysisUseRuntimeMappings() throws Exception {
+        Path jarPath = Files.createTempFile("intermed-mixin-analysis-remap-", ".jar");
+        try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(jarPath))) {
+            jos.putNextEntry(new JarEntry("demo/mixin/CriteriaAccessorMixin.class"));
+            jos.write(createClassLiteralMixin("demo/mixin/CriteriaAccessorMixin", "net/minecraft/class_42"));
+            jos.closeEntry();
+        }
+
+        LifecycleManager.DICTIONARY.clear();
+        LifecycleManager.DICTIONARY.addClass("net/minecraft/class_42", "net/minecraft/advancements/CriteriaTriggers");
+        org.intermed.core.remapping.InterMedRemapper.installDictionary(LifecycleManager.DICTIONARY);
+
+        try {
+            InterMedClassLoader loader = new InterMedClassLoader(
+                "mixin_analysis_remap",
+                jarPath.toFile(),
+                Map.of(),
+                LifecycleManagerIntegrationTest.class.getClassLoader()
+            );
+            LifecycleManager.registerLoaderForTests("mixin_analysis_remap", loader, null);
+
+            byte[] bytes = LifecycleManager.getClassBytesFromDAG("demo.mixin.CriteriaAccessorMixin");
+            assertNotNull(bytes);
+
+            ClassNode node = new ClassNode();
+            new ClassReader(bytes).accept(node, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+            AnnotationNode mixin = node.invisibleAnnotations.stream()
+                .filter(annotation -> "Lorg/spongepowered/asm/mixin/Mixin;".equals(annotation.desc))
+                .findFirst()
+                .orElseThrow();
+
+            @SuppressWarnings("unchecked")
+            List<Type> targets = (List<Type>) mixin.values.get(mixin.values.indexOf("value") + 1);
+            assertEquals("net/minecraft/advancements/CriteriaTriggers", targets.get(0).getInternalName());
+        } finally {
+            LifecycleManager.DICTIONARY.clear();
+            org.intermed.core.remapping.InterMedRemapper.installDictionary(LifecycleManager.DICTIONARY);
+        }
     }
 
     @Test
@@ -481,6 +664,122 @@ class LifecycleManagerIntegrationTest {
     }
 
     @Test
+    void fabricApiSubmodulesCanSeeSiblingFabricApiSubmodulesBeforePlatformFallback() throws Exception {
+        Path modsDir = Files.createTempDirectory("intermed-fabric-api-sibling-peer-mods");
+        System.setProperty("intermed.modsDir", modsDir.toString());
+
+        createFabricModJar(
+            modsDir.resolve("fabric-command-api-v2.jar"),
+            "fabric-command-api-v2",
+            "net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback",
+            """
+            package net.fabricmc.fabric.api.command.v2;
+            public class CommandRegistrationCallback implements net.fabricmc.api.ModInitializer {
+                public static final String EVENT = "sibling-api-visible";
+                @Override
+                public void onInitialize() {
+                }
+            }
+            """,
+            """
+              "depends": {
+                "fabricloader": "*"
+              }
+            """
+        );
+
+        createFabricModJar(
+            modsDir.resolve("fabric-command-api-v1.jar"),
+            "fabric-command-api-v1",
+            "net.fabricmc.fabric.impl.command.v1.LegacyHandler",
+            """
+            package net.fabricmc.fabric.impl.command.v1;
+            public class LegacyHandler implements net.fabricmc.api.ModInitializer {
+                @Override
+                public void onInitialize() {
+                    System.setProperty("intermed.fabric.api.peer",
+                        net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback.EVENT);
+                }
+            }
+            """,
+            """
+              "depends": {
+                "fabricloader": "*"
+              }
+            """,
+            modsDir.resolve("fabric-command-api-v2.jar").toString()
+        );
+
+        LifecycleManager.startPhase0_Preloader();
+        LifecycleManager.assembleNow();
+
+        Map<String, LazyInterMedClassLoader> loaders = LifecycleManager.getModClassLoaders();
+        LazyInterMedClassLoader apiV2 = loaders.get("fabric-command-api-v2");
+        LazyInterMedClassLoader apiV1 = loaders.get("fabric-command-api-v1");
+
+        assertNotNull(apiV2);
+        assertNotNull(apiV1);
+        assertTrue(apiV1.getPeers().contains(apiV2));
+        assertEquals("sibling-api-visible", System.getProperty("intermed.fabric.api.peer"));
+    }
+
+    @Test
+    void fabricVirtualDependencyCanSeeInstalledFabricApiSubmoduleClasses() throws Exception {
+        Path modsDir = Files.createTempDirectory("intermed-fabric-api-peer-mods");
+        System.setProperty("intermed.modsDir", modsDir.toString());
+
+        Path biomeApiJar = modsDir.resolve("fabric-biome-api-v1.jar");
+        createFabricModJar(
+            biomeApiJar,
+            "fabric-biome-api-v1",
+            "net.fabricmc.fabric.api.biome.v1.BiomeModifications",
+            """
+            package net.fabricmc.fabric.api.biome.v1;
+            public class BiomeModifications implements net.fabricmc.api.ModInitializer {
+                public static final String VALUE = "fabric-api-visible";
+                @Override
+                public void onInitialize() {
+                }
+            }
+            """
+        );
+
+        createFabricModJar(
+            modsDir.resolve("fabric-consumer.jar"),
+            "fabric_consumer",
+            "test.mods.FabricApiConsumer",
+            """
+            package test.mods;
+            public class FabricApiConsumer implements net.fabricmc.api.ModInitializer {
+                @Override
+                public void onInitialize() {
+                    System.setProperty("intermed.fabric.api.peer",
+                        net.fabricmc.fabric.api.biome.v1.BiomeModifications.VALUE);
+                }
+            }
+            """,
+            """
+              "depends": {
+                "fabric": "*"
+              }
+            """,
+            biomeApiJar.toString()
+        );
+
+        LifecycleManager.startPhase0_Preloader();
+        LifecycleManager.assembleNow();
+
+        Map<String, LazyInterMedClassLoader> loaders = LifecycleManager.getModClassLoaders();
+        LazyInterMedClassLoader provider = loaders.get("fabric-biome-api-v1");
+        LazyInterMedClassLoader consumer = loaders.get("fabric_consumer");
+
+        assertNotNull(provider);
+        assertNotNull(consumer);
+        assertEquals("fabric-api-visible", System.getProperty("intermed.fabric.api.peer"));
+        assertTrue(consumer.getPeers().contains(provider));
+    }
+
+    @Test
     void bootsFabricModThroughRuntimeClassRemapper() throws Exception {
         Path modsDir = Files.createTempDirectory("intermed-bytecode-remap-mods");
         System.setProperty("intermed.modsDir", modsDir.toString());
@@ -632,6 +931,14 @@ class LifecycleManagerIntegrationTest {
         createFabricModJar(jarPath, modId, entrypoint, javaSource, "");
     }
 
+    private static void createFabricModJarWithVersion(Path jarPath,
+                                                      String modId,
+                                                      String version,
+                                                      String entrypoint,
+                                                      String javaSource) throws Exception {
+        createFabricModJar(jarPath, modId, version, entrypoint, javaSource, "", null);
+    }
+
     private static void createServerFabricModJar(Path jarPath,
                                                  String modId,
                                                  String entrypoint,
@@ -680,6 +987,16 @@ class LifecycleManagerIntegrationTest {
                                            String javaSource,
                                            String extraManifestFields,
                                            String extraClasspath) throws Exception {
+        createFabricModJar(jarPath, modId, "1.0.0", entrypoint, javaSource, extraManifestFields, extraClasspath);
+    }
+
+    private static void createFabricModJar(Path jarPath,
+                                           String modId,
+                                           String version,
+                                           String entrypoint,
+                                           String javaSource,
+                                           String extraManifestFields,
+                                           String extraClasspath) throws Exception {
         Path root = Files.createTempDirectory("intermed-smoke-src");
         Path srcRoot = root.resolve("src");
         Path classesRoot = root.resolve("classes");
@@ -694,13 +1011,13 @@ class LifecycleManagerIntegrationTest {
             {
               "schemaVersion": 1,
               "id": "%s",
-              "version": "1.0.0",
+              "version": "%s",
               %s
               "entrypoints": {
                 "main": ["%s"]
               }
             }
-            """.formatted(modId, normalizedExtraFields, entrypoint);
+            """.formatted(modId, version, normalizedExtraFields, entrypoint);
 
         try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(jarPath))) {
             for (Path file : Files.walk(classesRoot).filter(Files::isRegularFile).toList()) {
@@ -798,7 +1115,7 @@ class LifecycleManagerIntegrationTest {
         assertNotNull(compiler);
         String classpath = System.getProperty("java.class.path");
         if (extraClasspath != null && !extraClasspath.isBlank()) {
-            classpath = classpath + java.io.File.pathSeparator + extraClasspath;
+            classpath = extraClasspath + java.io.File.pathSeparator + classpath;
         }
 
         int compileResult = compiler.run(null, null, null,
@@ -860,6 +1177,61 @@ class LifecycleManagerIntegrationTest {
             jos.write(modsToml.getBytes(StandardCharsets.UTF_8));
             jos.closeEntry();
         }
+    }
+
+    private static byte[] createClassLiteralMixin(String internalName, String targetInternalName) {
+        ClassWriter writer = new ClassWriter(0);
+        writer.visit(Opcodes.V17, Opcodes.ACC_PUBLIC | Opcodes.ACC_ABSTRACT | Opcodes.ACC_INTERFACE,
+            internalName, null, "java/lang/Object", null);
+
+        AnnotationVisitor mixin = writer.visitAnnotation("Lorg/spongepowered/asm/mixin/Mixin;", false);
+        AnnotationVisitor targets = mixin.visitArray("value");
+        targets.visit(null, Type.getObjectType(targetInternalName));
+        targets.visitEnd();
+        mixin.visitEnd();
+
+        MethodVisitor accessor = writer.visitMethod(
+            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            "getValues",
+            "()Ljava/util/Map;",
+            null,
+            null
+        );
+        accessor.visitAnnotation("Lorg/spongepowered/asm/mixin/gen/Accessor;", true).visitEnd();
+        accessor.visitCode();
+        accessor.visitTypeInsn(Opcodes.NEW, "java/lang/AssertionError");
+        accessor.visitInsn(Opcodes.DUP);
+        accessor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/AssertionError", "<init>", "()V", false);
+        accessor.visitInsn(Opcodes.ATHROW);
+        accessor.visitMaxs(2, 0);
+        accessor.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private static byte[] createStaticMethodEntrypointClass(String internalName, String propertyName) {
+        ClassWriter writer = new ClassWriter(0);
+        writer.visit(Opcodes.V17, Opcodes.ACC_PUBLIC, internalName, null, "java/lang/Object", null);
+
+        MethodVisitor init = writer.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "init", "()V", null, null);
+        init.visitCode();
+        init.visitLdcInsn(propertyName);
+        init.visitLdcInsn("true");
+        init.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "java/lang/System",
+            "setProperty",
+            "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+            false
+        );
+        init.visitInsn(Opcodes.POP);
+        init.visitInsn(Opcodes.RETURN);
+        init.visitMaxs(2, 0);
+        init.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
     }
 
     private static byte[] createForgeSmokeClass(String internalName, String modId) {

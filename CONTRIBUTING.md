@@ -1,7 +1,7 @@
 # Contributing To InterMed
 
 Thanks for helping test InterMed. This repository is currently in the
-`v8.0.0-alpha.1` open-alpha phase for Minecraft `1.20.1` only. The project is
+`v8.0.0-alpha.2` open-alpha phase for Minecraft `1.20.1` only. The project is
 not yet production-ready, and issue reports are most useful when they include
 reproducible diagnostics rather than broad compatibility claims.
 
@@ -26,7 +26,7 @@ If `InterMedLauncher launch` fails, it should write a diagnostics bundle
 automatically unless disabled. You can also generate one manually:
 
 ```bash
-java -cp InterMedCore-8.0.0-alpha.1.jar org.intermed.launcher.InterMedLauncher diagnostics-bundle \
+java -cp InterMedCore-8.0.0-alpha.2.jar org.intermed.launcher.InterMedLauncher diagnostics-bundle \
   --game-dir /path/to/game \
   --mods-dir /path/to/game/intermed_mods
 ```

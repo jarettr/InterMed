@@ -3,7 +3,7 @@
 ## Current Freeze
 
 - [LAUNCH_CRITERIA.md](LAUNCH_CRITERIA.md) is the canonical public-alpha source of truth for frozen scope, mandatory release gates, and release artifacts. This roadmap mirrors that contract and must not broaden it.
-- Version line: `v8.0.0-alpha.1`
+- Version line: `v8.0.0-alpha.2`
 - Minecraft baseline: `1.20.1`
 - Loader support in scope: `Fabric`, `Forge`, `NeoForge`
 - Current release posture: `open alpha` only for the frozen `1.20.1` runtime path until later validation justifies anything broader

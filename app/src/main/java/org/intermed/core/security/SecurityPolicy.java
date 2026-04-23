@@ -4,7 +4,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import org.intermed.core.config.RuntimeConfig;
 
 import java.io.IOException;
 import java.io.Reader;
@@ -82,7 +81,7 @@ public final class SecurityPolicy {
     private SecurityPolicy() {}
 
     public static void registerModCapabilities(String modId, JsonObject modJson) {
-        ModSecurityProfile profile = parseProfile(modJson);
+        ModSecurityProfile profile = parseProfile(modId, modJson, true);
         MOD_PROFILES.put(modId, profile);
         CapabilityManager.invalidateMod(modId);
         System.out.println("[SecurityPolicy] Registered profile for '" + modId + "': " + profile.describe());
@@ -101,7 +100,7 @@ public final class SecurityPolicy {
     }
 
     public static boolean hasCapabilityGrant(String modId, Capability capability) {
-        if (!RuntimeConfig.get().isSecurityStrictMode()) {
+        if (!BootstrapRuntimeConfig.isSecurityStrictMode()) {
             return true;
         }
         if (capability == null) {
@@ -115,7 +114,7 @@ public final class SecurityPolicy {
     }
 
     public static boolean hasPermission(String modId, SecurityRequest request) {
-        if (!RuntimeConfig.get().isSecurityStrictMode()) {
+        if (!BootstrapRuntimeConfig.isSecurityStrictMode()) {
             return true;
         }
         return allowsInStrictMode(modId, request);
@@ -194,7 +193,7 @@ public final class SecurityPolicy {
                     System.err.println("[SecurityPolicy] Ignoring attempt to override 'intermed_core' profile via external file.");
                     continue;
                 }
-                ModSecurityProfile profile = parseProfile(entry);
+                ModSecurityProfile profile = parseProfile(modId, entry, false);
                 MOD_PROFILES.put(modId, profile);
                 CapabilityManager.invalidateMod(modId);
                 System.out.printf("[SecurityPolicy] External profile loaded for '%s': %s%n",
@@ -274,17 +273,18 @@ public final class SecurityPolicy {
             .build());
     }
 
-    private static ModSecurityProfile parseProfile(JsonObject modJson) {
+    private static ModSecurityProfile parseProfile(String modId, JsonObject modJson, boolean includeManifestDefaults) {
         ModSecurityProfile.Builder builder = ModSecurityProfile.builder();
         boolean hasGranularSecurity = modJson != null
             && modJson.has("intermed:security")
             && modJson.get("intermed:security").isJsonObject();
+        boolean hasLegacyPermissions = modJson != null && modJson.has("intermed:permissions");
 
-        if (modJson != null && modJson.has("intermed:permissions")) {
+        if (hasLegacyPermissions) {
             readCapabilities(
                 builder,
                 modJson.getAsJsonArray("intermed:permissions"),
-                !hasGranularSecurity && RuntimeConfig.get().isLegacyBroadPermissionDefaultsEnabled()
+                !hasGranularSecurity && BootstrapRuntimeConfig.isLegacyBroadPermissionDefaultsEnabled()
             );
         }
 
@@ -318,7 +318,28 @@ public final class SecurityPolicy {
             readStringArray(modJson, "memoryMembers", builder::unsafeMember);
         }
 
+        if (includeManifestDefaults && !hasGranularSecurity && !hasLegacyPermissions && !hasExternalShape) {
+            grantDefaultConfigAccess(builder, modId);
+        }
+
         return builder.build();
+    }
+
+    private static void grantDefaultConfigAccess(ModSecurityProfile.Builder builder, String modId) {
+        if (modId == null || modId.isBlank()) {
+            return;
+        }
+        builder.capability(Capability.FILE_READ);
+        builder.capability(Capability.FILE_WRITE);
+
+        Path configDir = BootstrapRuntimeConfig.getGameDir()
+            .resolve("config")
+            .toAbsolutePath()
+            .normalize();
+        builder.fileReadPath(configDir.toString());
+        builder.fileReadPath(configDir.resolve("**").toString());
+        builder.fileWritePath(configDir.toString());
+        builder.fileWritePath(configDir.resolve("**").toString());
     }
 
     private static void readCapabilities(ModSecurityProfile.Builder builder,
@@ -350,7 +371,7 @@ public final class SecurityPolicy {
     }
 
     private static boolean shouldGrantBroadDefaults(ModSecurityProfile existing, Capability capability) {
-        if (!RuntimeConfig.get().isLegacyBroadPermissionDefaultsEnabled()) {
+        if (!BootstrapRuntimeConfig.isLegacyBroadPermissionDefaultsEnabled()) {
             return false;
         }
         if (existing == null) {

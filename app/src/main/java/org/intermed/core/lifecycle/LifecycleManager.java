@@ -15,6 +15,7 @@ import org.intermed.core.registry.VirtualRegistryService;
 import org.intermed.core.resolver.CrossLoaderTypeChecker;
 import org.intermed.core.resolver.PubGrubResolver;
 import org.intermed.core.resolver.ResolvedPlan;
+import org.intermed.core.resolver.SemVerConstraint;
 import org.intermed.core.resolver.RuntimeModuleKind;
 import org.intermed.core.resolver.VirtualDependencyMap;
 import org.intermed.core.classloading.LazyInterMedClassLoader;
@@ -25,6 +26,7 @@ import org.intermed.core.classloading.ParentLinkPolicy;
 import org.intermed.core.classloading.ShaderClassLoader;
 import org.intermed.core.classloading.WeakPeerPolicy;
 import org.intermed.core.classloading.WelshPowellClusterer;
+import org.intermed.core.bridge.assets.AssetInjector;
 import org.intermed.core.bridge.BridgeRuntime;
 import org.intermed.core.config.RuntimeConfig;
 import org.intermed.core.metadata.ModMetadataParser;
@@ -32,6 +34,7 @@ import org.intermed.core.metadata.NormalizedModMetadata;
 import org.intermed.core.metadata.RuntimeModIndex;
 import org.intermed.core.monitor.RiskyModRegistry;
 import org.intermed.core.mixin.InterMedPlatformAgent;
+import org.intermed.core.mixin.MixinAccessorFallbackTransformer;
 import org.intermed.core.remapping.*;
 import org.intermed.core.security.*;
 import org.intermed.core.mixin.MixinTransformer;
@@ -41,6 +44,7 @@ import org.intermed.core.lifecycle.ModDiscovery;
 import org.intermed.core.monitor.MetricsRegistry;
 import org.intermed.core.monitor.OtelJsonExporter;
 import org.intermed.core.monitor.PrometheusExporter;
+import org.intermed.core.resolver.ResolutionException;
 import org.intermed.core.sandbox.PolyglotSandboxManager;
 import org.intermed.core.sandbox.SandboxExecutionResult;
 import org.intermed.core.sandbox.SandboxMode;
@@ -55,6 +59,8 @@ import net.fabricmc.api.ModInitializer;
 
 import java.io.File;
 import java.io.InputStreamReader;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
@@ -71,6 +77,8 @@ import java.util.stream.Collectors;
 public class LifecycleManager {
     private static boolean phase0Started = false;
     private static boolean phase1Started = false;
+    private static final String CLIENT_ENTRYPOINT_BLOCKLIST_PROPERTY = "intermed.clientEntrypoint.blocklist";
+    private static final String DEFAULT_CLIENT_ENTRYPOINT_BLOCKLIST = "fabric-renderer-indigo";
 
     // Global services managed by the lifecycle
     public static final MappingDictionary DICTIONARY = new MappingDictionary();
@@ -214,69 +222,162 @@ public class LifecycleManager {
                 }
             }
 
+            RuntimeModIndex.registerDiscoveredAll(nodes.values().stream()
+                .map(node -> node.descriptor)
+                .filter(Objects::nonNull)
+                .toList());
+
             // ── Step 2: inject synthetic bridge stubs ─────────────────────────
             // Every virtual dependency target that any mod uses must exist as a
             // node (with version "1.0.0") so PubGrub can satisfy it.
             injectBridgeStubs(nodes);
 
-            // ── Step 3: build PubGrub manifest list ───────────────────────────
-            // Version constraints come directly from the mod's "depends" block in
-            // fabric.mod.json; IDs are substituted via VirtualDependencyMap.
-            List<PubGrubResolver.ModManifest> manifests = buildManifests(nodes);
+            Map<String, ModNode> activeNodes = new LinkedHashMap<>(nodes);
+            Set<String> isolatedModIds = new LinkedHashSet<>();
 
-            // ── Step 4: run PubGrub resolution ────────────────────────────────
-            // Also build the constraint map used by cross-loader type safety check.
-            Map<String, String> depConstraints = buildDependencyConstraints(nodes);
+            while (true) {
+                // ── Step 3: build PubGrub manifest list ───────────────────────
+                // Version constraints come directly from the mod's "depends" block in
+                // fabric.mod.json; IDs are substituted via VirtualDependencyMap.
+                List<PubGrubResolver.ModManifest> manifests = buildManifests(activeNodes);
 
-            try {
-                ResolvedPlan plan = new PubGrubResolver().resolvePlan(manifests);
-                lastPlan = plan;
+                // ── Step 4: run PubGrub resolution ────────────────────────────
+                // Also build the constraint map used by cross-loader type safety check.
+                Map<String, String> depConstraints = buildDependencyConstraints(activeNodes);
 
-                System.out.println("\033[1;32m[PubGrub] Resolution successful.\033[0m");
-                if (!plan.softMissingDependencies().isEmpty()) {
-                    System.out.println("\033[1;33m[PubGrub] Soft-missing dependencies (gracefully degraded): "
-                        + plan.softMissingDependencies() + "\033[0m");
-                }
-                System.out.println("[PubGrub] Load order: " + plan.loadOrder());
+                try {
+                    ResolvedPlan plan = new PubGrubResolver().resolvePlan(manifests);
+                    lastPlan = plan;
 
-                // ── Cross-loader type safety ──────────────────────────────────
-                // Verify that each resolved dependency version actually satisfies
-                // the SemVer constraint declared by the dependant.
-                CrossLoaderTypeChecker.validateAndThrow(plan, depConstraints);
-
-                // ── Step 5: update ModNode.dependencies from the resolved plan ─
-                // The plan's edges are post-substitution, so ClassLoader parents
-                // will point at bridges instead of ecosystem-specific packages.
-                for (ModNode node : nodes.values()) {
-                    Set<String> resolved = plan.depsOf(node.id);
-                    if (!resolved.isEmpty()) {
-                        node.dependencies.clear();
-                        node.dependencies.addAll(resolved);
+                    System.out.println("\033[1;32m[PubGrub] Resolution successful.\033[0m");
+                    if (!isolatedModIds.isEmpty()) {
+                        System.out.println("\033[1;33m[PubGrub] Isolated unresolved mod(s): "
+                            + isolatedModIds + "\033[0m");
                     }
-                }
+                    if (!plan.softMissingDependencies().isEmpty()) {
+                        System.out.println("\033[1;33m[PubGrub] Soft-missing dependencies (gracefully degraded): "
+                            + plan.softMissingDependencies() + "\033[0m");
+                    }
+                    System.out.println("[PubGrub] Load order: " + plan.loadOrder());
 
-                // ── Step 6: return in PubGrub load order ──────────────────────
-                List<ModNode> sortedList = new ArrayList<>();
-                for (String id : plan.loadOrder()) {
-                    ModNode n = nodes.get(id);
-                    if (n != null) sortedList.add(n);
-                }
-                System.out.println("[Resolver] Mod load order: "
-                    + sortedList.stream().map(n -> n.id).collect(Collectors.toList()));
-                return sortedList;
+                    // ── Cross-loader type safety ──────────────────────────────
+                    // Verify that each resolved dependency version actually satisfies
+                    // the SemVer constraint declared by the dependant.
+                    CrossLoaderTypeChecker.validateAndThrow(plan, depConstraints);
 
-            } catch (Exception pubGrubEx) {
-                lastPlan = null;
-                if (!RuntimeConfig.get().isResolverFallbackEnabled()) {
-                    throw new IllegalStateException("PubGrub resolution failed in production mode", pubGrubEx);
+                    // ── Step 5: update ModNode.dependencies from the resolved plan ─
+                    // The plan's edges are post-substitution, so ClassLoader parents
+                    // will point at bridges instead of ecosystem-specific packages.
+                    for (ModNode node : activeNodes.values()) {
+                        Set<String> resolved = plan.depsOf(node.id);
+                        if (!resolved.isEmpty()) {
+                            node.dependencies.clear();
+                            node.dependencies.addAll(resolved);
+                        }
+                    }
+
+                    // ── Step 6: return in PubGrub load order ──────────────────
+                    List<ModNode> sortedList = new ArrayList<>();
+                    for (String id : plan.loadOrder()) {
+                        ModNode n = activeNodes.get(id);
+                        if (n != null) sortedList.add(n);
+                    }
+                    System.out.println("[Resolver] Mod load order: "
+                        + sortedList.stream().map(n -> n.id).collect(Collectors.toList()));
+                    return sortedList;
+
+                } catch (Exception pubGrubEx) {
+                    lastPlan = null;
+                    recordResolutionFailure(nodes, pubGrubEx);
+                    if (isolateHardMissingDependants(activeNodes, pubGrubEx, isolatedModIds)) {
+                        continue;
+                    }
+                    if (!RuntimeConfig.get().isResolverFallbackEnabled()) {
+                        throw new IllegalStateException("PubGrub resolution failed in production mode", pubGrubEx);
+                    }
+                    System.err.println("\033[1;31m[PubGrub] Resolution failed ("
+                        + pubGrubEx.getMessage()
+                        + ") — falling back to Kahn's topological sort because resolver.allow.fallback=true.\033[0m");
+                    break;
                 }
-                System.err.println("\033[1;31m[PubGrub] Resolution failed ("
-                    + pubGrubEx.getMessage()
-                    + ") — falling back to Kahn's topological sort because resolver.allow.fallback=true.\033[0m");
             }
 
             // ── Fallback: Kahn's topological sort (used if PubGrub throws) ────
-            return fallbackKahnsSort(nodes);
+            return fallbackKahnsSort(activeNodes);
+        }
+
+        private static void recordResolutionFailure(Map<String, ModNode> nodes, Exception failure) {
+            if (!(failure instanceof ResolutionException resolutionFailure)) {
+                return;
+            }
+            String reason = resolutionFailure.getMessage();
+            if (reason == null || reason.isBlank()) {
+                return;
+            }
+
+            boolean marked = false;
+            for (String requirement : resolutionFailure.requirements()) {
+                String dependant = parseDependantModuleId(requirement);
+                if (dependant != null && nodes.containsKey(dependant)) {
+                    RuntimeModIndex.markLoadFailure(dependant, reason);
+                    marked = true;
+                }
+            }
+
+            if (!marked && nodes.containsKey(resolutionFailure.moduleId())) {
+                RuntimeModIndex.markLoadFailure(resolutionFailure.moduleId(), reason);
+            }
+        }
+
+        private static String parseDependantModuleId(String requirement) {
+            if (requirement == null || requirement.isBlank()) {
+                return null;
+            }
+            int separator = requirement.indexOf(" requires ");
+            String raw = separator >= 0 ? requirement.substring(0, separator).trim() : requirement.trim();
+            int at = raw.indexOf('@');
+            return at >= 0 ? raw.substring(0, at) : raw;
+        }
+
+        private static boolean isolateHardMissingDependants(Map<String, ModNode> activeNodes,
+                                                            Exception failure,
+                                                            Set<String> isolatedModIds) {
+            if (!(failure instanceof ResolutionException resolutionFailure)
+                || !"MISSING_DEPENDENCY".equals(resolutionFailure.code())) {
+                return false;
+            }
+
+            LinkedHashSet<String> dependants = new LinkedHashSet<>();
+            for (String requirement : resolutionFailure.requirements()) {
+                String dependant = parseDependantModuleId(requirement);
+                if (dependant == null
+                    || dependant.isBlank()
+                    || !activeNodes.containsKey(dependant)
+                    || isBridgeNode(dependant)) {
+                    continue;
+                }
+                dependants.add(dependant);
+            }
+
+            if (dependants.isEmpty()) {
+                return false;
+            }
+
+            List<String> removed = new ArrayList<>();
+            for (String dependant : dependants) {
+                if (activeNodes.remove(dependant) != null) {
+                    isolatedModIds.add(dependant);
+                    removed.add(dependant);
+                }
+            }
+
+            if (removed.isEmpty()) {
+                return false;
+            }
+
+            System.err.printf("[PubGrub] Isolating unresolved mod(s) %s after hard missing dependency '%s'.%n",
+                removed, resolutionFailure.moduleId());
+            return true;
         }
 
         // ── Helpers ──────────────────────────────────────────────────────────
@@ -292,11 +393,19 @@ public class LifecycleManager {
          */
         private static void injectBridgeStubs(Map<String, ModNode> nodes) {
             Set<String> bridgeIds = VirtualDependencyMap.allBridgeIds();
+            Map<String, String> discoveredVersions = nodes.values().stream()
+                .filter(node -> node != null && node.id != null && node.version != null)
+                .collect(Collectors.toMap(
+                    node -> node.id,
+                    node -> node.version,
+                    (left, right) -> SemVerConstraint.compareVersions(right, left) > 0 ? right : left,
+                    LinkedHashMap::new
+                ));
             for (String bridgeId : bridgeIds) {
                 nodes.computeIfAbsent(bridgeId,
                     id -> new ModNode(
                         id,
-                        VirtualDependencyMap.bridgeCompatibilityVersionForBridge(id),
+                        VirtualDependencyMap.bridgeCompatibilityVersionForBridge(id, discoveredVersions),
                         RuntimeModuleKind.forModuleId(id),
                         null,
                         new JsonObject(),
@@ -451,7 +560,16 @@ public class LifecycleManager {
             // ── Mapping resolution (priority order) ──────────────────────────
             // 1. Explicit system-property override (launcher / test environments)
             String override = System.getProperty("intermed.mappings.tiny");
-            Path tinyPath = (override != null) ? Paths.get(override) : null;
+            Path tinyPath = null;
+            if (override != null && !override.isBlank()) {
+                Path overridePath = Paths.get(override.trim());
+                if (java.nio.file.Files.exists(overridePath)) {
+                    tinyPath = overridePath;
+                } else {
+                    System.err.println("[Lifecycle] Mapping override not found: " + overridePath
+                        + " — continuing with auto-detection.");
+                }
+            }
 
             // 2. mappings/ directory next to the InterMed JAR file
             if (tinyPath == null) {
@@ -505,10 +623,13 @@ public class LifecycleManager {
                 Path srgCandidate = tinyPath.getParent().resolve("client.txt");
                 Path srgPath = java.nio.file.Files.exists(srgCandidate) ? srgCandidate
                              : (autoSrgPath != null ? autoSrgPath : null);
-                DictionaryParser.parse(tinyPath, srgPath, DICTIONARY);
+                Path tsrgPath = DictionaryParser.resolveTsrgPath(tinyPath, srgPath, autoSrgPath);
+                DictionaryParser.parse(tinyPath, srgPath, tsrgPath, DICTIONARY);
                 InterMedRemapper.installDictionary(DICTIONARY);
                 System.out.println("\033[1;32m[Lifecycle] Dictionary loaded: "
-                    + DICTIONARY.getClassCount() + " classes.\033[0m");
+                    + DICTIONARY.getClassCount() + " classes, "
+                    + DICTIONARY.getMethodCount() + " methods, "
+                    + DICTIONARY.getFieldCount() + " fields.\033[0m");
             } else if (autoSrgPath != null) {
                 // No Fabric tiny file, but we have the Mojang mapping.
                 // Load SRG-only dictionary (obfuscated → Mojang).  Fabric mods that
@@ -628,6 +749,7 @@ public class LifecycleManager {
         // ── Step 2: Resolve mod load order using the pre-discovered JAR list ──
         List<ModNode> sortedMods = DependencyResolver.resolveOrder(allJars);
         ResolvedPlan resolvedPlan = DependencyResolver.lastResolvedPlan();
+        wireNestedModuleParents(sortedMods, discoveryLayout);
         validateDagPlan(sortedMods, resolvedPlan);
         RuntimeModIndex.registerAll(sortedMods.stream()
             .map(mod -> mod.descriptor)
@@ -705,13 +827,14 @@ public class LifecycleManager {
                     mod.id, mod.jar, parentLoaders, platformClassLoader
                 );
 
-                // d) Register bytecode transformer pipeline
-                MixinTransformer.registerModMixins(mod.jar, mod.descriptor);
-                installProductionBytecodePipeline(modLoader, true);
-
-                // e) Register in the DAG and awaken the mod
+                // d) Publish the loader to the DAG before registering mixin configs
+                // so native/runtime Mixin can resolve .mixins.json resources from it.
                 modClassLoaders.put(mod.id, modLoader);
                 if (mod.jar != null) jarModIdIndex.put(mod.jar, mod.id);
+
+                // e) Register bytecode transformer pipeline
+                MixinTransformer.registerModMixins(mod.jar, mod.descriptor);
+                installProductionBytecodePipeline(modLoader, true);
 
             } catch (Exception e) {
                 throw new IllegalStateException("Failed to build node for " + mod.id, e);
@@ -719,6 +842,8 @@ public class LifecycleManager {
         }
 
         wireDeclaredPeers(sortedMods);
+        wireNestedSiblingWeakPeers(sortedMods, discoveryLayout);
+        wireFabricApiPlatformPeers(sortedMods);
         validateConstructedDag(sortedMods, resolvedPlan);
         sortedMods.stream()
             .filter(mod -> !isBridgeNode(mod.id))
@@ -736,7 +861,7 @@ public class LifecycleManager {
         // and patches all pending invokedynamic GET call sites to direct array reads.
         VirtualRegistryService.freeze();
         rebuildClassHierarchyIndex();
-        org.intermed.core.bridge.InterMedNetworkBridge.registerRegistrySyncChannel();
+        registerRegistrySyncChannelIfLinkable();
 
         // ── Hot-reload watcher (optional, disabled by default) ────────────────
         // Set the system property "intermed.hotreload=true" to activate.
@@ -774,6 +899,21 @@ public class LifecycleManager {
         // is a strict superset that avoids double-firing lifecycle/world events.
         org.intermed.core.bridge.InterMedEventBridge.initialize();
         org.intermed.core.bridge.events.ForgeEventProxy.hookIntoForge();
+        if (RuntimeConfig.get().getEnvironmentType() == net.fabricmc.api.EnvType.CLIENT) {
+            scheduleClientThreadTask("asset injection", AssetInjector::injectFabricAssets);
+        }
+    }
+
+    private static void registerRegistrySyncChannelIfLinkable() {
+        if (!org.intermed.core.bridge.InterMedNetworkBridge.canLinkMinecraftNetworkTypes()) {
+            System.err.println("[InterMed Network] Registry sync channel deferred: Minecraft network types are not visible to the core ClassLoader.");
+            return;
+        }
+        try {
+            org.intermed.core.bridge.InterMedNetworkBridge.registerRegistrySyncChannel();
+        } catch (LinkageError e) {
+            System.err.println("[InterMed Network] Registry sync channel deferred after linkage failure: " + e.getMessage());
+        }
     }
 
     /**
@@ -833,10 +973,10 @@ public class LifecycleManager {
                 InterMedClassLoader modLoader = new InterMedClassLoader(
                     modId, file, parentLinks, platformClassLoader
                 );
-                MixinTransformer.registerModMixins(file, meta);
-                installProductionBytecodePipeline(modLoader, true);
                 modClassLoaders.put(modId, modLoader);
                 jarModIdIndex.put(file, modId);
+                MixinTransformer.registerModMixins(file, meta);
+                installProductionBytecodePipeline(modLoader, true);
                 RuntimeModIndex.register(meta);
                 wireDeclaredPeers(java.util.List.of(
                     new ModNode(modId, meta.version(), file, meta.manifest(), meta)
@@ -1011,13 +1151,18 @@ public class LifecycleManager {
         
         // Schedule environment-specific entrypoints to run on the game thread.
         if (RuntimeConfig.get().getEnvironmentType() == net.fabricmc.api.EnvType.CLIENT) {
-            MAIN_THREAD_TASKS.add(() -> initializeEntrypoints(
-                loader,
-                entrypoints,
-                "client",
-                ClientModInitializer.class,
-                ClientModInitializer::onInitializeClient
-            ));
+            if (shouldSkipClientEntrypoints(modId)) {
+                System.out.printf("[DAG] %s -> CLIENT entrypoints skipped by %s%n",
+                    modId, CLIENT_ENTRYPOINT_BLOCKLIST_PROPERTY);
+            } else {
+                scheduleClientThreadTask("client entrypoints for " + modId, () -> initializeEntrypoints(
+                    loader,
+                    entrypoints,
+                    "client",
+                    ClientModInitializer.class,
+                    ClientModInitializer::onInitializeClient
+                ));
+            }
         } else {
             MAIN_THREAD_TASKS.add(() -> initializeEntrypoints(
                 loader,
@@ -1026,6 +1171,71 @@ public class LifecycleManager {
                 DedicatedServerModInitializer.class,
                 DedicatedServerModInitializer::onInitializeServer
             ));
+        }
+    }
+
+    private static boolean shouldSkipClientEntrypoints(String modId) {
+        if (modId == null || modId.isBlank()) {
+            return false;
+        }
+        String configured = System.getProperty(
+            CLIENT_ENTRYPOINT_BLOCKLIST_PROPERTY,
+            DEFAULT_CLIENT_ENTRYPOINT_BLOCKLIST
+        );
+        if (configured == null || configured.isBlank() || "none".equalsIgnoreCase(configured.trim())) {
+            return false;
+        }
+        for (String token : configured.split(",")) {
+            if (modId.equals(token.trim())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void scheduleClientThreadTask(String label, Runnable task) {
+        if (task == null) {
+            return;
+        }
+        Runnable wrapped = () -> {
+            try {
+                task.run();
+            } catch (Throwable t) {
+                System.err.println("[Lifecycle] Client task failed (" + label + "): "
+                    + t.getClass().getSimpleName() + ": " + t.getMessage());
+            }
+        };
+        if (tryScheduleMinecraftExecute(wrapped)) {
+            return;
+        }
+        MAIN_THREAD_TASKS.add(wrapped);
+    }
+
+    private static boolean tryScheduleMinecraftExecute(Runnable task) {
+        try {
+            ClassLoader loader = Thread.currentThread().getContextClassLoader();
+            if (loader == null) {
+                loader = InterMedKernel.class.getClassLoader();
+            }
+            Class<?> mcClass = Class.forName("net.minecraft.client.Minecraft", false, loader);
+            Method getInstance = findZeroArgMethod(mcClass, "m_91087_", "getInstance");
+            Object mcInstance = getInstance.invoke(null);
+            if (mcInstance == null) {
+                return false;
+            }
+            Method execute = mcClass.getMethod("execute", Runnable.class);
+            execute.invoke(mcInstance, task);
+            return true;
+        } catch (ReflectiveOperationException | LinkageError e) {
+            return false;
+        }
+    }
+
+    private static Method findZeroArgMethod(Class<?> owner, String obfuscatedName, String mappedName) throws NoSuchMethodException {
+        try {
+            return owner.getMethod(obfuscatedName);
+        } catch (NoSuchMethodException ignored) {
+            return owner.getMethod(mappedName);
         }
     }
     
@@ -1064,27 +1274,50 @@ public class LifecycleManager {
                 if (tryInitializeSandboxedEntrypoint(loader.getNodeId(), type, entrypointString, mode)) {
                     continue;
                 }
-                Class<?> clazz = loader.loadClass(entrypointString);
-                Object instance = clazz.getDeclaredConstructor().newInstance();
+                final String entrypointMode = mode;
+                EntrypointTarget target = EntrypointTarget.parse(entrypointString);
+                Class<?> clazz = loader.loadClass(target.className());
+                ClassLoader previousContextLoader = Thread.currentThread().getContextClassLoader();
+                try {
+                    Thread.currentThread().setContextClassLoader(loader);
+                    EntrypointInitialization initialization = executeEntrypointAsMod(loader.getNodeId(), () -> {
+                        Object instance = null;
 
-                boolean initialized = "construct".equalsIgnoreCase(mode);
-                if (!initialized && interfaceClass.isAssignableFrom(clazz)) {
-                    runner.run(interfaceClass.cast(instance));
-                    initialized = true;
-                } else if (!initialized) {
-                    String fallbackMethod = resolveEntrypointMethodName(type);
-                    try {
-                        clazz.getMethod(fallbackMethod).invoke(instance);
-                        initialized = true;
-                    } catch (NoSuchMethodException e) {
-                        throw new IllegalStateException("Entrypoint does not implement required method " + fallbackMethod, e);
+                        boolean initialized = false;
+                        if (target.methodName() != null) {
+                            instance = invokeExplicitEntrypointMethod(clazz, target.methodName());
+                            initialized = true;
+                        } else {
+                            instance = clazz.getDeclaredConstructor().newInstance();
+                            initialized = "construct".equalsIgnoreCase(entrypointMode);
+                        }
+
+                        if (!initialized && interfaceClass.isAssignableFrom(clazz)) {
+                            runner.run(interfaceClass.cast(instance));
+                            initialized = true;
+                        } else if (!initialized) {
+                            String fallbackMethod = resolveEntrypointMethodName(type);
+                            try {
+                                clazz.getMethod(fallbackMethod).invoke(instance);
+                                initialized = true;
+                            } catch (NoSuchMethodException e) {
+                                throw new IllegalStateException("Entrypoint does not implement required method " + fallbackMethod, e);
+                            }
+                        }
+
+                        return new EntrypointInitialization(instance, initialized);
+                    });
+
+                    if (initialization.initialized()) {
+                        Object registered = initialization.instance() != null
+                            ? initialization.instance()
+                            : new ReflectedEntrypointHandle(clazz, target.methodName());
+                        BridgeRuntime.registerEntrypoint(loader.getNodeId(), type, entrypointString, registered);
+                        System.out.println("\033[1;32m[DAG] " + loader.getNodeId() + " -> " + type.toUpperCase()
+                            + " INITIALIZED (" + mode + ")\033[0m");
                     }
-                }
-
-                if (initialized) {
-                    BridgeRuntime.registerEntrypoint(loader.getNodeId(), type, entrypointString, instance);
-                    System.out.println("\033[1;32m[DAG] " + loader.getNodeId() + " -> " + type.toUpperCase()
-                        + " INITIALIZED (" + mode + ")\033[0m");
+                } finally {
+                    Thread.currentThread().setContextClassLoader(previousContextLoader);
                 }
             } catch (Throwable t) {
                 throw new IllegalStateException(
@@ -1160,6 +1393,84 @@ public class LifecycleManager {
             default -> throw new IllegalArgumentException("Unsupported entrypoint type: " + type);
         };
     }
+
+    private static <T> T executeEntrypointAsMod(String modId, ThrowingSupplier<T> action) throws Exception {
+        try {
+            return CapabilityManager.executeAsMod(modId, () -> {
+                try {
+                    return action.get();
+                } catch (RuntimeException | Error e) {
+                    throw e;
+                } catch (Exception e) {
+                    throw new EntrypointCheckedException(e);
+                }
+            });
+        } catch (EntrypointCheckedException e) {
+            throw e.checkedCause();
+        }
+    }
+
+    private static Object invokeExplicitEntrypointMethod(Class<?> clazz, String methodName) throws Exception {
+        Method method = findNoArgMethod(clazz, methodName);
+        method.setAccessible(true);
+        Object instance = null;
+        if (!Modifier.isStatic(method.getModifiers())) {
+            instance = clazz.getDeclaredConstructor().newInstance();
+        }
+        method.invoke(instance);
+        return instance;
+    }
+
+    private static Method findNoArgMethod(Class<?> clazz, String methodName) throws NoSuchMethodException {
+        Class<?> cursor = clazz;
+        while (cursor != null) {
+            try {
+                return cursor.getDeclaredMethod(methodName);
+            } catch (NoSuchMethodException ignored) {
+                cursor = cursor.getSuperclass();
+            }
+        }
+        throw new NoSuchMethodException(clazz.getName() + "::" + methodName + "()");
+    }
+
+    private record EntrypointTarget(String className, String methodName) {
+        static EntrypointTarget parse(String value) {
+            int separator = value.indexOf("::");
+            if (separator < 0) {
+                return new EntrypointTarget(value, null);
+            }
+            String className = value.substring(0, separator);
+            String methodName = value.substring(separator + 2);
+            if (className.isBlank() || methodName.isBlank() || methodName.contains("::")) {
+                throw new IllegalArgumentException("Invalid Fabric entrypoint declaration: " + value);
+            }
+            return new EntrypointTarget(className, methodName);
+        }
+    }
+
+    private record ReflectedEntrypointHandle(Class<?> entrypointClass, String methodName) {
+    }
+
+    private record EntrypointInitialization(Object instance, boolean initialized) {
+    }
+
+    private static final class EntrypointCheckedException extends RuntimeException {
+        private final Exception checkedCause;
+
+        private EntrypointCheckedException(Exception checkedCause) {
+            super(checkedCause);
+            this.checkedCause = checkedCause;
+        }
+
+        private Exception checkedCause() {
+            return checkedCause;
+        }
+    }
+
+    @FunctionalInterface
+    interface ThrowingSupplier<T> {
+        T get() throws Exception;
+    }
     
     @FunctionalInterface
     interface EntrypointRunner<T> {
@@ -1186,10 +1497,19 @@ public class LifecycleManager {
         for (LazyInterMedClassLoader loader : allDagLoaders()) {
             byte[] localBytes = loader.readLocalClassBytes(name);
             if (localBytes != null) {
-                return localBytes;
+                return remapDagClassBytesForAnalysis(name, localBytes);
             }
         }
         return null;
+    }
+
+    private static byte[] remapDagClassBytesForAnalysis(String name, byte[] localBytes) {
+        // Mixin's bytecode provider reads classes outside LazyInterMedClassLoader#defineClass.
+        // Serve the same namespace the runtime loader sees, without applying stateful
+        // registry/security/native-mixin transforms during metadata analysis.
+        byte[] transformed = InterMedRemapper.transformClassBytes(name, localBytes, false);
+        transformed = new ForgeAnnotationRemapper().transform(name, transformed);
+        return transformed;
     }
 
     private static void validateDagPlan(List<ModNode> sortedMods, ResolvedPlan plan) {
@@ -1416,6 +1736,20 @@ public class LifecycleManager {
                     .distinct()
                     .toArray(java.net.URL[]::new);
             }
+
+            @Override
+            public java.io.InputStream getResourceAsStream(String name) throws java.io.IOException {
+                if (name == null || name.isBlank()) {
+                    return null;
+                }
+                for (LazyInterMedClassLoader loader : allDagLoaders()) {
+                    java.io.InputStream stream = loader.getResourceAsStream(name);
+                    if (stream != null) {
+                        return stream;
+                    }
+                }
+                return null;
+            }
         });
     }
 
@@ -1431,8 +1765,49 @@ public class LifecycleManager {
             throw new IllegalArgumentException("Bridge loader requested for non-runtime node: " + nodeId);
         }
         InterMedClassLoader loader = new InterMedClassLoader(nodeId, null, parentLinks, platformClassLoader);
+        installBuiltInBridgeSupport(loader, nodeId);
         installProductionBytecodePipeline(loader, false);
         return loader;
+    }
+
+    private static void installBuiltInBridgeSupport(InterMedClassLoader loader, String nodeId) {
+        List<String> ownedPrefixes = switch (nodeId) {
+            case "intermed-fabric-bridge" -> List.of(
+                "net.fabricmc.api.",
+                "net.fabricmc.loader.api.",
+                "net.fabricmc.fabric.api."
+            );
+            case "intermed-neoforge-bridge" -> List.of("net.neoforged.");
+            default -> List.of();
+        };
+        if (ownedPrefixes.isEmpty()) {
+            return;
+        }
+
+        File supportPath = resolveCoreSupportPath();
+        if (supportPath == null) {
+            System.err.println("[DAG] Bridge support unavailable for " + nodeId
+                + ": unable to resolve InterMed core code source.");
+            return;
+        }
+
+        ownedPrefixes.forEach(loader::addOwnedClassPrefix);
+        loader.addJar(supportPath);
+        System.out.printf("[DAG] Bridge support mounted: %s -> prefixes=%s, source=%s%n",
+            nodeId, ownedPrefixes, supportPath);
+    }
+
+    private static File resolveCoreSupportPath() {
+        try {
+            java.security.CodeSource codeSource = InterMedKernel.class.getProtectionDomain().getCodeSource();
+            if (codeSource == null || codeSource.getLocation() == null) {
+                return null;
+            }
+            File location = new File(codeSource.getLocation().toURI());
+            return location.exists() ? location : null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static void installProductionBytecodePipeline(LazyInterMedClassLoader loader,
@@ -1440,11 +1815,13 @@ public class LifecycleManager {
         // Canonical production order for mod-owned bytecode:
         //   1. TinyRemapperTransformer   — intermediary → named mappings
         //   2. ForgeAnnotationRemapper   — remap class/method refs in @Mixin/@At annotations
-        //   3. RegistryHookTransformer   — INVOKEDYNAMIC registry virtualisation
-        //   4. SecurityHookTransformer   — capability / file / network sandboxing
-        //   5. MixinTransformer          — conflict resolution + bridge generation
+        //   3. MixinAccessorFallback     — safe fallback for unprocessed accessor stubs
+        //   4. RegistryHookTransformer   — INVOKEDYNAMIC registry virtualisation
+        //   5. SecurityHookTransformer   — capability / file / network sandboxing
+        //   6. MixinTransformer          — conflict resolution + bridge generation
         loader.addTransformer(new TinyRemapperTransformer());
         loader.addTransformer(new ForgeAnnotationRemapper());
+        loader.addTransformer(new MixinAccessorFallbackTransformer());
         loader.addTransformer(new RegistryHookTransformer());
         loader.addTransformer(new SecurityHookTransformer());
         if (includeMixinResolution) {
@@ -1501,6 +1878,46 @@ public class LifecycleManager {
         return owners;
     }
 
+    private static void wireNestedModuleParents(List<ModNode> nodes, ModDiscovery.DiscoveryLayout discoveryLayout) {
+        if (nodes == null || nodes.isEmpty() || discoveryLayout == null || discoveryLayout.nestedJarOwners().isEmpty()) {
+            return;
+        }
+
+        Map<Path, ModNode> nodesByJar = new LinkedHashMap<>();
+        Map<String, Integer> orderIndex = new LinkedHashMap<>();
+        for (int i = 0; i < nodes.size(); i++) {
+            orderIndex.put(nodes.get(i).id, i);
+        }
+        for (ModNode node : nodes) {
+            if (node.jar != null) {
+                nodesByJar.put(node.jar.toPath().toAbsolutePath().normalize(), node);
+            }
+        }
+
+        for (ModNode nestedNode : nodes) {
+            if (nestedNode.jar == null) {
+                continue;
+            }
+            Path ownerJar = discoveryLayout.ownerOf(nestedNode.jar);
+            if (ownerJar == null) {
+                continue;
+            }
+            ModNode ownerNode = nodesByJar.get(ownerJar);
+            if (ownerNode == null || ownerNode.id.equals(nestedNode.id)) {
+                continue;
+            }
+            Integer ownerIndex = orderIndex.get(ownerNode.id);
+            Integer nestedIndex = orderIndex.get(nestedNode.id);
+            if (ownerIndex == null || nestedIndex == null || nestedIndex >= ownerIndex) {
+                continue;
+            }
+            if (ownerNode.dependencies.add(nestedNode.id)) {
+                ownerNode.dependencyLinkPolicies.put(nestedNode.id, ParentLinkPolicy.LOCAL_ONLY);
+                System.out.printf("[DAG] Nested module edge: %s -> %s%n", ownerNode.id, nestedNode.id);
+            }
+        }
+    }
+
     private static String resolveLibraryVisibilityDomain(File libraryJar,
                                                          ModDiscovery.DiscoveryLayout discoveryLayout,
                                                          Map<Path, String> ownerIdsByJar) {
@@ -1554,6 +1971,200 @@ public class LifecycleManager {
                 loader.addPeer(peer);
             }
         }
+    }
+
+    private static void wireNestedSiblingWeakPeers(List<ModNode> nodes, ModDiscovery.DiscoveryLayout discoveryLayout) {
+        if (nodes == null || nodes.isEmpty() || discoveryLayout == null || discoveryLayout.nestedJarOwners().isEmpty()) {
+            return;
+        }
+
+        Map<Path, ModNode> nodesByJar = new LinkedHashMap<>();
+        for (ModNode node : nodes) {
+            if (node.jar != null) {
+                nodesByJar.put(node.jar.toPath().toAbsolutePath().normalize(), node);
+            }
+        }
+
+        Map<Path, List<ModNode>> nestedByOwner = new LinkedHashMap<>();
+        for (ModNode node : nodes) {
+            if (node.jar == null) {
+                continue;
+            }
+            Path ownerJar = discoveryLayout.ownerOf(node.jar);
+            if (ownerJar != null) {
+                nestedByOwner.computeIfAbsent(ownerJar.toAbsolutePath().normalize(), ignored -> new ArrayList<>()).add(node);
+            }
+        }
+
+        Map<String, List<String>> packagePrefixesByNode = new LinkedHashMap<>();
+        for (Map.Entry<Path, List<ModNode>> entry : nestedByOwner.entrySet()) {
+            ModNode ownerNode = nodesByJar.get(entry.getKey());
+            if (ownerNode != null && isEmbeddedFabricApiBundle(ownerNode.id)) {
+                continue;
+            }
+            List<ModNode> siblings = entry.getValue();
+            if (siblings.size() < 2) {
+                continue;
+            }
+            for (ModNode requesterNode : siblings) {
+                LazyInterMedClassLoader requester = resolveNodeLoader(requesterNode.id);
+                if (requester == null) {
+                    continue;
+                }
+                for (ModNode providerNode : siblings) {
+                    if (requesterNode.id.equals(providerNode.id)) {
+                        continue;
+                    }
+                    LazyInterMedClassLoader provider = resolveNodeLoader(providerNode.id);
+                    if (provider == null
+                        || requester.getParents().contains(provider)
+                        || requester.getPeers().contains(provider)
+                        || requester.hasWeakPeer(provider)) {
+                        continue;
+                    }
+                    List<String> prefixes = packagePrefixesByNode.computeIfAbsent(
+                        providerNode.id,
+                        ignored -> exportedPackagePrefixes(providerNode.jar)
+                    );
+                    if (prefixes.isEmpty()) {
+                        continue;
+                    }
+                    try {
+                        requester.addWeakPeer(provider, new WeakPeerPolicy(providerNode.id, prefixes, false));
+                        System.out.printf("[DAG] Nested weak edge: %s ~> %s prefixes=%s%n",
+                            requesterNode.id, providerNode.id, prefixes);
+                    } catch (IllegalArgumentException e) {
+                        System.err.printf("[DAG] Skipping nested weak edge %s ~> %s: %s%n",
+                            requesterNode.id, providerNode.id, e.getMessage());
+                    }
+                }
+            }
+        }
+    }
+
+    private static boolean isEmbeddedFabricApiBundle(String ownerId) {
+        return "fabric-api".equals(ownerId);
+    }
+
+    private static List<String> exportedPackagePrefixes(File jar) {
+        if (jar == null || !jar.isFile()) {
+            return List.of();
+        }
+        LinkedHashSet<String> prefixes = new LinkedHashSet<>();
+        try (JarFile jarFile = new JarFile(jar)) {
+            Enumeration<JarEntry> entries = jarFile.entries();
+            while (entries.hasMoreElements()) {
+                JarEntry entry = entries.nextElement();
+                String name = entry.getName();
+                if (entry.isDirectory()
+                    || !name.endsWith(".class")
+                    || name.equals("module-info.class")
+                    || name.endsWith("/module-info.class")) {
+                    continue;
+                }
+                int slash = name.lastIndexOf('/');
+                if (slash <= 0) {
+                    continue;
+                }
+                String packageName = name.substring(0, slash).replace('/', '.');
+                String prefix = exportedPackageRoot(packageName);
+                if (!prefix.isBlank()) {
+                    prefixes.add(prefix);
+                }
+            }
+        } catch (Exception e) {
+            System.err.printf("[DAG] Failed to inspect nested package prefixes for %s: %s%n",
+                jar.getName(), e.getMessage());
+        }
+        return prefixes.stream().sorted().toList();
+    }
+
+    private static String exportedPackageRoot(String packageName) {
+        if (packageName == null || packageName.isBlank()) {
+            return "";
+        }
+        String[] parts = packageName.split("\\.");
+        if (parts.length == 0 || parts[0].isBlank()) {
+            return "";
+        }
+        if ((parts[0].equals("com") || parts[0].equals("org") || parts[0].equals("net") || parts[0].equals("io"))
+            && parts.length >= 2
+            && !parts[1].isBlank()) {
+            return parts[0] + "." + parts[1] + ".";
+        }
+        return parts[0] + ".";
+    }
+
+    private static void wireFabricApiPlatformPeers(List<ModNode> nodes) {
+        if (nodes == null || nodes.isEmpty()) {
+            return;
+        }
+
+        List<ModNode> fabricApiProviders = nodes.stream()
+            .filter(node -> node != null && isFabricApiProviderNode(node.id))
+            .toList();
+        if (fabricApiProviders.isEmpty()) {
+            return;
+        }
+
+        for (ModNode requesterNode : nodes) {
+            if (requesterNode == null
+                || isBridgeNode(requesterNode.id)
+                || (!isFabricApiProviderNode(requesterNode.id) && !dependsOnFabricBridge(requesterNode))) {
+                continue;
+            }
+
+            LazyInterMedClassLoader requester = resolveNodeLoader(requesterNode.id);
+            if (requester == null) {
+                continue;
+            }
+
+            int linked = 0;
+            int skipped = 0;
+            for (ModNode providerNode : fabricApiProviders) {
+                LazyInterMedClassLoader provider = resolveNodeLoader(providerNode.id);
+                if (provider == null
+                    || provider == requester
+                    || requester.getParents().contains(provider)
+                    || requester.getPeers().contains(provider)) {
+                    continue;
+                }
+                try {
+                    requester.addPeer(provider);
+                    linked++;
+                } catch (IllegalArgumentException e) {
+                    skipped++;
+                }
+            }
+            if (linked > 0) {
+                if (skipped > 0) {
+                    System.out.printf("[DAG] Fabric API platform peers: %s -> %d module(s), skipped %d unsafe edge(s)%n",
+                        requesterNode.id, linked, skipped);
+                } else {
+                    System.out.printf("[DAG] Fabric API platform peers: %s -> %d module(s)%n",
+                        requesterNode.id, linked);
+                }
+            }
+        }
+    }
+
+    private static boolean dependsOnFabricBridge(ModNode node) {
+        if (node.dependencies.contains("intermed-fabric-bridge")) {
+            return true;
+        }
+        return node.descriptor != null
+            && node.descriptor.dependencyConstraints().keySet().stream()
+                .map(VirtualDependencyMap::substitute)
+                .anyMatch("intermed-fabric-bridge"::equals);
+    }
+
+    private static boolean isFabricApiProviderNode(String id) {
+        return id != null
+            && ("fabric-api".equals(id)
+                || (id.startsWith("fabric-")
+                    && !"fabricloader".equals(id)
+                    && !"fabric-loader".equals(id)
+                    && !"fabric-language-kotlin".equals(id)));
     }
 
     private static WeakPeerPolicy weakPeerPolicyFor(String providerId) {

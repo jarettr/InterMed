@@ -7,6 +7,8 @@ import org.spongepowered.asm.mixin.MixinEnvironment;
 import org.spongepowered.asm.mixin.Mixins;
 
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Platform agent for the InterMed Mixin fork.
@@ -23,6 +25,7 @@ public class InterMedPlatformAgent extends MixinPlatformAgentAbstract {
 
     private static final AtomicBoolean CONFIG_REGISTERED = new AtomicBoolean(false);
     private static final AtomicBoolean BOOTSTRAPPED = new AtomicBoolean(false);
+    private static final Set<String> EXTERNAL_CONFIGS = ConcurrentHashMap.newKeySet();
     private static final String INTERMED_MIXIN_CONFIG = "intermed.mixins.json";
 
     @Override
@@ -66,6 +69,26 @@ public class InterMedPlatformAgent extends MixinPlatformAgentAbstract {
     public static void resetForTests() {
         CONFIG_REGISTERED.set(false);
         BOOTSTRAPPED.set(false);
+        EXTERNAL_CONFIGS.clear();
+    }
+
+    static Set<String> registeredExternalConfigsForTests() {
+        return Set.copyOf(EXTERNAL_CONFIGS);
+    }
+
+    public static void registerExternalMixinConfig(String configPath) {
+        if (configPath == null || configPath.isBlank()) {
+            return;
+        }
+        ensureCompatibilityLevel();
+        if (EXTERNAL_CONFIGS.add(configPath)) {
+            try {
+                Mixins.addConfiguration(configPath);
+                logger.info("Registered external mixin config {}", configPath);
+            } catch (Throwable throwable) {
+                logger.warn("Deferred external mixin config {}: {}", configPath, throwable.toString());
+            }
+        }
     }
 
     private static void registerInterMedConfig() {

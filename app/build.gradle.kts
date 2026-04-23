@@ -7,6 +7,9 @@ plugins {
 group = "org.intermed"
 version = providers.gradleProperty("intermedVersion").get()
 val archivesBaseName = "InterMedCore"
+val intermedBuildId = providers.gradleProperty("intermedBuildId")
+    .orElse(version.toString())
+    .get()
 
 val localRepoDir = rootProject.layout.projectDirectory.dir("local-repo").asFile
 val allowRemoteForgeRepo = providers.systemProperty("intermed.allowRemoteForgeRepo")
@@ -311,6 +314,18 @@ tasks.named<Jar>("jar") {
     archiveClassifier.set("thin") 
 }
 
+tasks.matching { it.name == "remapJar" }.configureEach {
+    if (this is AbstractArchiveTask) {
+        archiveClassifier.set("remapped")
+    }
+}
+
+tasks.matching { it.name == "remapSourcesJar" }.configureEach {
+    if (this is AbstractArchiveTask) {
+        archiveClassifier.set("sources-remapped")
+    }
+}
+
 fun Jar.configureCoreRuntimeManifest() {
     manifest {
         attributes(
@@ -319,7 +334,9 @@ fun Jar.configureCoreRuntimeManifest() {
                 "Premain-Class" to "org.intermed.core.InterMedKernel",
                 "Agent-Class" to "org.intermed.core.InterMedKernel",
                 "Can-Redefine-Classes" to "true",
-                "Can-Retransform-Classes" to "true"
+                "Can-Retransform-Classes" to "true",
+                "Implementation-Version" to version,
+                "InterMed-Build-Id" to intermedBuildId
             )
         )
     }
@@ -387,6 +404,8 @@ tasks.register<Jar>("coreJar") {
         // accessible.
         exclude("**/module-info.class")
     }
+
+    dependsOn(tasks.named("bootstrapJar"))
 }
 
 tasks.register<Jar>("coreFabricJar") {
@@ -424,6 +443,8 @@ tasks.register<Jar>("coreFabricJar") {
         exclude("META-INF/services/com.llamalad7.mixinextras.*")
         exclude("**/module-info.class")
     }
+
+    dependsOn(tasks.named("bootstrapJar"))
 }
 
 tasks.register<Jar>("bootstrapJar") {
@@ -436,13 +457,15 @@ tasks.register<Jar>("bootstrapJar") {
         attributes(
             mapOf(
                 "Implementation-Title" to "InterMed Bootstrap Support",
-                "Implementation-Version" to version
+                "Implementation-Version" to version,
+                "InterMed-Build-Id" to intermedBuildId
             )
         )
     }
 
     from(sourceSets.main.get().output) {
         include("org/intermed/security/**")
+        include("org/intermed/core/bridge/forge/**")
         include("org/intermed/core/security/**")
         include("org/intermed/core/registry/**")
         include("org/intermed/core/metadata/**")

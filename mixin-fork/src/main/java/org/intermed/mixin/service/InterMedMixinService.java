@@ -128,6 +128,18 @@ public final class InterMedMixinService implements IMixinService {
 
     @Override
     public InputStream getResourceAsStream(String name) {
+        var src = InterMedMixinBootstrap.getClassSource();
+        if (src != null) {
+            try {
+                InputStream stream = src.getResourceAsStream(name);
+                if (stream != null) {
+                    return stream;
+                }
+            } catch (java.io.IOException ignored) {
+                // Fall through to the usual loader-based lookup chain.
+            }
+        }
+
         ClassLoader cl = Thread.currentThread().getContextClassLoader();
         if (cl != null) {
             InputStream stream = cl.getResourceAsStream(name);

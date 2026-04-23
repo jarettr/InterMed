@@ -1,6 +1,7 @@
 package org.intermed.mixin;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URL;
 
 /**
@@ -15,8 +16,10 @@ import java.net.URL;
 public interface IClassBytesSource {
 
     /**
-     * Returns the raw class bytes for {@code className} (dot-separated), or
-     * {@code null} if not found in the DAG.
+     * Returns class bytes for {@code className} (dot-separated), or {@code null}
+     * if not found in the DAG. Implementations should serve bytes in the runtime
+     * namespace expected by Mixin, not necessarily the exact bytes stored in the
+     * source JAR.
      */
     byte[] getClassBytes(String className) throws IOException;
 
@@ -34,4 +37,12 @@ public interface IClassBytesSource {
      * Used by {@link org.intermed.mixin.service.InterMedClassProvider}.
      */
     URL[] getClassPath();
+
+    /**
+     * Returns a resource stream visible through the DAG, or {@code null} if the
+     * resource cannot be resolved there.
+     */
+    default InputStream getResourceAsStream(String name) throws IOException {
+        return null;
+    }
 }

@@ -2,6 +2,8 @@ package org.intermed.core.transformer;
 
 import org.intermed.core.bridge.NeoForgeEventBridge;
 import org.intermed.core.bridge.NeoForgeNetworkBridge;
+import org.intermed.core.bridge.ForgeEventBridge;
+import org.intermed.core.classloading.LazyInterMedClassLoader;
 import org.intermed.core.util.MappingManager;
 import org.intermed.core.lifecycle.LifecycleManager;
 import java.lang.instrument.ClassFileTransformer;
@@ -33,10 +35,16 @@ public class InterMedTransformer implements ClassFileTransformer {
         String nameToCheck = (realName != null) ? realName : className;
         boolean titleScreenTrigger = nameToCheck.contains("gui/screens/TitleScreen");
         boolean dedicatedServerTrigger = nameToCheck.contains("server/MinecraftServer");
+        if (titleScreenTrigger || dedicatedServerTrigger) {
+            LazyInterMedClassLoader.registerRuntimeClassLoader(loader);
+        }
 
         if (nameToCheck.startsWith("net/neoforged/") || nameToCheck.startsWith("net.neoforged.")) {
             NeoForgeEventBridge.scheduleRegistrationProbe();
             NeoForgeNetworkBridge.scheduleRegistrationProbe();
+        }
+        if (nameToCheck.startsWith("net/minecraftforge/") || nameToCheck.startsWith("net.minecraftforge.")) {
+            ForgeEventBridge.scheduleRegistrationProbe();
         }
 
         if (!deferredBootstrapReleased
@@ -56,8 +64,10 @@ public class InterMedTransformer implements ClassFileTransformer {
             try {
                 if (titleScreenTrigger) {
                     org.intermed.core.bridge.events.ForgeEventProxy.hookIntoForge();
+                    ForgeEventBridge.registerIfAvailable();
                     org.intermed.core.bridge.InterMedEventBridge.initialize();
                 } else {
+                    ForgeEventBridge.scheduleRegistrationProbe();
                     org.intermed.core.bridge.InterMedEventBridge.scheduleRegistrationProbe();
                 }
             } catch (Exception e) {

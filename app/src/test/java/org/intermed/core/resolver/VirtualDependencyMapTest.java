@@ -2,6 +2,8 @@ package org.intermed.core.resolver;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -22,6 +24,17 @@ class VirtualDependencyMapTest {
         assertEquals("[21,)", VirtualDependencyMap.effectiveConstraint("neoforge", "[21,)"));
         assertEquals(">=1.20.1", VirtualDependencyMap.effectiveConstraint("minecraft", ">=1.20.1"));
         assertEquals(">=21", VirtualDependencyMap.effectiveConstraint("java", ">=21"));
+    }
+
+    @Test
+    void prefersDiscoveredConcreteFabricApiVersionForBridgeCompatibility() {
+        assertEquals(
+            "0.92.3+1.20.1",
+            VirtualDependencyMap.bridgeCompatibilityVersionForBridge(
+                "intermed-fabric-bridge",
+                Map.of("fabric-api", "0.92.3+1.20.1")
+            )
+        );
     }
 
     @Test

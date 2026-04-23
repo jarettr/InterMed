@@ -1,6 +1,6 @@
-# InterMed v8.0.0-alpha.1 Open Alpha Known Limitations
+# InterMed v8.0.0-alpha.2 Open Alpha Known Limitations
 
-This document lists the known boundaries of the current `v8.0.0-alpha.1`.
+This document lists the known boundaries of the current `v8.0.0-alpha.2`.
 It is intentionally conservative: if an area has not been field-tested, it is
 listed here even when code exists in the repository.
 

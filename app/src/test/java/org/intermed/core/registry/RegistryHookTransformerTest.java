@@ -18,6 +18,7 @@ class RegistryHookTransformerTest {
 
     @Test
     void rewritesPayloadReturningFacadeLookups() {
+        RegistryHookTransformer.resetForTests();
         RegistryHookTransformer transformer = new RegistryHookTransformer();
         byte[] transformed = transformer.transform("demo.RegistryProbe", buildProbeClass());
         ClassNode node = read(transformed);
@@ -30,7 +31,12 @@ class RegistryHookTransformerTest {
         MethodNode holderLookup = method(node, "holderLookupGet");
         MethodNode providerLookup = method(node, "providerLookupGet");
         MethodNode builtIns = method(node, "builtInByName");
+        MethodNode obfuscatedPayload = method(node, "obfuscatedRegistryPayloadGet");
+        MethodNode obfuscatedOptional = method(node, "obfuscatedRegistryOptionalGet");
+        MethodNode obfuscatedRawId = method(node, "obfuscatedRegistryRawIdGet");
         MethodNode viewOnly = method(node, "registryViewAccess");
+        MethodNode intermediaryStaticRegister = method(node, "intermediaryStaticRegister");
+        MethodNode resourceLocationStaticRegister = method(node, "resourceLocationStaticRegister");
 
         assertNotNull(findInvokeDynamic(classic), "Classic registry payload lookup must be rewritten");
         assertNull(findMethodCall(classic), "Classic registry payload lookup should not remain as direct invoke");
@@ -62,9 +68,32 @@ class RegistryHookTransformerTest {
             "Payload-returning BuiltInRegistries accessors should be rewritten");
         assertNull(findMethodCall(builtIns));
 
+        assertNotNull(findInvokeDynamic(obfuscatedPayload),
+            "Obfuscated Registry.get aliases should be rewritten from signature shape");
+        assertNull(findMethodCall(obfuscatedPayload));
+
+        assertNotNull(findInvokeDynamic(obfuscatedOptional),
+            "Obfuscated Registry.getOptional aliases should be rewritten from signature shape");
+        assertNull(findMethodCall(obfuscatedOptional));
+
+        assertNotNull(findInvokeDynamic(obfuscatedRawId),
+            "Obfuscated Registry.getId/getRawId aliases should be rewritten from signature shape");
+        assertNull(findMethodCall(obfuscatedRawId));
+
         assertNull(findInvokeDynamic(viewOnly),
             "Facade calls that return registry views must remain untouched");
         assertNotNull(findMethodCall(viewOnly));
+
+        assertNotNull(findInvokeDynamic(intermediaryStaticRegister),
+            "Static intermediary Registry.register overloads must be rewritten");
+        assertNull(findMethodCall(intermediaryStaticRegister));
+
+        assertNotNull(findInvokeDynamic(resourceLocationStaticRegister),
+            "Static ResourceLocation Registry.register overloads must be rewritten even for remapped aliases");
+        assertNull(findMethodCall(resourceLocationStaticRegister));
+
+        assertEquals(3 + 8, RegistryHookTransformer.rewrittenGetSiteCount());
+        assertEquals(2, RegistryHookTransformer.rewrittenRegisterSiteCount());
     }
 
     private static byte[] buildProbeClass() {
@@ -80,7 +109,12 @@ class RegistryHookTransformerTest {
         emitHolderLookupGet(writer);
         emitProviderLookupGet(writer);
         emitBuiltInByName(writer);
+        emitObfuscatedRegistryPayloadGet(writer);
+        emitObfuscatedRegistryOptionalGet(writer);
+        emitObfuscatedRegistryRawIdGet(writer);
         emitRegistryViewAccess(writer);
+        emitIntermediaryStaticRegister(writer);
+        emitResourceLocationStaticRegister(writer);
 
         writer.visitEnd();
         return writer.toByteArray();
@@ -247,6 +281,63 @@ class RegistryHookTransformerTest {
         mv.visitEnd();
     }
 
+    private static void emitObfuscatedRegistryPayloadGet(ClassWriter writer) {
+        MethodVisitor mv = writer.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            "obfuscatedRegistryPayloadGet",
+            "(Lnet/minecraft/core/Registry;Lnet/minecraft/resources/ResourceLocation;)Ljava/lang/Object;",
+            null,
+            null);
+        mv.visitCode();
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+            "net/minecraft/core/Registry",
+            "a",
+            "(Lnet/minecraft/resources/ResourceLocation;)Ljava/lang/Object;",
+            false);
+        mv.visitInsn(Opcodes.ARETURN);
+        mv.visitMaxs(2, 2);
+        mv.visitEnd();
+    }
+
+    private static void emitObfuscatedRegistryOptionalGet(ClassWriter writer) {
+        MethodVisitor mv = writer.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            "obfuscatedRegistryOptionalGet",
+            "(Lnet/minecraft/core/Registry;Lnet/minecraft/resources/ResourceLocation;)Ljava/util/Optional;",
+            null,
+            null);
+        mv.visitCode();
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+            "net/minecraft/core/Registry",
+            "b",
+            "(Lnet/minecraft/resources/ResourceLocation;)Ljava/util/Optional;",
+            false);
+        mv.visitInsn(Opcodes.ARETURN);
+        mv.visitMaxs(2, 2);
+        mv.visitEnd();
+    }
+
+    private static void emitObfuscatedRegistryRawIdGet(ClassWriter writer) {
+        MethodVisitor mv = writer.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            "obfuscatedRegistryRawIdGet",
+            "(Lnet/minecraft/core/Registry;Ljava/lang/Object;)I",
+            null,
+            null);
+        mv.visitCode();
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+            "net/minecraft/core/Registry",
+            "a",
+            "(Ljava/lang/Object;)I",
+            false);
+        mv.visitInsn(Opcodes.IRETURN);
+        mv.visitMaxs(2, 2);
+        mv.visitEnd();
+    }
+
     private static void emitRegistryViewAccess(ClassWriter writer) {
         MethodVisitor mv = writer.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
             "registryViewAccess",
@@ -263,6 +354,46 @@ class RegistryHookTransformerTest {
             false);
         mv.visitInsn(Opcodes.ARETURN);
         mv.visitMaxs(2, 2);
+        mv.visitEnd();
+    }
+
+    private static void emitIntermediaryStaticRegister(ClassWriter writer) {
+        MethodVisitor mv = writer.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            "intermediaryStaticRegister",
+            "(Lnet/minecraft/class_2378;Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/Object;",
+            null,
+            null);
+        mv.visitCode();
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC,
+            "net/minecraft/class_2378",
+            "method_10226",
+            "(Lnet/minecraft/class_2378;Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/Object;",
+            false);
+        mv.visitInsn(Opcodes.ARETURN);
+        mv.visitMaxs(3, 3);
+        mv.visitEnd();
+    }
+
+    private static void emitResourceLocationStaticRegister(ClassWriter writer) {
+        MethodVisitor mv = writer.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            "resourceLocationStaticRegister",
+            "(Lnet/minecraft/core/Registry;Lnet/minecraft/resources/ResourceLocation;Ljava/lang/Object;)Ljava/lang/Object;",
+            null,
+            null);
+        mv.visitCode();
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC,
+            "net/minecraft/core/Registry",
+            "m_10230_",
+            "(Lnet/minecraft/core/Registry;Lnet/minecraft/resources/ResourceLocation;Ljava/lang/Object;)Ljava/lang/Object;",
+            false);
+        mv.visitInsn(Opcodes.ARETURN);
+        mv.visitMaxs(3, 3);
         mv.visitEnd();
     }
 

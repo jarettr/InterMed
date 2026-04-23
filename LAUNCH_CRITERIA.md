@@ -1,7 +1,7 @@
 # InterMed v8.0 Launch Criteria
 
 This document defines what must be true before InterMed moves from the current
-`v8.0.0-alpha.1` into wider external launch stages.
+`v8.0.0-alpha.2` into wider external launch stages.
 
 The goal is to keep launch language honest: a feature is not treated as launch
 ready because code exists. It needs the evidence level required by the target
@@ -9,7 +9,7 @@ stage.
 
 ## Current Position
 
-- Current version line: `v8.0.0-alpha.1`
+- Current version line: `v8.0.0-alpha.2`
 - Current release posture: `open alpha`
 - Current Minecraft scope: `1.20.1`
 - Current loader scope: `Fabric`, `Forge`, `NeoForge`
@@ -37,7 +37,7 @@ These items are required before any external alpha or technical preview.
 
 | Area | Required state |
 | --- | --- |
-| Scope | README, compliance matrix, roadmap, user docs, and this file all describe `v8.0.0-alpha.1`, Minecraft `1.20.1`, and no broad external guarantees. |
+| Scope | README, compliance matrix, roadmap, user docs, and this file all describe `v8.0.0-alpha.2`, Minecraft `1.20.1`, and no broad external guarantees. |
 | Build gates | The combined alpha app gate `./gradlew :app:test :app:coverageGate :app:strictSecurity :app:verifyRuntime --rerun-tasks -Dintermed.allowRemoteForgeRepo=true --console=plain` plus `./gradlew :test-harness:test --rerun-tasks --console=plain` both pass from a clean checkout locally and in CI, so task dependencies cannot hide failures. |
 | Coverage policy | Open-alpha coverage uses a staged gate, not the original 80% target: current machine enforcement is bundle line coverage `>=20%` plus selected launch/report/config classes `>=60%`. This must be documented as an alpha threshold. The next hardening step is package-level gates for `core`, `security`, `registry`, and `remapping` at `60-70%`, then a later move toward broad `80%` coverage before stable language. |
 | Security posture | Strict security remains a separate fail-closed lane; permissive compatibility results are never presented as security proof. |

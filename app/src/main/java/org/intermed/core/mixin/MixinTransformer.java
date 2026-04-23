@@ -9,6 +9,7 @@ import net.fabricmc.api.EnvType;
 import org.intermed.core.ast.AstMetadataReclaimer;
 import org.intermed.core.classloading.BytecodeTransformer;
 import org.intermed.core.config.RuntimeConfig;
+import org.intermed.core.lifecycle.LifecycleManager;
 import org.intermed.core.metadata.NormalizedModMetadata;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Type;
@@ -82,8 +83,12 @@ public class MixinTransformer implements BytecodeTransformer {
                     }
 
                     int priority = mixinConfig.has("priority") ? mixinConfig.get("priority").getAsInt() : 1000;
+                    List<String> mixinClassNames = resolveMixinClassNames(mixinConfig);
+                    if (requiresNativeMixinRuntime(jar, mixinPackage, mixinClassNames)) {
+                        InterMedPlatformAgent.registerExternalMixinConfig(configPath);
+                    }
 
-                    for (String mixinSimpleName : resolveMixinClassNames(mixinConfig)) {
+                    for (String mixinSimpleName : mixinClassNames) {
                         String mixinClassName = mixinPackage + "." + mixinSimpleName;
                         List<String> targets = getMixinTargets(jar, mixinClassName);
                         int registrationOrder = REGISTRATION_SEQUENCE.getAndIncrement();
@@ -213,6 +218,31 @@ public class MixinTransformer implements BytecodeTransformer {
             System.err.println("[MixinEngine] Failed to read targets for mixin " + mixinClassName + ": " + e.getMessage());
         }
         return Collections.emptyList();
+    }
+
+    private static boolean requiresNativeMixinRuntime(JarFile jar,
+                                                      String mixinPackage,
+                                                      List<String> mixinSimpleNames) {
+        for (String mixinSimpleName : mixinSimpleNames) {
+            String mixinClassName = mixinPackage + "." + mixinSimpleName;
+            for (String target : getMixinTargets(jar, mixinClassName)) {
+                if (isPlatformTarget(jar, target)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean isPlatformTarget(JarFile jar, String targetClassName) {
+        if (targetClassName == null || targetClassName.isBlank()) {
+            return false;
+        }
+        String classPath = targetClassName.replace('.', '/') + ".class";
+        if (jar.getJarEntry(classPath) != null) {
+            return false;
+        }
+        return LifecycleManager.getClassBytesFromDAG(targetClassName) == null;
     }
 
     @SuppressWarnings("unchecked")

@@ -27,6 +27,7 @@ class SecurityPolicyTest {
     void tearDown() {
         System.clearProperty("security.strict.mode");
         System.clearProperty("security.legacy.broad.permissions.enabled");
+        System.clearProperty("runtime.game.dir");
         RuntimeConfig.resetForTests();
         SecurityPolicy.resetForTests();
         CapabilityManager.resetForTests();
@@ -197,6 +198,32 @@ class SecurityPolicyTest {
     void testRegisterModWithNoPermissionsBlock() {
         SecurityPolicy.registerModCapabilities("no_perms_mod", new JsonObject());
         assertFalse(SecurityPolicy.hasPermission("no_perms_mod", Capability.FILE_READ));
+    }
+
+    @Test
+    void ordinaryManifestReceivesScopedGameConfigAccess() throws Exception {
+        Path gameDir = Files.createTempDirectory("intermed-game-dir");
+        System.setProperty("runtime.game.dir", gameDir.toString());
+
+        SecurityPolicy.registerModCapabilities("plain_fabric_mod", new JsonObject());
+
+        assertFalse(SecurityPolicy.hasPermission("plain_fabric_mod", Capability.FILE_WRITE));
+        assertTrue(SecurityPolicy.hasPermission(
+            "plain_fabric_mod",
+            SecurityPolicy.SecurityRequest.fileWrite(gameDir.resolve("config"))
+        ));
+        assertTrue(SecurityPolicy.hasPermission(
+            "plain_fabric_mod",
+            SecurityPolicy.SecurityRequest.fileWrite(gameDir.resolve("config/plain_fabric_mod.toml"))
+        ));
+        assertTrue(SecurityPolicy.hasPermission(
+            "plain_fabric_mod",
+            SecurityPolicy.SecurityRequest.fileRead(gameDir.resolve("config/plain_fabric_mod.toml"))
+        ));
+        assertFalse(SecurityPolicy.hasPermission(
+            "plain_fabric_mod",
+            SecurityPolicy.SecurityRequest.fileWrite(gameDir.resolve("saves/world/level.dat"))
+        ));
     }
 
     @Test

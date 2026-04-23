@@ -36,6 +36,7 @@ public final class RuntimeConfig {
     private final int sandboxSharedRegionBytes;
     private final int sandboxSharedRegionPoolMax;
     private final boolean classloaderDynamicWeakEdgesEnabled;
+    private final boolean symbolicRemappingEnabled;
     private final boolean vfsEnabled;
     private final String vfsConflictPolicy;
     private final List<String> vfsPriorityOrder;
@@ -64,6 +65,7 @@ public final class RuntimeConfig {
                           int sandboxSharedRegionBytes,
                           int sandboxSharedRegionPoolMax,
                           boolean classloaderDynamicWeakEdgesEnabled,
+                          boolean symbolicRemappingEnabled,
                           boolean vfsEnabled,
                           String vfsConflictPolicy,
                           List<String> vfsPriorityOrder,
@@ -91,6 +93,7 @@ public final class RuntimeConfig {
         this.sandboxSharedRegionBytes = sandboxSharedRegionBytes;
         this.sandboxSharedRegionPoolMax = sandboxSharedRegionPoolMax;
         this.classloaderDynamicWeakEdgesEnabled = classloaderDynamicWeakEdgesEnabled;
+        this.symbolicRemappingEnabled = symbolicRemappingEnabled;
         this.vfsEnabled = vfsEnabled;
         this.vfsConflictPolicy = vfsConflictPolicy;
         this.vfsPriorityOrder = List.copyOf(vfsPriorityOrder);
@@ -177,6 +180,10 @@ public final class RuntimeConfig {
         return classloaderDynamicWeakEdgesEnabled;
     }
 
+    public boolean isSymbolicRemappingEnabled() {
+        return symbolicRemappingEnabled;
+    }
+
     public boolean isVfsEnabled() {
         return vfsEnabled;
     }
@@ -247,6 +254,7 @@ public final class RuntimeConfig {
             + "|sandboxSharedRegionBytes=" + sandboxSharedRegionBytes
             + "|sandboxSharedRegionPoolMax=" + sandboxSharedRegionPoolMax
             + "|classloaderDynamicWeakEdges=" + classloaderDynamicWeakEdgesEnabled
+            + "|symbolicRemapping=" + symbolicRemappingEnabled
             + "|vfsEnabled=" + vfsEnabled
             + "|vfsConflictPolicy=" + vfsConflictPolicy
             + "|vfsPriority=" + String.join(",", vfsPriorityOrder)
@@ -289,6 +297,8 @@ public final class RuntimeConfig {
         int sandboxSharedRegionPoolMax = getInt(properties, "sandbox.shared.region.pool.max", 32);
         boolean classloaderDynamicWeakEdgesEnabled =
             getBoolean(properties, "classloader.dynamic.weak.edges.enabled", true);
+        boolean symbolicRemappingEnabled =
+            getBoolean(properties, "remapping.symbolic.runtime.enabled", true);
         EnvType environmentType = resolveEnvironmentType(properties);
         Path gameDir = resolveGameDir(properties);
         Path configDir = resolvePath(properties, "runtime.config.dir", gameDir.resolve("config"), gameDir);
@@ -328,6 +338,7 @@ public final class RuntimeConfig {
             Math.max(1024, sandboxSharedRegionBytes),
             Math.max(1, sandboxSharedRegionPoolMax),
             classloaderDynamicWeakEdgesEnabled,
+            symbolicRemappingEnabled,
             vfsEnabled,
             vfsConflictPolicy,
             vfsPriorityOrder,

@@ -110,7 +110,7 @@ public final class VirtualFileSystemRouter {
 
         LinkedHashSet<File> basePacks = new LinkedHashSet<>();
         for (NormalizedModMetadata metadata : candidates) {
-            basePacks.add(metadata.sourceJar().getAbsoluteFile());
+            basePacks.add(ensureMountablePack(metadata, config));
         }
         if (!config.isVfsEnabled() || candidates.isEmpty()) {
             return new MountPlan(List.copyOf(basePacks), null, List.of(), 0, Map.of(), null);
@@ -328,12 +328,77 @@ public final class VirtualFileSystemRouter {
     }
 
     private static byte[] packMetadataBytes() {
+        return packMetadataBytes("InterMed VFS Overlay");
+    }
+
+    private static byte[] packMetadataBytes(String description) {
         JsonObject root = new JsonObject();
         JsonObject pack = new JsonObject();
         pack.addProperty("pack_format", 15);
-        pack.addProperty("description", "InterMed VFS Overlay");
+        pack.addProperty("description", description);
         root.add("pack", pack);
         return new GsonBuilder().setPrettyPrinting().create().toJson(root).getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static File ensureMountablePack(NormalizedModMetadata metadata, RuntimeConfig config) {
+        File sourceJar = metadata.sourceJar().getAbsoluteFile();
+        if (jarContainsEntry(sourceJar, "pack.mcmeta")) {
+            return sourceJar;
+        }
+        return materializeSyntheticPack(config, metadata);
+    }
+
+    private static boolean jarContainsEntry(File jarFile, String entryName) {
+        try (JarFile jar = new JarFile(jarFile)) {
+            return jar.getJarEntry(entryName) != null;
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to inspect jar " + jarFile.getName() + " for " + entryName, e);
+        }
+    }
+
+    private static File materializeSyntheticPack(RuntimeConfig config, NormalizedModMetadata metadata) {
+        File sourceJar = metadata.sourceJar().getAbsoluteFile();
+        try {
+            Path cacheDir = config.getVfsCacheDir();
+            Files.createDirectories(cacheDir);
+            String fingerprint = AOTCacheManager.sha256((
+                metadata.id()
+                    + "|" + metadata.version()
+                    + "|" + sourceJar.getAbsolutePath()
+                    + "|" + sourceJar.length()
+                    + "|" + sourceJar.lastModified()
+            ).getBytes(StandardCharsets.UTF_8));
+            Path syntheticPath = cacheDir.resolve(
+                "intermed-synth-pack-" + sanitizeFileComponent(metadata.id()) + "-" + fingerprint.substring(0, 16) + ".zip"
+            );
+            if (Files.exists(syntheticPath)) {
+                return syntheticPath.toFile();
+            }
+
+            try (JarFile input = new JarFile(sourceJar);
+                 JarOutputStream output = new JarOutputStream(Files.newOutputStream(syntheticPath))) {
+                writeEntry(output, "pack.mcmeta", packMetadataBytes("InterMed synthetic pack: " + metadata.name()));
+                JarEntry icon = input.getJarEntry("pack.png");
+                if (icon != null && !icon.isDirectory()) {
+                    try (var stream = input.getInputStream(icon)) {
+                        writeEntry(output, "pack.png", stream.readAllBytes());
+                    }
+                }
+                var entries = input.entries();
+                while (entries.hasMoreElements()) {
+                    JarEntry entry = entries.nextElement();
+                    if (!isManagedResource(entry)) {
+                        continue;
+                    }
+                    try (var stream = input.getInputStream(entry)) {
+                        writeEntry(output, entry.getName(), stream.readAllBytes());
+                    }
+                }
+            }
+            return syntheticPath.toFile();
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to materialize synthetic pack for " + metadata.id(), e);
+        }
     }
 
     private static byte[] manifestBytes(List<ResourceConflict> conflicts, int mergedEntries) {
@@ -541,6 +606,13 @@ public final class VirtualFileSystemRouter {
             return "data_json";
         }
         return "resource";
+    }
+
+    private static String sanitizeFileComponent(String value) {
+        if (value == null || value.isBlank()) {
+            return "pack";
+        }
+        return value.toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z0-9_.-]+", "_");
     }
 
     private static int effectivePriority(ResourceContribution contribution, VirtualFileSystemOverrides.Rule overrideRule) {

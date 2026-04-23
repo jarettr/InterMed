@@ -91,12 +91,12 @@ class LaunchReadinessReportGeneratorTest {
     }
 
     private static void createScopeDocs(Path root) throws Exception {
-        write(root.resolve("README.md"), "InterMed v8.0.0-alpha.1");
-        write(root.resolve("COMPLIANCE.md"), "InterMed v8.0.0-alpha.1");
-        write(root.resolve("LAUNCH_CRITERIA.md"), "InterMed v8.0.0-alpha.1");
-        write(root.resolve("docs/user-guide.md"), "InterMed v8.0.0-alpha.1");
-        write(root.resolve("docs/known-limitations.md"), "InterMed v8.0.0-alpha.1");
-        write(root.resolve("docs/alpha-triage.md"), "InterMed v8.0.0-alpha.1");
+        write(root.resolve("README.md"), "InterMed v8.0.0-alpha.2");
+        write(root.resolve("COMPLIANCE.md"), "InterMed v8.0.0-alpha.2");
+        write(root.resolve("LAUNCH_CRITERIA.md"), "InterMed v8.0.0-alpha.2");
+        write(root.resolve("docs/user-guide.md"), "InterMed v8.0.0-alpha.2");
+        write(root.resolve("docs/known-limitations.md"), "InterMed v8.0.0-alpha.2");
+        write(root.resolve("docs/alpha-triage.md"), "InterMed v8.0.0-alpha.2");
     }
 
     private static void write(Path path, String value) throws Exception {

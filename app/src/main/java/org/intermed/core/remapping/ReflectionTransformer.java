@@ -45,6 +45,7 @@ public final class ReflectionTransformer extends ClassNode {
     private static final String REMAPPER_OWNER = "org/intermed/core/remapping/InterMedRemapper";
     private static final String REMAPPER_NAME = "translateRuntimeString";
     private static final String REMAPPER_DESC = "(Ljava/lang/String;)Ljava/lang/String;";
+    private static final String SYMBOLIC_FACADE_OWNER = "org/intermed/core/remapping/SymbolicReflectionFacade";
     private static final String STRING_CONCAT_FACTORY = "java/lang/invoke/StringConcatFactory";
 
     private final ClassVisitor downstream;
@@ -63,6 +64,7 @@ public final class ReflectionTransformer extends ClassNode {
     }
 
     private void instrumentMethod(MethodNode method) {
+        boolean reflectionSinkPresent = methodContainsReflectionSink(method);
         boolean warnedAmbiguousConcat = false;
         List<AbstractInsnNode> instructions = new ArrayList<>(List.of(method.instructions.toArray()));
         for (AbstractInsnNode insn : instructions) {
@@ -73,7 +75,9 @@ public final class ReflectionTransformer extends ClassNode {
                 continue;
             }
 
-            if (insn instanceof InvokeDynamicInsnNode indyInsn && isStringConcatFactory(indyInsn)) {
+            if (reflectionSinkPresent
+                && insn instanceof InvokeDynamicInsnNode indyInsn
+                && isStringConcatFactory(indyInsn)) {
                 ConcatDecision decision = analyzeIndyConcat(indyInsn);
                 if (decision.instrument()) {
                     injectTranslatorAfter(method, insn);
@@ -87,13 +91,18 @@ public final class ReflectionTransformer extends ClassNode {
             }
 
             if (insn instanceof MethodInsnNode methodInsn) {
+                if (rewriteReflectionSink(methodInsn)) {
+                    continue;
+                }
                 int stringArgIndex = reflectionStringArgIndex(methodInsn);
                 if (stringArgIndex >= 0 && injectTranslatorForArgument(method, methodInsn, stringArgIndex)) {
                     continue;
                 }
             }
 
-            if (insn instanceof MethodInsnNode methodInsn && isStringBuilderToString(methodInsn)) {
+            if (reflectionSinkPresent
+                && insn instanceof MethodInsnNode methodInsn
+                && isStringBuilderToString(methodInsn)) {
                 ConcatDecision decision = mergeDecisions(
                     analyzeStringBuilderChainDataflow(method, methodInsn),
                     analyzeStringBuilderChainLinear(methodInsn)
@@ -113,7 +122,9 @@ public final class ReflectionTransformer extends ClassNode {
             // format string carries MC patterns like "net.minecraft.%s" or "class_%s".
             // The format call itself produces a new string that will contain those
             // patterns, so we wrap its return value with the runtime translator.
-            if (insn instanceof MethodInsnNode methodInsn && isStringFormat(methodInsn)) {
+            if (reflectionSinkPresent
+                && insn instanceof MethodInsnNode methodInsn
+                && isStringFormat(methodInsn)) {
                 if (formatCallHasSuspiciousFormatString(method, methodInsn)) {
                     injectTranslatorAfter(method, insn);
                 } else if (!warnedAmbiguousConcat && formatCallHasStringArgs(methodInsn)) {
@@ -129,6 +140,19 @@ public final class ReflectionTransformer extends ClassNode {
                 }
             }
         }
+    }
+
+    private static boolean methodContainsReflectionSink(MethodNode method) {
+        if (method == null) {
+            return false;
+        }
+        for (AbstractInsnNode insn : method.instructions.toArray()) {
+            if (insn instanceof MethodInsnNode methodInsn
+                && reflectionStringArgIndex(methodInsn) >= 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void injectTranslatorAfter(MethodNode method, AbstractInsnNode insn) {
@@ -211,6 +235,70 @@ public final class ReflectionTransformer extends ClassNode {
             }
         }
         return -1;
+    }
+
+    private static boolean rewriteReflectionSink(MethodInsnNode methodInsn) {
+        if (methodInsn == null) {
+            return false;
+        }
+        if ("java/lang/Class".equals(methodInsn.owner)) {
+            if ("forName".equals(methodInsn.name)
+                && ("(Ljava/lang/String;)Ljava/lang/Class;".equals(methodInsn.desc)
+                    || "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;".equals(methodInsn.desc))) {
+                methodInsn.owner = SYMBOLIC_FACADE_OWNER;
+                methodInsn.setOpcode(Opcodes.INVOKESTATIC);
+                methodInsn.itf = false;
+                return true;
+            }
+            if (("getMethod".equals(methodInsn.name) || "getDeclaredMethod".equals(methodInsn.name))
+                && "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;".equals(methodInsn.desc)) {
+                methodInsn.owner = SYMBOLIC_FACADE_OWNER;
+                methodInsn.desc = prependReceiverDescriptor("Ljava/lang/Class;", methodInsn.desc);
+                methodInsn.setOpcode(Opcodes.INVOKESTATIC);
+                methodInsn.itf = false;
+                return true;
+            }
+            if (("getField".equals(methodInsn.name) || "getDeclaredField".equals(methodInsn.name))
+                && "(Ljava/lang/String;)Ljava/lang/reflect/Field;".equals(methodInsn.desc)) {
+                methodInsn.owner = SYMBOLIC_FACADE_OWNER;
+                methodInsn.desc = prependReceiverDescriptor("Ljava/lang/Class;", methodInsn.desc);
+                methodInsn.setOpcode(Opcodes.INVOKESTATIC);
+                methodInsn.itf = false;
+                return true;
+            }
+        }
+        if ("java/lang/ClassLoader".equals(methodInsn.owner)
+            && ("loadClass".equals(methodInsn.name) || "findClass".equals(methodInsn.name))
+            && "(Ljava/lang/String;)Ljava/lang/Class;".equals(methodInsn.desc)) {
+            methodInsn.owner = SYMBOLIC_FACADE_OWNER;
+            methodInsn.desc = prependReceiverDescriptor("Ljava/lang/ClassLoader;", methodInsn.desc);
+            methodInsn.setOpcode(Opcodes.INVOKESTATIC);
+            methodInsn.itf = false;
+            return true;
+        }
+        if ("java/lang/invoke/MethodHandles$Lookup".equals(methodInsn.owner)
+            && isLookupBridgeCandidate(methodInsn.name)) {
+            methodInsn.owner = SYMBOLIC_FACADE_OWNER;
+            methodInsn.desc = prependReceiverDescriptor("Ljava/lang/invoke/MethodHandles$Lookup;", methodInsn.desc);
+            methodInsn.setOpcode(Opcodes.INVOKESTATIC);
+            methodInsn.itf = false;
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean isLookupBridgeCandidate(String methodName) {
+        return "findVirtual".equals(methodName)
+            || "findStatic".equals(methodName)
+            || "findSpecial".equals(methodName)
+            || "findGetter".equals(methodName)
+            || "findSetter".equals(methodName)
+            || "findStaticGetter".equals(methodName)
+            || "findStaticSetter".equals(methodName);
+    }
+
+    private static String prependReceiverDescriptor(String receiverDescriptor, String originalDescriptor) {
+        return "(" + receiverDescriptor + originalDescriptor.substring(1);
     }
 
     private static boolean isStringType(Type type) {

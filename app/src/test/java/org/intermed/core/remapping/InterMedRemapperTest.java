@@ -192,14 +192,87 @@ class InterMedRemapperTest {
             .orElseThrow();
 
         MethodInsnNode forNameCall = findFirstMatching(probe, MethodInsnNode.class,
-            insn -> "java/lang/Class".equals(insn.owner) && "forName".equals(insn.name));
+            insn -> "org/intermed/core/remapping/SymbolicReflectionFacade".equals(insn.owner)
+                && "forName".equals(insn.name));
         MethodInsnNode getDeclaredMethodCall = findFirstMatching(probe, MethodInsnNode.class,
-            insn -> "java/lang/Class".equals(insn.owner) && "getDeclaredMethod".equals(insn.name));
+            insn -> "org/intermed/core/remapping/SymbolicReflectionFacade".equals(insn.owner)
+                && "getDeclaredMethod".equals(insn.name));
 
-        assertNotNull(findMethodCallBefore(probe, forNameCall,
-            "org/intermed/core/remapping/InterMedRemapper", "translateRuntimeString"));
-        assertNotNull(findMethodCallBefore(probe, getDeclaredMethodCall,
-            "org/intermed/core/remapping/InterMedRemapper", "translateRuntimeString"));
+        assertNotNull(forNameCall);
+        assertNotNull(getDeclaredMethodCall);
+    }
+
+    @Test
+    void selectiveBypassKeepsReflectiveLibrariesOnSymbolicOnlyPath() {
+        byte[] original = buildSelectiveBypassProbeClass("org/reflections/util/NameHelper");
+
+        byte[] transformed = InterMedRemapper.transformClassBytes("org.reflections.util.NameHelper", original);
+        ClassNode node = read(transformed);
+        MethodNode probe = node.methods.stream()
+            .filter(method -> method.name.equals("probe"))
+            .findFirst()
+            .orElseThrow();
+
+        FieldInsnNode fieldInsn = findFirst(probe, FieldInsnNode.class);
+        MethodInsnNode legacyMethodInsn = findFirstMatching(probe, MethodInsnNode.class,
+            insn -> "net/minecraft/class_42".equals(insn.owner) && "method_1000".equals(insn.name));
+        MethodInsnNode symbolicForName = findFirstMatching(probe, MethodInsnNode.class,
+            insn -> "org/intermed/core/remapping/SymbolicReflectionFacade".equals(insn.owner)
+                && "forName".equals(insn.name));
+
+        assertEquals("net/minecraft/class_42", fieldInsn.owner);
+        assertEquals("field_500", fieldInsn.name);
+        assertNotNull(legacyMethodInsn);
+        assertNotNull(symbolicForName);
+    }
+
+    @Test
+    void tinyRemapperTransformerUsesSelectiveBypassForReflectiveLibraries() {
+        byte[] original = buildSelectiveBypassProbeClass("javassist/bytecode/Descriptor");
+
+        TinyRemapperTransformer transformer = new TinyRemapperTransformer();
+        byte[] transformed = transformer.transform("javassist.bytecode.Descriptor", original);
+        ClassNode node = read(transformed);
+        MethodNode probe = node.methods.stream()
+            .filter(method -> method.name.equals("probe"))
+            .findFirst()
+            .orElseThrow();
+
+        MethodInsnNode legacyMethodInsn = findFirstMatching(probe, MethodInsnNode.class,
+            insn -> "net/minecraft/class_42".equals(insn.owner) && "method_1000".equals(insn.name));
+        MethodInsnNode symbolicForName = findFirstMatching(probe, MethodInsnNode.class,
+            insn -> "org/intermed/core/remapping/SymbolicReflectionFacade".equals(insn.owner)
+                && "forName".equals(insn.name));
+
+        assertNotNull(legacyMethodInsn);
+        assertNotNull(symbolicForName);
+    }
+
+    @Test
+    void transformClassBytesRemapsInheritedMethodCallsUsingSuperclassMappings() {
+        String attributeOwner = internalName(InheritedAttribute.class);
+        String rangedOwner = internalName(InheritedRangedAttribute.class);
+
+        LifecycleManager.DICTIONARY.addClass("test/class_1320", attributeOwner);
+        LifecycleManager.DICTIONARY.addClass("test/class_1329", rangedOwner);
+        LifecycleManager.DICTIONARY.addMethod(attributeOwner, "method_26829", "(Z)Ltest/class_1320;", "m_22084_");
+        InterMedRemapper.installDictionary(LifecycleManager.DICTIONARY);
+
+        byte[] original = buildInheritedMethodProbeClass();
+
+        byte[] transformed = InterMedRemapper.transformClassBytes("example.InheritedProbe", original);
+        ClassNode node = read(transformed);
+        MethodNode probe = node.methods.stream()
+            .filter(method -> method.name.equals("probeInherited"))
+            .findFirst()
+            .orElseThrow();
+
+        MethodInsnNode methodInsn = findFirstMatching(probe, MethodInsnNode.class,
+            insn -> rangedOwner.equals(insn.owner));
+
+        assertEquals(rangedOwner, methodInsn.owner);
+        assertEquals("m_22084_", methodInsn.name);
+        assertEquals("(Z)L" + attributeOwner + ";", methodInsn.desc);
     }
 
     private byte[] buildProbeClass() {
@@ -225,6 +298,67 @@ class InterMedRemapperTest {
         probe.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "net/minecraft/class_42", "method_1000", "()V", false);
         probe.visitInsn(Opcodes.RETURN);
         probe.visitMaxs(2, 2);
+        probe.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] buildInheritedMethodProbeClass() {
+        ClassWriter writer = new ClassWriter(0);
+        writer.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, "example/InheritedProbe", null, "java/lang/Object", null);
+
+        MethodVisitor init = writer.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+        init.visitCode();
+        init.visitVarInsn(Opcodes.ALOAD, 0);
+        init.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        init.visitInsn(Opcodes.RETURN);
+        init.visitMaxs(1, 1);
+        init.visitEnd();
+
+        MethodVisitor probe = writer.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            "probeInherited", "(Ltest/class_1329;)Ltest/class_1320;", null, null);
+        probe.visitCode();
+        probe.visitVarInsn(Opcodes.ALOAD, 0);
+        probe.visitInsn(Opcodes.ICONST_1);
+        probe.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "test/class_1329", "method_26829", "(Z)Ltest/class_1320;", false);
+        probe.visitInsn(Opcodes.ARETURN);
+        probe.visitMaxs(2, 1);
+        probe.visitEnd();
+
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private byte[] buildSelectiveBypassProbeClass(String internalName) {
+        ClassWriter writer = new ClassWriter(0);
+        writer.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, internalName, null, "java/lang/Object", null);
+
+        MethodVisitor init = writer.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+        init.visitCode();
+        init.visitVarInsn(Opcodes.ALOAD, 0);
+        init.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        init.visitInsn(Opcodes.RETURN);
+        init.visitMaxs(1, 1);
+        init.visitEnd();
+
+        MethodVisitor probe = writer.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            "probe", "(Lnet/minecraft/class_42;)V", null, null);
+        probe.visitCode();
+        probe.visitLdcInsn("net.minecraft.class_42");
+        probe.visitMethodInsn(Opcodes.INVOKESTATIC,
+            "java/lang/Class",
+            "forName",
+            "(Ljava/lang/String;)Ljava/lang/Class;",
+            false);
+        probe.visitInsn(Opcodes.POP);
+        probe.visitVarInsn(Opcodes.ALOAD, 0);
+        probe.visitFieldInsn(Opcodes.GETFIELD, "net/minecraft/class_42", "field_500", "I");
+        probe.visitInsn(Opcodes.POP);
+        probe.visitVarInsn(Opcodes.ALOAD, 0);
+        probe.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "net/minecraft/class_42", "method_1000", "()V", false);
+        probe.visitInsn(Opcodes.RETURN);
+        probe.visitMaxs(2, 1);
         probe.visitEnd();
 
         writer.visitEnd();
@@ -259,8 +393,12 @@ class InterMedRemapperTest {
             ),
             "net.minecraft.\u0001"
         );
+        probe.visitInsn(Opcodes.DUP);
+        probe.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/Class", "forName",
+            "(Ljava/lang/String;)Ljava/lang/Class;", false);
+        probe.visitInsn(Opcodes.POP);
         probe.visitInsn(Opcodes.ARETURN);
-        probe.visitMaxs(1, 1);
+        probe.visitMaxs(2, 1);
         probe.visitEnd();
 
         writer.visitEnd();
@@ -296,8 +434,12 @@ class InterMedRemapperTest {
             "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         probe.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString",
             "()Ljava/lang/String;", false);
+        probe.visitInsn(Opcodes.DUP);
+        probe.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/Class", "forName",
+            "(Ljava/lang/String;)Ljava/lang/Class;", false);
+        probe.visitInsn(Opcodes.POP);
         probe.visitInsn(Opcodes.ARETURN);
-        probe.visitMaxs(2, 0);
+        probe.visitMaxs(3, 0);
         probe.visitEnd();
 
         writer.visitEnd();
@@ -327,8 +469,12 @@ class InterMedRemapperTest {
             "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
         probe.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString",
             "()Ljava/lang/String;", false);
+        probe.visitInsn(Opcodes.DUP);
+        probe.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/Class", "forName",
+            "(Ljava/lang/String;)Ljava/lang/Class;", false);
+        probe.visitInsn(Opcodes.POP);
         probe.visitInsn(Opcodes.ARETURN);
-        probe.visitMaxs(2, 1);
+        probe.visitMaxs(3, 1);
         probe.visitEnd();
 
         writer.visitEnd();
@@ -433,4 +579,16 @@ class InterMedRemapperTest {
         }
         return lastMatch;
     }
+
+    private static String internalName(Class<?> type) {
+        return type.getName().replace('.', '/');
+    }
+
+    static class InheritedAttribute {
+        InheritedAttribute m_22084_(boolean syncable) {
+            return this;
+        }
+    }
+
+    static class InheritedRangedAttribute extends InheritedAttribute {}
 }

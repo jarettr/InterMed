@@ -162,6 +162,14 @@ public final class SemVerConstraint {
     /** The original constraint string passed to {@link #parse(String)}. */
     public String getRaw() { return raw; }
 
+    /**
+     * Compares two version strings with the same best-effort SemVer semantics
+     * used by the resolver.
+     */
+    public static int compareVersions(String left, String right) {
+        return SemVer.parse(left).compareTo(SemVer.parse(right));
+    }
+
     @Override
     public String toString() { return raw; }
 

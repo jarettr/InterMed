@@ -2,7 +2,9 @@ package org.intermed.core.resolver;
 
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Registry of ecosystem-specific dependency IDs → InterMed bridge IDs
@@ -34,10 +36,14 @@ public final class VirtualDependencyMap {
      */
     private static final Map<String, String> SUBSTITUTIONS;
     private static final Map<String, String> BRIDGE_BASELINES;
+    private static final Map<String, String> DEPENDENCY_ALIASES;
+    private static final Map<String, Set<String>> BRIDGE_PROVIDER_IDS;
 
     static {
         Map<String, String> m = new HashMap<>();
         Map<String, String> baselines = new HashMap<>();
+        Map<String, String> aliases = new HashMap<>();
+        Map<String, Set<String>> providers = new HashMap<>();
 
         // ── Fabric ecosystem ────────────────────────────────────────────────
         m.put("fabric-api",        "intermed-fabric-bridge");
@@ -46,6 +52,12 @@ public final class VirtualDependencyMap {
         m.put("fabric-loader",     "intermed-fabric-bridge");
         m.put("fabric-language-kotlin", "intermed-fabric-bridge");
         baselines.put("intermed-fabric-bridge", "0.90.0");
+        providers.put("intermed-fabric-bridge", Set.of("fabric-api"));
+
+        // ── Cross-loader/library aliases ────────────────────────────────────
+        // Some Fabric mods, including YUNG's 1.20.x line, depend on the legacy
+        // Cloth Config id while the published library jar advertises cloth-config.
+        aliases.put("cloth-config2", "cloth-config");
 
         // ── Forge ecosystem ─────────────────────────────────────────────────
         m.put("forge",             "intermed-forge-bridge");
@@ -66,6 +78,8 @@ public final class VirtualDependencyMap {
 
         SUBSTITUTIONS = Collections.unmodifiableMap(m);
         BRIDGE_BASELINES = Collections.unmodifiableMap(baselines);
+        DEPENDENCY_ALIASES = Collections.unmodifiableMap(aliases);
+        BRIDGE_PROVIDER_IDS = Collections.unmodifiableMap(providers);
     }
 
     private VirtualDependencyMap() {}
@@ -85,7 +99,20 @@ public final class VirtualDependencyMap {
      */
     public static String substitute(String dependencyId) {
         if (dependencyId == null) return null;
-        return SUBSTITUTIONS.getOrDefault(dependencyId.toLowerCase(), dependencyId);
+        String canonical = canonicalize(dependencyId);
+        return SUBSTITUTIONS.getOrDefault(canonical.toLowerCase(), canonical);
+    }
+
+    /**
+     * Returns the canonical package id for known ecosystem aliases that refer to
+     * the same concrete mod jar. Unlike virtual substitutions, aliases still
+     * resolve to a real user-provided dependency node.
+     */
+    public static String canonicalize(String dependencyId) {
+        if (dependencyId == null) return null;
+        String trimmed = dependencyId.trim();
+        if (trimmed.isEmpty()) return trimmed;
+        return DEPENDENCY_ALIASES.getOrDefault(trimmed.toLowerCase(), trimmed);
     }
 
     /**
@@ -128,8 +155,9 @@ public final class VirtualDependencyMap {
      * bridge module during resolution.
      */
     public static boolean isVirtual(String dependencyId) {
-        return dependencyId != null
-            && SUBSTITUTIONS.containsKey(dependencyId.toLowerCase());
+        String canonical = canonicalize(dependencyId);
+        return canonical != null
+            && SUBSTITUTIONS.containsKey(canonical.toLowerCase());
     }
 
     /**
@@ -149,27 +177,83 @@ public final class VirtualDependencyMap {
     }
 
     public static String bridgeCompatibilityVersionForBridge(String bridgeId) {
+        return bridgeCompatibilityVersionForBridge(bridgeId, Map.of());
+    }
+
+    /**
+     * Resolves the effective compatibility version for a synthetic bridge,
+     * preferring explicit operator overrides and then concrete provider modules
+     * discovered in the current runtime graph.
+     *
+     * <p>This keeps virtual dependency resolution aligned with the real
+     * platform/API version available to mods instead of pinning bridge stubs to
+     * a static compile-time baseline.
+     */
+    public static String bridgeCompatibilityVersionForBridge(String bridgeId,
+                                                             Map<String, String> discoveredModuleVersions) {
         if (bridgeId == null || bridgeId.isBlank()) {
             return "1.0.0";
         }
+        String explicitOverride = explicitBridgeVersionOverride(bridgeId);
+        if (explicitOverride != null && !explicitOverride.isBlank()) {
+            return explicitOverride;
+        }
+        String inferredVersion = inferDiscoveredBridgeVersion(bridgeId, discoveredModuleVersions);
+        if (inferredVersion != null && !inferredVersion.isBlank()) {
+            return inferredVersion;
+        }
+        return BRIDGE_BASELINES.getOrDefault(bridgeId, "1.0.0");
+    }
+
+    private static String explicitBridgeVersionOverride(String bridgeId) {
         return switch (bridgeId) {
-            case "intermed-fabric-bridge" ->
-                System.getProperty("intermed.compat.fabricBridgeVersion",
-                    BRIDGE_BASELINES.getOrDefault(bridgeId, "0.90.0"));
-            case "intermed-forge-bridge" ->
-                System.getProperty("intermed.compat.forgeBridgeVersion",
-                    BRIDGE_BASELINES.getOrDefault(bridgeId, "47.2.0"));
-            case "intermed-neoforge-bridge" ->
-                System.getProperty("intermed.compat.neoforgeBridgeVersion",
-                    BRIDGE_BASELINES.getOrDefault(bridgeId, "21.0.0"));
-            case "intermed-minecraft-runtime" ->
-                System.getProperty("intermed.compat.minecraftVersion",
-                    BRIDGE_BASELINES.getOrDefault(bridgeId, "1.20.1"));
-            case "intermed-java-runtime" ->
-                System.getProperty("intermed.compat.javaVersion",
-                    BRIDGE_BASELINES.getOrDefault(bridgeId, Runtime.version().feature() + ".0.0"));
-            default -> BRIDGE_BASELINES.getOrDefault(bridgeId, "1.0.0");
+            case "intermed-fabric-bridge" -> System.getProperty("intermed.compat.fabricBridgeVersion");
+            case "intermed-forge-bridge" -> System.getProperty("intermed.compat.forgeBridgeVersion");
+            case "intermed-neoforge-bridge" -> System.getProperty("intermed.compat.neoforgeBridgeVersion");
+            case "intermed-minecraft-runtime" -> System.getProperty("intermed.compat.minecraftVersion");
+            case "intermed-java-runtime" -> System.getProperty("intermed.compat.javaVersion");
+            default -> null;
         };
+    }
+
+    private static String inferDiscoveredBridgeVersion(String bridgeId,
+                                                       Map<String, String> discoveredModuleVersions) {
+        if (discoveredModuleVersions == null || discoveredModuleVersions.isEmpty()) {
+            return null;
+        }
+        Set<String> providerIds = BRIDGE_PROVIDER_IDS.get(bridgeId);
+        if (providerIds == null || providerIds.isEmpty()) {
+            return null;
+        }
+
+        String chosen = null;
+        for (String providerId : providerIds) {
+            String providerVersion = discoveredModuleVersions.get(providerId);
+            if (providerVersion == null || providerVersion.isBlank()) {
+                continue;
+            }
+            String normalized = normalizeProviderVersion(bridgeId, providerVersion);
+            if (normalized.isBlank()) {
+                continue;
+            }
+            if (chosen == null
+                || SemVerConstraint.SemVer.parse(normalized)
+                    .compareTo(SemVerConstraint.SemVer.parse(chosen)) > 0) {
+                chosen = normalized;
+            }
+        }
+        return chosen;
+    }
+
+    private static String normalizeProviderVersion(String bridgeId, String providerVersion) {
+        String trimmed = providerVersion == null ? "" : providerVersion.trim();
+        if (trimmed.isEmpty()) {
+            return "";
+        }
+        if ("intermed-fabric-bridge".equals(bridgeId)) {
+            return trimmed;
+        }
+        return trimmed;
     }
 
     private static void validateResolvedBridge(String dependencyId, String bridgeId) {

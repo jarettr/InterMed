@@ -92,9 +92,9 @@ public class ForgeEventProxy {
             int count = LifecycleManager.dispatchMainThreadTasks();
             if (count > 0) {
                 System.out.printf("\033[1;32m[ForgeEventProxy] Dispatched %d deferred main-thread task(s).%n\033[0m", count);
-                injectFabricAssets();
-                queueDrained = true;
             }
+            injectFabricAssets();
+            queueDrained = true;
         }
 
         // ── HUD callbacks ─────────────────────────────────────────────────────

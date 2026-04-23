@@ -129,6 +129,18 @@ class PubGrubResolverTest {
     }
 
     @Test
+    void canonicalizesLegacyClothConfigDependencyId() {
+        var plan = resolver.resolvePlan(java.util.List.of(
+            manifestRecord("betterdungeons", "1.20-Fabric-4.0.4", depRecord("cloth-config2", ">=11.0.0")),
+            manifestRecord("cloth-config", "11.1.136")
+        ));
+
+        assertEquals("11.1.136", plan.versionOf("cloth-config"));
+        assertTrue(plan.depsOf("betterdungeons").contains("cloth-config"));
+        assertFalse(plan.depsOf("betterdungeons").contains("cloth-config2"));
+    }
+
+    @Test
     void substitutesNeoForgeVirtualDependenciesBeforeResolution() {
         var plan = resolver.resolvePlan(java.util.List.of(
             manifestRecord("neo-demo", "1.0.0", depRecord("neoforge", "[21,)")),

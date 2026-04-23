@@ -5,8 +5,8 @@ package org.intermed.core;
  */
 public final class InterMedVersion {
 
-    public static final String BUILD_VERSION = "8.0.0-alpha.1";
-    public static final String DISPLAY_VERSION = "v8.0.0-alpha.1";
+    public static final String BUILD_VERSION = "8.0.0-alpha.2";
+    public static final String DISPLAY_VERSION = "v8.0.0-alpha.2";
     public static final String MINECRAFT_VERSION = "1.20.1";
 
     private InterMedVersion() {}

@@ -2,6 +2,7 @@ package org.intermed.core.remapping;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class MappingDictionaryTest {
@@ -34,6 +35,74 @@ class MappingDictionaryTest {
     }
 
     @Test
+    void methodLookupFallsBackToUnambiguousNameAliasWhenDescriptorWasAlreadyRemapped() {
+        dict.addClass("net/minecraft/class_2378", "net/minecraft/core/Registry");
+        dict.addClass("net/minecraft/class_5321", "net/minecraft/resources/ResourceKey");
+        dict.addMethod(
+            "net/minecraft/class_2378",
+            "method_30517",
+            "()Lnet/minecraft/class_5321;",
+            "m_123023_"
+        );
+        dict.addMethod(
+            "net/minecraft/core/Registry",
+            "method_30517",
+            "()Lnet/minecraft/class_5321;",
+            "m_123023_"
+        );
+
+        assertEquals(
+            "m_123023_",
+            dict.mapMethodName(
+                "net/minecraft/core/Registry",
+                "method_30517",
+                "()Lnet/minecraft/resources/ResourceKey;"
+            )
+        );
+    }
+
+    @Test
+    void methodNameAliasDoesNotOverrideAmbiguousMethodMappings() {
+        dict.addMethod("class_42", "method_1000", "()V", "tick");
+        dict.addMethod("class_42", "method_1000", "(I)V", "tickWithCount");
+
+        assertEquals("tick", dict.mapMethodName("class_42", "method_1000", "()V"));
+        assertEquals("tickWithCount", dict.mapMethodName("class_42", "method_1000", "(I)V"));
+        assertEquals("m_1000_", dict.mapMethodName("class_42", "method_1000", "(Ljava/lang/String;)V"));
+    }
+
+    @Test
+    void methodLookupFallsBackToInheritedOwnerWhenSubclassDeclaresNoMapping() {
+        String attributeOwner = internalName(TestAttribute.class);
+        String rangedOwner = internalName(TestRangedAttribute.class);
+
+        dict.addClass("test/class_1320", attributeOwner);
+        dict.addClass("test/class_1329", rangedOwner);
+        dict.addMethod(attributeOwner, "method_26829", "(Z)Ltest/class_1320;", "m_22084_");
+
+        assertEquals("m_22084_", dict.mapMethodName("test/class_1329", "method_26829", "(Z)Ltest/class_1320;"));
+    }
+
+    @Test
+    void inheritedMethodAliasStillWorksAfterDescriptorWasAlreadyRemapped() {
+        String attributeOwner = internalName(TestAttribute.class);
+        String rangedOwner = internalName(TestRangedAttribute.class);
+
+        dict.addClass("test/class_1320", attributeOwner);
+        dict.addClass("test/class_1329", rangedOwner);
+        dict.addMethod(attributeOwner, "method_26829", "(Z)Ltest/class_1320;", "m_22084_");
+
+        assertEquals(
+            "m_22084_",
+            dict.mapMethodName(
+                rangedOwner,
+                "method_26829",
+                "(Z)L" + attributeOwner + ";"
+            )
+        );
+    }
+
+    @Test
     void testAddField() {
         dict.addClass("class_77", "net/minecraft/world/item/ItemStack");
         dict.addField("class_77", "field_500", "I", "count");
@@ -63,4 +132,12 @@ class MappingDictionaryTest {
         String updated = dict.fingerprint();
         assertNotEquals(empty, updated);
     }
+
+    private static String internalName(Class<?> type) {
+        return type.getName().replace('.', '/');
+    }
+
+    static class TestAttribute {}
+
+    static class TestRangedAttribute extends TestAttribute {}
 }

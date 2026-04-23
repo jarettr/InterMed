@@ -1,7 +1,5 @@
 package org.intermed.core.registry;
 
-import org.intermed.core.classloading.LazyInterMedClassLoader;
-
 import java.lang.invoke.CallSite;
 import java.lang.invoke.ConstantCallSite;
 import java.lang.invoke.MethodHandle;
@@ -298,16 +296,27 @@ public final class RegistryLinker {
      */
     public static void freeze() {
         int count = SWITCH_POINTS.size();
+        int rewrittenGets = RegistryHookTransformer.rewrittenGetSiteCount();
         if (count > 0) {
             SwitchPoint[] sps = SWITCH_POINTS.toArray(SwitchPoint[]::new);
             SWITCH_POINTS.clear();
             SwitchPoint.invalidateAll(sps);
         }
         FROZEN_DYNAMIC_LOOKUPS.set(0);
+        String detail;
+        if (count == 0 && rewrittenGets > 0) {
+            detail = "rewritten=" + rewrittenGets
+                + ", bootstrapped=0; transformed GET call sites were present, but none executed before freeze";
+        } else if (count == 0) {
+            detail = "rewritten=0; no eligible registry GET call sites were rewritten before freeze";
+        } else {
+            detail = "rewritten=" + rewrittenGets + ", bootstrapped=" + count;
+        }
         System.out.printf(
             "[RegistryLinker] freeze(): invalidated %d INVOKEDYNAMIC GET site(s)"
-            + " → MPHF flat-array fast path active (ТЗ 3.2.2, ConstantCallSite + SwitchPoint).%n",
-            count);
+            + " → MPHF flat-array fast path active (ТЗ 3.2.2, ConstantCallSite + SwitchPoint) [%s].%n",
+            count,
+            detail);
     }
 
     // ── Test support ──────────────────────────────────────────────────────────
@@ -315,6 +324,7 @@ public final class RegistryLinker {
     static void resetForTests() {
         SWITCH_POINTS.clear();
         FROZEN_DYNAMIC_LOOKUPS.set(0);
+        RegistryHookTransformer.resetForTests();
     }
 
     /** Returns the number of post-freeze MPHF lookups that missed the per-site cache. */
@@ -493,7 +503,23 @@ public final class RegistryLinker {
         Class<?> cls = lookup.lookupClass();
         if (cls == null) return "";
         ClassLoader cl = cls.getClassLoader();
-        return cl instanceof LazyInterMedClassLoader lazy ? lazy.getNodeId() : "";
+        return extractNodeId(cl);
+    }
+
+    private static String extractNodeId(ClassLoader loader) {
+        if (loader == null) {
+            return "";
+        }
+        try {
+            java.lang.reflect.Method method = loader.getClass().getMethod("getNodeId");
+            if (method.getReturnType() != String.class || method.getParameterCount() != 0) {
+                return "";
+            }
+            Object value = method.invoke(loader);
+            return value instanceof String id ? id : "";
+        } catch (ReflectiveOperationException ignored) {
+            return "";
+        }
     }
 
     // ── Inner types ───────────────────────────────────────────────────────────

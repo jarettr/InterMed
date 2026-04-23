@@ -148,7 +148,14 @@ class VirtualFileSystemRouterTest {
 
         assertFalse(plan.hasOverlayPack());
         assertFalse(plan.hasDiagnosticsReport());
-        assertEquals(List.of(rawJar.getAbsoluteFile()), plan.mountablePacks());
+        assertEquals(1, plan.mountablePacks().size());
+        File mountablePack = plan.mountablePacks().getFirst();
+        assertTrue(!rawJar.getAbsoluteFile().equals(mountablePack));
+        assertTrue(mountablePack.getName().startsWith("intermed-synth-pack-raw_mod-"));
+        try (ZipFile zip = new ZipFile(mountablePack)) {
+            assertNotNull(zip.getEntry("pack.mcmeta"));
+            assertNotNull(zip.getEntry("assets/example/lang/en_us.json"));
+        }
         assertTrue(plan.conflicts().isEmpty());
     }
 

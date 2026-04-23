@@ -9,6 +9,8 @@ import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 /**
  * ASM bytecode transformer for registry virtualisation (ТЗ 3.2.2, Requirement 3).
  *
@@ -55,6 +57,8 @@ import org.objectweb.asm.Type;
  * Calls that still return registry views / holder indirections remain untouched.
  */
 public class RegistryHookTransformer implements BytecodeTransformer {
+    private static final AtomicInteger REWRITTEN_REGISTER_SITES = new AtomicInteger();
+    private static final AtomicInteger REWRITTEN_GET_SITES = new AtomicInteger();
 
     // ── Bootstrap method descriptor (common to both BSMs) ─────────────────────
     private static final String BSM_DESCRIPTOR =
@@ -115,11 +119,13 @@ public class RegistryHookTransformer implements BytecodeTransformer {
         public void visitMethodInsn(int opcode, String owner, String methodName,
                                     String methodDescriptor, boolean isInterface) {
 
-            if (RegistryCompatibilityContract.isRegisterCall(opcode, owner, methodName)) {
+            if (RegistryCompatibilityContract.isRegisterCall(opcode, owner, methodName, methodDescriptor)) {
+                REWRITTEN_REGISTER_SITES.incrementAndGet();
                 emitInvokeDynamic("register", methodDescriptor,
                     opcode, owner, BSM_REGISTER);
 
             } else if (RegistryCompatibilityContract.isGetCall(opcode, owner, methodName, methodDescriptor)) {
+                REWRITTEN_GET_SITES.incrementAndGet();
                 emitInvokeDynamic("registryGet", methodDescriptor,
                     opcode, owner, BSM_GET);
 
@@ -160,5 +166,18 @@ public class RegistryHookTransformer implements BytecodeTransformer {
     // =========================================================================
     // Pattern matching helpers
     // =========================================================================
+
+    static int rewrittenRegisterSiteCount() {
+        return REWRITTEN_REGISTER_SITES.get();
+    }
+
+    static int rewrittenGetSiteCount() {
+        return REWRITTEN_GET_SITES.get();
+    }
+
+    static void resetForTests() {
+        REWRITTEN_REGISTER_SITES.set(0);
+        REWRITTEN_GET_SITES.set(0);
+    }
 
 }

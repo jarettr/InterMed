@@ -30,6 +30,7 @@ class RuntimeConfigTest {
         System.clearProperty("sandbox.shared.region.bytes");
         System.clearProperty("sandbox.shared.region.pool.max");
         System.clearProperty("classloader.dynamic.weak.edges.enabled");
+        System.clearProperty("remapping.symbolic.runtime.enabled");
         System.clearProperty("vfs.enabled");
         System.clearProperty("vfs.conflict.policy");
         System.clearProperty("vfs.priority.mods");
@@ -63,6 +64,7 @@ class RuntimeConfigTest {
         assertEquals(4096, config.getSandboxSharedRegionBytes());
         assertEquals(32, config.getSandboxSharedRegionPoolMax());
         assertTrue(config.isClassloaderDynamicWeakEdgesEnabled());
+        assertTrue(config.isSymbolicRemappingEnabled());
         assertTrue(config.isVfsEnabled());
         assertEquals("merge_then_priority", config.getVfsConflictPolicy());
         assertTrue(config.getVfsPriorityOrder().isEmpty());
@@ -83,6 +85,7 @@ class RuntimeConfigTest {
         System.setProperty("sandbox.shared.region.bytes", "8192");
         System.setProperty("sandbox.shared.region.pool.max", "8");
         System.setProperty("classloader.dynamic.weak.edges.enabled", "false");
+        System.setProperty("remapping.symbolic.runtime.enabled", "false");
         System.setProperty("vfs.enabled", "false");
         System.setProperty("vfs.conflict.policy", "priority");
         System.setProperty("vfs.priority.mods", "preferred_mod,second_mod");
@@ -101,6 +104,7 @@ class RuntimeConfigTest {
         assertEquals(8192, config.getSandboxSharedRegionBytes());
         assertEquals(8, config.getSandboxSharedRegionPoolMax());
         assertFalse(config.isClassloaderDynamicWeakEdgesEnabled());
+        assertFalse(config.isSymbolicRemappingEnabled());
         assertFalse(config.isVfsEnabled());
         assertEquals("priority", config.getVfsConflictPolicy());
         assertEquals(java.util.List.of("preferred_mod", "second_mod"), config.getVfsPriorityOrder());

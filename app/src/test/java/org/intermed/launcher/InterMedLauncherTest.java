@@ -235,9 +235,9 @@ class InterMedLauncherTest {
         Path runtimeDir = outputDir.resolve("runtime");
         Files.createDirectories(modsDir);
 
-        Path genericAgent = root.resolve("InterMedCore-8.0.0-alpha.1.jar");
-        Path fabricAgent = root.resolve("InterMedCore-8.0.0-alpha.1-fabric.jar");
-        Path bootstrapJar = root.resolve("InterMedCore-8.0.0-alpha.1-bootstrap.jar");
+        Path genericAgent = root.resolve("InterMedCore-8.0.0-alpha.2.jar");
+        Path fabricAgent = root.resolve("InterMedCore-8.0.0-alpha.2-fabric.jar");
+        Path bootstrapJar = root.resolve("InterMedCore-8.0.0-alpha.2-bootstrap.jar");
         Path mappings = root.resolve("mappings.tiny");
         Files.writeString(genericAgent, "generic agent", StandardCharsets.UTF_8);
         Files.writeString(fabricAgent, "fabric agent", StandardCharsets.UTF_8);
@@ -265,9 +265,9 @@ class InterMedLauncherTest {
         Path readme = outputDir.resolve("README.txt");
         Path manifest = outputDir.resolve("intermed-launch-kit.json");
 
-        assertTrue(Files.isRegularFile(runtimeDir.resolve("InterMedCore-8.0.0-alpha.1.jar")));
-        assertTrue(Files.isRegularFile(runtimeDir.resolve("InterMedCore-8.0.0-alpha.1-fabric.jar")));
-        assertTrue(Files.isRegularFile(runtimeDir.resolve("InterMedCore-8.0.0-alpha.1-bootstrap.jar")));
+        assertTrue(Files.isRegularFile(runtimeDir.resolve("InterMedCore-8.0.0-alpha.2.jar")));
+        assertTrue(Files.isRegularFile(runtimeDir.resolve("InterMedCore-8.0.0-alpha.2-fabric.jar")));
+        assertTrue(Files.isRegularFile(runtimeDir.resolve("InterMedCore-8.0.0-alpha.2-bootstrap.jar")));
         assertTrue(Files.isRegularFile(runtimeDir.resolve("mappings.tiny")));
         assertTrue(Files.isRegularFile(genericArgs));
         assertTrue(Files.isRegularFile(fabricArgs));
@@ -281,7 +281,7 @@ class InterMedLauncherTest {
         assertTrue(Files.isRegularFile(manifest));
 
         String genericArgsText = Files.readString(genericArgs);
-        assertTrue(genericArgsText.contains("-javaagent:" + runtimeDir.resolve("InterMedCore-8.0.0-alpha.1.jar").toAbsolutePath().normalize()));
+        assertTrue(genericArgsText.contains("-javaagent:" + runtimeDir.resolve("InterMedCore-8.0.0-alpha.2.jar").toAbsolutePath().normalize()));
         assertTrue(genericArgsText.contains("--add-opens=java.base/java.lang=ALL-UNNAMED"));
         assertTrue(genericArgsText.contains("--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"));
         assertTrue(genericArgsText.contains("-Druntime.game.dir=" + gameDir.toAbsolutePath().normalize()));
@@ -289,7 +289,7 @@ class InterMedLauncherTest {
         assertTrue(genericArgsText.contains("-Dintermed.mappings.tiny=" + runtimeDir.resolve("mappings.tiny").toAbsolutePath().normalize()));
 
         String fabricArgsText = Files.readString(fabricArgs);
-        assertTrue(fabricArgsText.contains("-javaagent:" + runtimeDir.resolve("InterMedCore-8.0.0-alpha.1-fabric.jar").toAbsolutePath().normalize()));
+        assertTrue(fabricArgsText.contains("-javaagent:" + runtimeDir.resolve("InterMedCore-8.0.0-alpha.2-fabric.jar").toAbsolutePath().normalize()));
 
         assertTrue(Files.readString(genericSnippet).contains("--add-opens=java.base/java.lang=ALL-UNNAMED"));
         assertTrue(Files.readString(genericShell).contains("intermed-java-generic.args"));
@@ -338,10 +338,10 @@ class InterMedLauncherTest {
 
     @Test
     void doctorBootstrapPathFallsBackFromFabricAgentToGenericBootstrapJar() throws Exception {
-        Path fabricAgent = Path.of("/tmp/InterMedCore-8.0.0-alpha.1-fabric.jar");
+        Path fabricAgent = Path.of("/tmp/InterMedCore-8.0.0-alpha.2-fabric.jar");
         Path bootstrap = invokeBootstrapSupportPath(fabricAgent);
 
-        assertEquals(Path.of("/tmp/InterMedCore-8.0.0-alpha.1-bootstrap.jar"), bootstrap);
+        assertEquals(Path.of("/tmp/InterMedCore-8.0.0-alpha.2-bootstrap.jar"), bootstrap);
     }
 
     private static Path invokeBootstrapSupportPath(Path agentPath) throws Exception {

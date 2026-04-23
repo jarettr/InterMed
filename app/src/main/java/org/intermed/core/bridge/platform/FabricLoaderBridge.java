@@ -1,7 +1,14 @@
 package org.intermed.core.bridge.platform;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 import net.fabricmc.loader.api.ModContainer;
+import net.fabricmc.loader.api.Version;
+import net.fabricmc.loader.api.VersionParsingException;
 import net.fabricmc.loader.api.entrypoint.EntrypointContainer;
+import net.fabricmc.loader.api.metadata.CustomValue;
 import net.fabricmc.loader.api.metadata.ModMetadata;
 import org.intermed.core.bridge.BridgeRuntime;
 import org.intermed.core.config.RuntimeConfig;
@@ -14,6 +21,10 @@ import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystems;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -61,21 +72,20 @@ public class FabricLoaderBridge {
             return RuntimeModIndex.get(id).map(BridgeModContainer::new);
         }
         if (PLATFORM_PROVIDED_MODS.contains(id)) {
-            org.intermed.core.metadata.ModPlatform platform = switch (id) {
-                case "forge", "javafml" -> org.intermed.core.metadata.ModPlatform.FORGE;
-                case "neoforge", "neoforged" -> org.intermed.core.metadata.ModPlatform.NEOFORGE;
-                default -> org.intermed.core.metadata.ModPlatform.FABRIC;
-            };
-            return Optional.of(new BridgeModContainer(new NormalizedModMetadata(
-                id,
-                "intermed-runtime",
-                null,
-                platform,
-                new com.google.gson.JsonObject(),
-                java.util.Map.of()
-            )));
+            return Optional.of(new BridgeModContainer(platformMetadata(id)));
         }
         return Optional.empty();
+    }
+
+    public Collection<ModContainer> getAllMods() {
+        LinkedHashMap<String, ModContainer> containers = new LinkedHashMap<>();
+        RuntimeModIndex.allMods().stream()
+            .sorted(Comparator.comparing(NormalizedModMetadata::id))
+            .forEach(metadata -> containers.put(metadata.id(), new BridgeModContainer(metadata)));
+        PLATFORM_PROVIDED_MODS.stream()
+            .sorted()
+            .forEach(id -> containers.putIfAbsent(id, new BridgeModContainer(platformMetadata(id))));
+        return List.copyOf(containers.values());
     }
 
     public <T> List<T> getEntrypoints(String key, Class<T> type) {
@@ -196,15 +206,36 @@ public class FabricLoaderBridge {
         return fileSystem.getPath("/");
     }
 
+    private static NormalizedModMetadata platformMetadata(String id) {
+        org.intermed.core.metadata.ModPlatform platform = switch (id) {
+            case "forge", "javafml" -> org.intermed.core.metadata.ModPlatform.FORGE;
+            case "neoforge", "neoforged" -> org.intermed.core.metadata.ModPlatform.NEOFORGE;
+            default -> org.intermed.core.metadata.ModPlatform.FABRIC;
+        };
+        return new NormalizedModMetadata(
+            id,
+            "intermed-runtime",
+            null,
+            platform,
+            new JsonObject(),
+            java.util.Map.of()
+        );
+    }
+
     private static final class BridgeModMetadata implements ModMetadata {
         private final String id;
-        private final String version;
+        private final Version version;
         private final String name;
+        private final Map<String, CustomValue> customValues;
 
         private BridgeModMetadata(String id, String version, String name) {
             this.id = id;
-            this.version = version;
+            this.version = parseVersion(version);
             this.name = name;
+            this.customValues = RuntimeModIndex.get(id)
+                .map(NormalizedModMetadata::manifest)
+                .map(BridgeModMetadata::readCustomValues)
+                .orElseGet(Map::of);
         }
 
         @Override
@@ -213,13 +244,201 @@ public class FabricLoaderBridge {
         }
 
         @Override
-        public String getVersion() {
+        public Version getVersion() {
             return version;
         }
 
         @Override
         public String getName() {
             return name;
+        }
+
+        @Override
+        public Map<String, CustomValue> getCustomValues() {
+            return customValues;
+        }
+
+        @Override
+        public boolean containsCustomValue(String key) {
+            return customValues.containsKey(key);
+        }
+
+        @Override
+        public CustomValue getCustomValue(String key) {
+            return customValues.get(key);
+        }
+
+        private static Version parseVersion(String value) {
+            try {
+                return Version.parse(value);
+            } catch (VersionParsingException e) {
+                try {
+                    return Version.parse("0.0.0");
+                } catch (VersionParsingException impossible) {
+                    throw new IllegalStateException(impossible);
+                }
+            }
+        }
+
+        private static Map<String, CustomValue> readCustomValues(JsonObject manifest) {
+            if (manifest == null || !manifest.has("custom") || !manifest.get("custom").isJsonObject()) {
+                return Map.of();
+            }
+            LinkedHashMap<String, CustomValue> values = new LinkedHashMap<>();
+            for (Map.Entry<String, JsonElement> entry : manifest.getAsJsonObject("custom").entrySet()) {
+                values.put(entry.getKey(), JsonBackedCustomValue.of(entry.getValue()));
+            }
+            return Map.copyOf(values);
+        }
+    }
+
+    private static class JsonBackedCustomValue implements CustomValue {
+        private final JsonElement element;
+
+        private JsonBackedCustomValue(JsonElement element) {
+            this.element = element == null ? com.google.gson.JsonNull.INSTANCE : element;
+        }
+
+        static CustomValue of(JsonElement element) {
+            if (element != null && element.isJsonObject()) {
+                return new JsonBackedCustomObject(element.getAsJsonObject());
+            }
+            if (element != null && element.isJsonArray()) {
+                return new JsonBackedCustomArray(element.getAsJsonArray());
+            }
+            return new JsonBackedCustomValue(element);
+        }
+
+        @Override
+        public CvType getType() {
+            if (element == null || element.isJsonNull()) {
+                return CvType.NULL;
+            }
+            if (element.isJsonObject()) {
+                return CvType.OBJECT;
+            }
+            if (element.isJsonArray()) {
+                return CvType.ARRAY;
+            }
+            JsonPrimitive primitive = element.getAsJsonPrimitive();
+            if (primitive.isBoolean()) {
+                return CvType.BOOLEAN;
+            }
+            if (primitive.isNumber()) {
+                return CvType.NUMBER;
+            }
+            return CvType.STRING;
+        }
+
+        @Override
+        public CvObject getAsObject() {
+            throw new ClassCastException("Custom value is not an object: " + getType());
+        }
+
+        @Override
+        public CvArray getAsArray() {
+            throw new ClassCastException("Custom value is not an array: " + getType());
+        }
+
+        @Override
+        public String getAsString() {
+            return element == null || element.isJsonNull() ? null : element.getAsString();
+        }
+
+        @Override
+        public Number getAsNumber() {
+            return element == null || element.isJsonNull() ? null : element.getAsNumber();
+        }
+
+        @Override
+        public boolean getAsBoolean() {
+            return element != null && !element.isJsonNull() && element.getAsBoolean();
+        }
+    }
+
+    private static final class JsonBackedCustomObject extends JsonBackedCustomValue implements CustomValue.CvObject {
+        private final JsonObject object;
+
+        private JsonBackedCustomObject(JsonObject object) {
+            super(object);
+            this.object = object;
+        }
+
+        @Override
+        public CvObject getAsObject() {
+            return this;
+        }
+
+        @Override
+        public int size() {
+            return object.size();
+        }
+
+        @Override
+        public boolean containsKey(String key) {
+            return object.has(key);
+        }
+
+        @Override
+        public CustomValue get(String key) {
+            return JsonBackedCustomValue.of(object.get(key));
+        }
+
+        @Override
+        public Iterator<Map.Entry<String, CustomValue>> iterator() {
+            Iterator<Map.Entry<String, JsonElement>> delegate = object.entrySet().iterator();
+            return new Iterator<>() {
+                @Override
+                public boolean hasNext() {
+                    return delegate.hasNext();
+                }
+
+                @Override
+                public Map.Entry<String, CustomValue> next() {
+                    Map.Entry<String, JsonElement> next = delegate.next();
+                    return Map.entry(next.getKey(), JsonBackedCustomValue.of(next.getValue()));
+                }
+            };
+        }
+    }
+
+    private static final class JsonBackedCustomArray extends JsonBackedCustomValue implements CustomValue.CvArray {
+        private final JsonArray array;
+
+        private JsonBackedCustomArray(JsonArray array) {
+            super(array);
+            this.array = array;
+        }
+
+        @Override
+        public CvArray getAsArray() {
+            return this;
+        }
+
+        @Override
+        public int size() {
+            return array.size();
+        }
+
+        @Override
+        public CustomValue get(int index) {
+            return JsonBackedCustomValue.of(array.get(index));
+        }
+
+        @Override
+        public Iterator<CustomValue> iterator() {
+            Iterator<JsonElement> delegate = array.iterator();
+            return new Iterator<>() {
+                @Override
+                public boolean hasNext() {
+                    return delegate.hasNext();
+                }
+
+                @Override
+                public CustomValue next() {
+                    return JsonBackedCustomValue.of(delegate.next());
+                }
+            };
         }
     }
 }

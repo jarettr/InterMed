@@ -29,6 +29,10 @@ public final class TinyRemapperTransformer implements BytecodeTransformer {
 
     @Override
     public byte[] transform(String className, byte[] originalBytes) {
+        if (SelectiveRemapBypassPolicy.useSymbolicOnly(className)) {
+            return InterMedRemapper.transformSymbolicOnlyClassBytes(className, originalBytes, true);
+        }
+
         if (tinyRemapper == null) {
             return InterMedRemapper.transformClassBytes(className, originalBytes);
         }

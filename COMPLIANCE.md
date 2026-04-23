@@ -1,12 +1,12 @@
-# InterMed v8.0.0-alpha.1 Open Alpha Compliance Matrix
+# InterMed v8.0.0-alpha.2 Open Alpha Compliance Matrix
 
-This document tracks the frozen `v8.0.0-alpha.1` scope for the current codebase.
+This document tracks the frozen `v8.0.0-alpha.2` scope for the current codebase.
 
 ## Scope Freeze
 
 - Minecraft version: `1.20.1`
 - Loader families in scope: `Fabric`, `Forge`, `NeoForge`
-- Release status: `v8.0.0-alpha.1 / open alpha`
+- Release status: `v8.0.0-alpha.2 / open alpha`
 - Field validation with real modpacks: deferred until after full functional hardening
 
 ## Scope Interpretation
