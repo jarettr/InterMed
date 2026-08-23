@@ -458,6 +458,53 @@ mod partial_tests {
     }
 
     #[test]
+    fn single_cross_loader_descriptor_is_conclusive_for_loader_mismatch_only() {
+        use intermed_evidence::EvidenceEdge;
+
+        let mut store = FactStore::new();
+        let mod_fact = store
+            .fact("metadata", kind::MOD)
+            .subject("geckolib3")
+            .attr("loader", "fabric")
+            .attr("identity_certainty", "cross-loader-unresolved")
+            .attr("descriptor_candidates", "fabric.mod.json")
+            .emit();
+        let make_finding = |category, conclusion_kind, id| {
+            Finding::builder("test", id)
+                .severity(Severity::Error)
+                .category(category)
+                .conclusion_kind(conclusion_kind)
+                .coverage_requirement(CoverageRequirement::ActiveDescriptor)
+                .proof_kind(ProofKind::DeterministicDerivation)
+                .evidence(EvidenceEdge::subject(mod_fact))
+                .title("test")
+                .explanation("test")
+                .build()
+        };
+        let mut findings = vec![
+            make_finding(
+                Category::Loader,
+                intermed_evidence::ConclusionKind::LoaderMismatch,
+                "loader-mismatch:geckolib3",
+            ),
+            make_finding(
+                Category::Dependency,
+                intermed_evidence::ConclusionKind::MissingDependency,
+                "missing-dependency:geckolib3->fabric",
+            ),
+        ];
+
+        assess_findings(&store, &complete_capabilities(), &mut findings, false);
+
+        assert_eq!(findings[0].severity, Severity::Error);
+        assert_eq!(findings[1].severity, Severity::Warn);
+        assert_eq!(
+            findings[1].assessment.disposition,
+            intermed_evidence::AssessmentDisposition::Abstained
+        );
+    }
+
+    #[test]
     fn api_surface_bridge_does_not_claim_arbitrary_fabric_mod_compatibility() {
         let mut store = FactStore::new();
         store

@@ -1,0 +1,464 @@
+//! Coverage-aware runtime observations shared by captured and live Lab runs.
+//!
+//! Layer K deliberately reuses Layer D's event normalizer.  A campaign must not
+//! grow a second definition of exception chains, terminality, or occurrence
+//! identity merely because its input came from a launched process.
+
+use serde::{Deserialize, Serialize};
+
+use intermed_log::runtime::RuntimeEvent;
+
+use crate::classify::FailureCategory;
+use crate::run::RawSmokeOutput;
+
+pub const OBSERVATION_SCHEMA: &str = "intermed-execution-observation-v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeMilestone {
+    LoaderResolution,
+    CommonSetup,
+    ClientInit,
+    ServerStarted,
+    WorldLoaded,
+    PlayerJoined,
+    ResourceReload,
+    DatapackLoad,
+    SteadyStateTicks,
+    GracefulShutdown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ExecutionCoverage {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reached: Vec<RuntimeMilestone>,
+    pub log_complete: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gaps: Vec<String>,
+}
+
+impl ExecutionCoverage {
+    #[must_use]
+    pub fn reaches(&self, milestone: RuntimeMilestone) -> bool {
+        self.reached.contains(&milestone)
+    }
+
+    fn normalize(&mut self) {
+        self.reached.sort();
+        self.reached.dedup();
+        self.gaps.sort();
+        self.gaps.dedup();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ObservationStatus {
+    Passed,
+    Degraded,
+    Failed,
+    Crashed,
+    TimedOutBeforeReadiness,
+    TimedOutAfterReadiness,
+    HarnessFailure,
+    InfrastructureFailure,
+    Inconclusive,
+    Skipped,
+}
+
+impl ObservationStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Degraded => "degraded",
+            Self::Failed => "failed",
+            Self::Crashed => "crashed",
+            Self::TimedOutBeforeReadiness => "timed-out-before-readiness",
+            Self::TimedOutAfterReadiness => "timed-out-after-readiness",
+            Self::HarnessFailure => "harness-failure",
+            Self::InfrastructureFailure => "infrastructure-failure",
+            Self::Inconclusive => "inconclusive",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IncidentObservation {
+    pub occurrence_id: String,
+    pub semantic_fingerprint: String,
+    pub fuzzy_fingerprint: String,
+    pub terminality: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<FailureCategory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub throwable_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frame_symbols: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frame_classes: Vec<String>,
+    /// Conservative blame candidates: explicit loader module ids and the first
+    /// non-platform frame of the deepest throwable. Context-only frames are not
+    /// promoted wholesale.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributed_subjects: Vec<String>,
+    pub source_line: u32,
+    pub source_fragment: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionObservation {
+    pub schema: String,
+    pub environment: String,
+    pub status: ObservationStatus,
+    pub coverage: ExecutionCoverage,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub incidents: Vec<IncidentObservation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub background_events: Vec<IncidentObservation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failure_categories: Vec<FailureCategory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_time_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enforced_limits: Vec<String>,
+    #[serde(default)]
+    pub isolation: String,
+}
+
+/// Normalize one smoke output into structured, coverage-aware evidence.
+#[must_use]
+pub fn observe_smoke(raw: &RawSmokeOutput) -> ExecutionObservation {
+    let events = intermed_log::runtime::normalize_events(&raw.log, &raw.environment);
+    let mut coverage = coverage_from_log(&raw.log, raw.log_complete);
+    let readiness = coverage.reaches(RuntimeMilestone::ServerStarted)
+        || coverage.reaches(RuntimeMilestone::ClientInit)
+        || coverage.reaches(RuntimeMilestone::WorldLoaded);
+
+    let mut incidents = Vec::new();
+    let mut background_events = Vec::new();
+    for event in &events {
+        let projected = project_event(event);
+        let has_failure_shape = projected.category.is_some()
+            || !event.exception_chain.is_empty()
+            || matches!(event.level.as_deref(), Some("ERROR" | "FATAL"));
+        if !has_failure_shape {
+            continue;
+        }
+        // A non-zero process exit is terminal evidence supplied by the harness,
+        // even when the captured launcher dialect had no recognizable FATAL
+        // marker. Prefer the last classified event below by retaining all
+        // candidates here; evaluation still records the parser terminality.
+        if event.terminality.is_terminal() || (!raw.exited_ok && projected.category.is_some()) {
+            incidents.push(projected);
+        } else {
+            background_events.push(projected);
+        }
+    }
+
+    let mut failure_categories = incidents
+        .iter()
+        .filter_map(|incident| incident.category)
+        .collect::<Vec<_>>();
+    let lower_log = raw.log.to_ascii_lowercase();
+    let performance_degraded = readiness
+        && (lower_log.contains("can't keep up")
+            || lower_log.contains("server overloaded")
+            || lower_log.contains("mspt"));
+    if performance_degraded {
+        failure_categories.push(FailureCategory::PerformanceRegression);
+    }
+    failure_categories.sort();
+    failure_categories.dedup();
+
+    if raw.timed_out {
+        coverage.gaps.push(if readiness {
+            "run timed out after reaching readiness; later runtime regions were not observed"
+                .to_string()
+        } else {
+            "run timed out before a readiness milestone".to_string()
+        });
+    }
+    if !matches!(
+        raw.isolation.as_str(),
+        "" | "external-capture" | "test" | "static-only"
+    ) {
+        for limit in ["memory", "cpu", "process-count", "written-bytes"] {
+            if !raw.enforced_limits.iter().any(|value| value == limit) {
+                coverage.gaps.push(format!(
+                    "execution backend did not attest the `{limit}` limit"
+                ));
+            }
+        }
+    }
+    coverage.normalize();
+
+    let status = if raw.skipped {
+        ObservationStatus::Skipped
+    } else if raw.infrastructure_failure {
+        ObservationStatus::InfrastructureFailure
+    } else if raw.harness_failure {
+        ObservationStatus::HarnessFailure
+    } else if raw.timed_out && readiness {
+        ObservationStatus::TimedOutAfterReadiness
+    } else if raw.timed_out {
+        ObservationStatus::TimedOutBeforeReadiness
+    } else if !incidents.is_empty() {
+        if incidents.iter().any(|event| {
+            matches!(
+                event.category,
+                Some(
+                    FailureCategory::OutOfMemory
+                        | FailureCategory::StackOverflow
+                        | FailureCategory::JvmCrash
+                )
+            )
+        }) {
+            ObservationStatus::Crashed
+        } else {
+            ObservationStatus::Failed
+        }
+    } else if raw.exited_ok && readiness && performance_degraded {
+        ObservationStatus::Degraded
+    } else if raw.exited_ok && readiness {
+        ObservationStatus::Passed
+    } else if raw.exited_ok {
+        ObservationStatus::Inconclusive
+    } else {
+        ObservationStatus::Failed
+    };
+
+    ExecutionObservation {
+        schema: OBSERVATION_SCHEMA.to_string(),
+        environment: raw.environment.clone(),
+        status,
+        coverage,
+        incidents,
+        background_events,
+        failure_categories,
+        exit_code: raw.exit_code,
+        timed_out: raw.timed_out,
+        wall_time_ms: raw.wall_time_ms,
+        enforced_limits: raw.enforced_limits.clone(),
+        isolation: raw.isolation.clone(),
+    }
+}
+
+fn project_event(event: &RuntimeEvent) -> IncidentObservation {
+    let deepest = event.exception_chain.iter().rfind(|node| !node.suppressed);
+    let text = std::iter::once(event.message.as_str())
+        .chain(event.continuation_lines.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let category = classify_event(event, &text);
+    let frame_symbols = deepest
+        .into_iter()
+        .flat_map(|node| &node.frames)
+        .map(|frame| format!("{}.{}", frame.class, frame.method))
+        .collect();
+    let frame_classes = deepest
+        .into_iter()
+        .flat_map(|node| &node.frames)
+        .map(|frame| frame.class.clone())
+        .collect();
+    let mut attributed_subjects = deepest
+        .into_iter()
+        .flat_map(|node| &node.frames)
+        .filter(|frame| {
+            frame.classification == intermed_log::runtime::FrameClassification::ModOrLibrary
+        })
+        .take(1)
+        .flat_map(|frame| {
+            frame
+                .module
+                .iter()
+                .cloned()
+                .chain(std::iter::once(frame.class.clone()))
+        })
+        .collect::<Vec<_>>();
+    attributed_subjects.sort();
+    attributed_subjects.dedup();
+    IncidentObservation {
+        occurrence_id: event.occurrence_id.clone(),
+        semantic_fingerprint: event.semantic_fingerprint.clone(),
+        fuzzy_fingerprint: event.fuzzy_fingerprint.clone(),
+        terminality: event.terminality.as_str().to_string(),
+        category,
+        throwable_type: deepest.map(|node| node.throwable_type.clone()),
+        message: deepest.and_then(|node| node.message.clone()),
+        frame_symbols,
+        frame_classes,
+        attributed_subjects,
+        source_line: event.source_line,
+        source_fragment: event.source_fragment,
+    }
+}
+
+fn classify_event(event: &RuntimeEvent, text: &str) -> Option<FailureCategory> {
+    let deepest = event
+        .exception_chain
+        .iter()
+        .rfind(|node| !node.suppressed)
+        .map(|node| node.throwable_type.as_str())
+        .unwrap_or("");
+    let lower = text.to_ascii_lowercase();
+    if deepest.ends_with("OutOfMemoryError") {
+        Some(FailureCategory::OutOfMemory)
+    } else if deepest.ends_with("StackOverflowError") {
+        Some(FailureCategory::StackOverflow)
+    } else if lower.contains("invalidmixinexception")
+        || lower.contains("mixin apply failed")
+        || lower.contains("mixintransformererror")
+    {
+        Some(FailureCategory::MixinApplyError)
+    } else if deepest.ends_with("NoClassDefFoundError")
+        || deepest.ends_with("ClassNotFoundException")
+    {
+        Some(FailureCategory::ClassNotFound)
+    } else if lower.contains("requires") && lower.contains("missing") {
+        Some(FailureCategory::MissingDependency)
+    } else if lower.contains("registry is already frozen") || lower.contains("registry freeze") {
+        Some(FailureCategory::RegistryFreezeError)
+    } else if lower.contains("failed to load datapacks")
+        || lower.contains("error while loading data pack")
+    {
+        Some(FailureCategory::DatapackValidationError)
+    } else if lower.contains("address already in use") || lower.contains("failed to bind to port") {
+        Some(FailureCategory::PortInUse)
+    } else if lower.contains("fatal error has been detected by the java runtime")
+        || lower.contains("sigsegv")
+        || lower.contains("exception_access_violation")
+    {
+        Some(FailureCategory::JvmCrash)
+    } else if event.terminality.is_terminal() {
+        Some(FailureCategory::Unknown)
+    } else {
+        None
+    }
+}
+
+fn coverage_from_log(log: &str, log_complete: bool) -> ExecutionCoverage {
+    let lower = log.to_ascii_lowercase();
+    let mut reached = if log.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec![RuntimeMilestone::LoaderResolution]
+    };
+    let markers = [
+        (
+            RuntimeMilestone::CommonSetup,
+            ["common setup", "common_setup"],
+        ),
+        (
+            RuntimeMilestone::ClientInit,
+            ["main menu", "client started"],
+        ),
+        (
+            RuntimeMilestone::ServerStarted,
+            ["done (", "server started"],
+        ),
+        (
+            RuntimeMilestone::WorldLoaded,
+            ["preparing spawn area", "loaded world"],
+        ),
+        (
+            RuntimeMilestone::PlayerJoined,
+            [" joined the game", "logged in with entity id"],
+        ),
+        (
+            RuntimeMilestone::ResourceReload,
+            ["resource reload", "reloading resource"],
+        ),
+        (
+            RuntimeMilestone::DatapackLoad,
+            ["loaded datapack", "data pack"],
+        ),
+        (
+            RuntimeMilestone::SteadyStateTicks,
+            ["can't keep up", "mspt"],
+        ),
+        (
+            RuntimeMilestone::GracefulShutdown,
+            ["stopping server", "saving worlds"],
+        ),
+    ];
+    for (milestone, needles) in markers {
+        if needles.iter().any(|needle| lower.contains(needle)) {
+            reached.push(milestone);
+        }
+    }
+    let mut gaps = Vec::new();
+    if !log_complete {
+        gaps.push("captured log was truncated or otherwise incomplete".to_string());
+    }
+    let mut coverage = ExecutionCoverage {
+        reached,
+        log_complete,
+        gaps,
+    };
+    coverage.normalize();
+    coverage
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw(ok: bool, timed_out: bool, log: &str) -> RawSmokeOutput {
+        RawSmokeOutput {
+            schema: crate::run::SMOKE_OUTPUT_SCHEMA.into(),
+            environment: "test".into(),
+            exited_ok: ok,
+            timed_out,
+            log: log.into(),
+            exit_code: ok.then_some(0),
+            log_complete: true,
+            infrastructure_failure: false,
+            harness_failure: false,
+            skipped: false,
+            wall_time_ms: None,
+            enforced_limits: Vec::new(),
+            isolation: "test".into(),
+        }
+    }
+
+    #[test]
+    fn recovered_error_is_background_not_incident() {
+        let observation = observe_smoke(&raw(
+            true,
+            false,
+            "[main/ERROR]: java.lang.IllegalStateException: optional check failed\nDone (2.0s)!",
+        ));
+        assert!(observation.incidents.is_empty());
+        assert_eq!(observation.status, ObservationStatus::Passed);
+        assert!(!observation.background_events.is_empty());
+    }
+
+    #[test]
+    fn timeout_after_readiness_is_distinct() {
+        let observation = observe_smoke(&raw(false, true, "Done (2.0s)!"));
+        assert_eq!(
+            observation.status,
+            ObservationStatus::TimedOutAfterReadiness
+        );
+    }
+
+    #[test]
+    fn fatal_exception_uses_deepest_cause() {
+        let observation = observe_smoke(&raw(
+            false,
+            false,
+            "[main/FATAL]: net.minecraft.ReportedException: wrapper\nCaused by: java.lang.OutOfMemoryError: heap",
+        ));
+        assert_eq!(observation.status, ObservationStatus::Crashed);
+        assert_eq!(
+            observation.incidents[0].throwable_type.as_deref(),
+            Some("java.lang.OutOfMemoryError")
+        );
+    }
+}

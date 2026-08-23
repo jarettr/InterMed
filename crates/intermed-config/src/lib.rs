@@ -375,6 +375,15 @@ fn apply_env(cfg: &mut IntermedConfig) {
         &mut cfg.log.parallel_line_threshold,
     );
     env_usize("INTERMED_LAB_EXCERPT_MAX", &mut cfg.lab.excerpt_max);
+    env_u32(
+        "INTERMED_LAB_CAMPAIGN_MAX_ATTEMPTS",
+        &mut cfg.lab.campaign_max_attempts,
+    );
+    env_usize(
+        "INTERMED_LAB_CAMPAIGN_MAX_PARALLEL",
+        &mut cfg.lab.campaign_max_parallel,
+    );
+    env_u64("INTERMED_LAB_MAX_LOG_BYTES", &mut cfg.lab.max_log_bytes);
     env_usize("INTERMED_JOBS", &mut cfg.runtime.jobs);
     if let Ok(v) = env::var("INTERMED_METADATA_LEVEL")
         && !v.trim().is_empty()
@@ -428,6 +437,14 @@ fn env_u64(key: &str, target: &mut u64) {
         && let Ok(n) = v.parse()
     {
         *target = n;
+    }
+}
+
+fn env_u32(key: &str, target: &mut u32) {
+    if let Ok(value) = env::var(key)
+        && let Ok(parsed) = value.parse()
+    {
+        *target = parsed;
     }
 }
 

@@ -247,11 +247,23 @@ _intermed() {
             intermed__subcmd__help__subcmd__impact,update)
                 cmd="intermed__subcmd__help__subcmd__impact__subcmd__update"
                 ;;
+            intermed__subcmd__help__subcmd__lab,campaign)
+                cmd="intermed__subcmd__help__subcmd__lab__subcmd__campaign"
+                ;;
+            intermed__subcmd__help__subcmd__lab,capture)
+                cmd="intermed__subcmd__help__subcmd__lab__subcmd__capture"
+                ;;
             intermed__subcmd__help__subcmd__lab,discover)
                 cmd="intermed__subcmd__help__subcmd__lab__subcmd__discover"
                 ;;
+            intermed__subcmd__help__subcmd__lab,discover-mrpack)
+                cmd="intermed__subcmd__help__subcmd__lab__subcmd__discover__subcmd__mrpack"
+                ;;
             intermed__subcmd__help__subcmd__lab,eval)
                 cmd="intermed__subcmd__help__subcmd__lab__subcmd__eval"
+                ;;
+            intermed__subcmd__help__subcmd__lab,materialize)
+                cmd="intermed__subcmd__help__subcmd__lab__subcmd__materialize"
                 ;;
             intermed__subcmd__help__subcmd__lab,report)
                 cmd="intermed__subcmd__help__subcmd__lab__subcmd__report"
@@ -349,8 +361,17 @@ _intermed() {
             intermed__subcmd__impact__subcmd__help,update)
                 cmd="intermed__subcmd__impact__subcmd__help__subcmd__update"
                 ;;
+            intermed__subcmd__lab,campaign)
+                cmd="intermed__subcmd__lab__subcmd__campaign"
+                ;;
+            intermed__subcmd__lab,capture)
+                cmd="intermed__subcmd__lab__subcmd__capture"
+                ;;
             intermed__subcmd__lab,discover)
                 cmd="intermed__subcmd__lab__subcmd__discover"
+                ;;
+            intermed__subcmd__lab,discover-mrpack)
+                cmd="intermed__subcmd__lab__subcmd__discover__subcmd__mrpack"
                 ;;
             intermed__subcmd__lab,eval)
                 cmd="intermed__subcmd__lab__subcmd__eval"
@@ -358,20 +379,35 @@ _intermed() {
             intermed__subcmd__lab,help)
                 cmd="intermed__subcmd__lab__subcmd__help"
                 ;;
+            intermed__subcmd__lab,materialize)
+                cmd="intermed__subcmd__lab__subcmd__materialize"
+                ;;
             intermed__subcmd__lab,report)
                 cmd="intermed__subcmd__lab__subcmd__report"
                 ;;
             intermed__subcmd__lab,run)
                 cmd="intermed__subcmd__lab__subcmd__run"
                 ;;
+            intermed__subcmd__lab__subcmd__help,campaign)
+                cmd="intermed__subcmd__lab__subcmd__help__subcmd__campaign"
+                ;;
+            intermed__subcmd__lab__subcmd__help,capture)
+                cmd="intermed__subcmd__lab__subcmd__help__subcmd__capture"
+                ;;
             intermed__subcmd__lab__subcmd__help,discover)
                 cmd="intermed__subcmd__lab__subcmd__help__subcmd__discover"
+                ;;
+            intermed__subcmd__lab__subcmd__help,discover-mrpack)
+                cmd="intermed__subcmd__lab__subcmd__help__subcmd__discover__subcmd__mrpack"
                 ;;
             intermed__subcmd__lab__subcmd__help,eval)
                 cmd="intermed__subcmd__lab__subcmd__help__subcmd__eval"
                 ;;
             intermed__subcmd__lab__subcmd__help,help)
                 cmd="intermed__subcmd__lab__subcmd__help__subcmd__help"
+                ;;
+            intermed__subcmd__lab__subcmd__help,materialize)
+                cmd="intermed__subcmd__lab__subcmd__help__subcmd__materialize"
                 ;;
             intermed__subcmd__lab__subcmd__help,report)
                 cmd="intermed__subcmd__lab__subcmd__help__subcmd__report"
@@ -1634,8 +1670,36 @@ _intermed() {
             return 0
             ;;
         intermed__subcmd__help__subcmd__lab)
-            opts="discover run report eval"
+            opts="discover discover-mrpack run report eval materialize campaign capture"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        intermed__subcmd__help__subcmd__lab__subcmd__campaign)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        intermed__subcmd__help__subcmd__lab__subcmd__capture)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
@@ -1661,7 +1725,35 @@ _intermed() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        intermed__subcmd__help__subcmd__lab__subcmd__discover__subcmd__mrpack)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         intermed__subcmd__help__subcmd__lab__subcmd__eval)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        intermed__subcmd__help__subcmd__lab__subcmd__materialize)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -2312,7 +2404,7 @@ _intermed() {
             return 0
             ;;
         intermed__subcmd__lab)
-            opts="-v -h --config --dump-config --quiet --verbose --help discover run report eval help"
+            opts="-v -h --config --dump-config --quiet --verbose --help discover discover-mrpack run report eval materialize campaign capture help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2329,7 +2421,93 @@ _intermed() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        intermed__subcmd__lab__subcmd__campaign)
+            opts="-v -h --out --max-attempts --max-parallel --config --dump-config --quiet --verbose --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --out)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --max-attempts)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --max-parallel)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        intermed__subcmd__lab__subcmd__capture)
+            opts="-v -h --environment --exit-code --timed-out --max-bytes --out --config --dump-config --quiet --verbose --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --environment)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --exit-code)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --max-bytes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --out)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         intermed__subcmd__lab__subcmd__discover)
+            opts="-v -h --out --config --dump-config --quiet --verbose --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --out)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        intermed__subcmd__lab__subcmd__discover__subcmd__mrpack)
             opts="-v -h --out --config --dump-config --quiet --verbose --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -2390,7 +2568,7 @@ _intermed() {
             return 0
             ;;
         intermed__subcmd__lab__subcmd__help)
-            opts="discover run report eval help"
+            opts="discover discover-mrpack run report eval materialize campaign capture help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2403,7 +2581,49 @@ _intermed() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        intermed__subcmd__lab__subcmd__help__subcmd__campaign)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        intermed__subcmd__lab__subcmd__help__subcmd__capture)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         intermed__subcmd__lab__subcmd__help__subcmd__discover)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        intermed__subcmd__lab__subcmd__help__subcmd__discover__subcmd__mrpack)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -2445,6 +2665,20 @@ _intermed() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        intermed__subcmd__lab__subcmd__help__subcmd__materialize)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         intermed__subcmd__lab__subcmd__help__subcmd__report)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
@@ -2466,6 +2700,36 @@ _intermed() {
                 return 0
             fi
             case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        intermed__subcmd__lab__subcmd__materialize)
+            opts="-v -h --source --store --out --config --dump-config --quiet --verbose --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --source)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --store)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --out)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;

@@ -17,6 +17,7 @@
 //! impl plus one registration line.
 
 pub mod assessment;
+pub mod bootstrap_bridge;
 pub mod bounded_zip;
 pub mod coherence;
 pub mod collector;
@@ -27,6 +28,7 @@ pub mod io_util;
 pub mod jar_cache;
 pub mod jar_meta;
 pub mod layer;
+pub mod legacy_forge;
 pub mod modpack;
 pub mod modpack_manifest;
 pub mod profile;

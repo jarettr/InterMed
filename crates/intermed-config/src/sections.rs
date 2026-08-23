@@ -28,6 +28,9 @@ pub const DEFAULT_LOG_PARALLEL_LINE_THRESHOLD: usize = 4_096;
 
 /// Maximum characters kept from a smoke-test log excerpt in lab runs.
 pub const DEFAULT_LAB_EXCERPT_MAX: usize = 280;
+pub const DEFAULT_LAB_CAMPAIGN_MAX_ATTEMPTS: u32 = 2;
+pub const DEFAULT_LAB_CAMPAIGN_MAX_PARALLEL: usize = 1;
+pub const DEFAULT_LAB_MAX_LOG_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Default mixin analysis preset (`standard` — overlaps + recommendations, no per-handler spam).
 pub const DEFAULT_MIXIN_LEVEL: &str = "standard";
@@ -139,12 +142,21 @@ impl Default for LogSection {
 pub struct LabSection {
     #[serde(default = "default_excerpt_max")]
     pub excerpt_max: usize,
+    #[serde(default = "default_lab_campaign_max_attempts")]
+    pub campaign_max_attempts: u32,
+    #[serde(default = "default_lab_campaign_max_parallel")]
+    pub campaign_max_parallel: usize,
+    #[serde(default = "default_lab_max_log_bytes")]
+    pub max_log_bytes: u64,
 }
 
 impl Default for LabSection {
     fn default() -> Self {
         Self {
             excerpt_max: DEFAULT_LAB_EXCERPT_MAX,
+            campaign_max_attempts: DEFAULT_LAB_CAMPAIGN_MAX_ATTEMPTS,
+            campaign_max_parallel: DEFAULT_LAB_CAMPAIGN_MAX_PARALLEL,
+            max_log_bytes: DEFAULT_LAB_MAX_LOG_BYTES,
         }
     }
 }
@@ -281,6 +293,15 @@ fn default_parallel_line_threshold() -> usize {
 }
 fn default_excerpt_max() -> usize {
     DEFAULT_LAB_EXCERPT_MAX
+}
+fn default_lab_campaign_max_attempts() -> u32 {
+    DEFAULT_LAB_CAMPAIGN_MAX_ATTEMPTS
+}
+fn default_lab_campaign_max_parallel() -> usize {
+    DEFAULT_LAB_CAMPAIGN_MAX_PARALLEL
+}
+fn default_lab_max_log_bytes() -> u64 {
+    DEFAULT_LAB_MAX_LOG_BYTES
 }
 fn default_mixin_level() -> String {
     DEFAULT_MIXIN_LEVEL.to_string()

@@ -15,7 +15,7 @@ fn dummy_target() -> Target {
 }
 
 #[test]
-fn grouped_finding_emits_one_entry_per_mod_with_warn_for_process_spawn() {
+fn grouped_finding_emits_verbose_capability_note_for_process_spawn() {
     let mut store = FactStore::new();
     store
         .fact("security-scanner", kind::USES_PROCESS_SPAWN)
@@ -31,7 +31,11 @@ fn grouped_finding_emits_one_entry_per_mod_with_warn_for_process_spawn() {
     assert_eq!(findings[0].id, "security-api-risk:risky");
     assert_eq!(
         findings[0].severity,
-        intermed_doctor_core::evidence::Severity::Warn
+        intermed_doctor_core::evidence::Severity::Note
+    );
+    assert_eq!(
+        findings[0].visibility,
+        intermed_doctor_core::evidence::FindingVisibility::Verbose
     );
     assert!(findings[0].title.contains("1 security API signal"));
     assert!(findings[0].confidence > 0.5);
@@ -80,7 +84,34 @@ fn two_note_signals_emit_grouped_note_finding() {
 }
 
 #[test]
-fn corroborated_process_spawn_surfaces_as_warn_and_is_marked_inferred() {
+fn unsafe_is_a_capability_note_not_a_standalone_security_warning() {
+    let mut store = FactStore::new();
+    store
+        .fact("security-scanner", kind::USES_UNSAFE)
+        .subject("performance-mod")
+        .attr("archive", "performance-mod.jar")
+        .emit();
+
+    let target = dummy_target();
+    let ctx = RuleCtx::for_test(&store, &target);
+    assert!(rule().evaluate(&ctx).unwrap().is_empty());
+
+    store
+        .fact("security-scanner", kind::USES_REFLECTIVE_INVOCATION)
+        .subject("performance-mod")
+        .attr("archive", "performance-mod.jar")
+        .emit();
+    let ctx = RuleCtx::for_test(&store, &target);
+    let findings = rule().evaluate(&ctx).unwrap();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(
+        findings[0].severity,
+        intermed_doctor_core::evidence::Severity::Note
+    );
+}
+
+#[test]
+fn corroborated_process_spawn_remains_a_note_and_is_marked_inferred() {
     let mut store = FactStore::new();
     // Structural reflection machinery.
     store
@@ -104,10 +135,10 @@ fn corroborated_process_spawn_surfaces_as_warn_and_is_marked_inferred() {
 
     assert_eq!(findings.len(), 1);
     let finding = &findings[0];
-    // The corroborated high-risk capability drives Warn severity.
+    // Even a corroborated API capability is not a harmful-behaviour verdict.
     assert_eq!(
         finding.severity,
-        intermed_doctor_core::evidence::Severity::Warn
+        intermed_doctor_core::evidence::Severity::Note
     );
     // …but it is transparently labelled as inferred, not asserted as fact.
     assert!(finding.explanation.contains("low confidence"));

@@ -272,14 +272,49 @@ fn evaluate_requirement(
                 .iter()
                 .filter_map(|edge| store.get(edge.fact))
                 .collect::<Vec<_>>();
+            // A loader-mismatch conclusion is about the only descriptor an
+            // enabled artifact exposes being unusable by the target loader.
+            // That descriptor is still unambiguous evidence even though it is
+            // (correctly) marked `cross-loader-unresolved`: there is no
+            // same-loader descriptor to select.  Other conclusion families,
+            // especially dependency assertions, must continue to treat a
+            // cross-loader descriptor as inactive.
+            let unambiguous_cross_loader_mismatch = finding.conclusion_kind
+                == intermed_evidence::ConclusionKind::LoaderMismatch
+                && evidence.iter().any(|fact| {
+                    fact.attr("identity_certainty") == Some("cross-loader-unresolved")
+                        && fact
+                            .attr("descriptor_candidates")
+                            .is_some_and(|candidates| {
+                                candidates
+                                    .split(',')
+                                    .filter(|candidate| !candidate.trim().is_empty())
+                                    .count()
+                                    == 1
+                            })
+                });
             let undecidable = evidence.iter().any(|fact| {
-                fact.attr("identity_certainty") == Some("undecidable")
+                let cross_loader_exception = unambiguous_cross_loader_mismatch
+                    && fact.attr("identity_certainty") == Some("cross-loader-unresolved")
+                    && fact
+                        .attr("descriptor_candidates")
+                        .is_some_and(|candidates| {
+                            candidates
+                                .split(',')
+                                .filter(|candidate| !candidate.trim().is_empty())
+                                .count()
+                                == 1
+                        });
+                (!cross_loader_exception
+                    && fact
+                        .attr("identity_certainty")
+                        .is_some_and(|certainty| certainty != "confirmed"))
                     || fact.attr_bool("active_for_instance") == Some(false)
             });
             let explicitly_active = evidence.iter().any(|fact| {
                 fact.attr("identity_certainty") == Some("confirmed")
                     || fact.attr_bool("active_for_instance") == Some(true)
-            });
+            }) || unambiguous_cross_loader_mismatch;
             (
                 capability_complete && explicitly_active && !undecidable,
                 if undecidable {

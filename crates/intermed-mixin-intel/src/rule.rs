@@ -73,7 +73,11 @@ impl intermed_doctor_core::Rule for MixinRiskRule {
             let (spark_boost, spark_quality) =
                 spark_overlap_boost(&hot_methods, &f.subject, named.as_deref(), inter.as_deref());
             let adjusted = score.saturating_add(spark_boost).min(100);
-            let severity = risk_severity(adjusted);
+            let conflict_class = f.attr("conflict_class").unwrap_or("unclassified");
+            // This is a navigation/ranking aggregate. Exact pairwise conflict
+            // edges below own user-facing Warn severity; score also contains
+            // blast radius and hot-path popularity and is not itself a defect.
+            let severity = Severity::Note;
 
             // Risk (severity) and confidence are different axes. Severity is "how
             // bad if true"; confidence is "how sure we are the site resolved".
@@ -159,6 +163,8 @@ impl intermed_doctor_core::Rule for MixinRiskRule {
                 .fix(FixCandidate::advice(risk_advice(adjusted, hot_path)))
                 .tag("mixin")
                 .tag("risk-score")
+                .tag(conflict_class)
+                .visibility(FindingVisibility::Verbose)
                 .confidence(confidence);
             if confidence < 0.6 {
                 builder = builder.tag("low-resolution-confidence");
@@ -216,38 +222,181 @@ impl intermed_doctor_core::Rule for MixinRiskRule {
         out.extend(cross_layer_security_findings(ctx));
         out.extend(runtime_log_confirmation_findings(ctx));
 
-        for f in ctx.store.by_kind(kind::MIXIN_INTERACTION) {
-            let strength = f.attr_int("strength").unwrap_or(50) as u8;
-            if strength < 70 {
-                continue;
-            }
-            let detail = f.attr("detail").unwrap_or("mixin interaction");
-            let target = f.attr("target").unwrap_or(&f.subject);
-            out.push(
-                Finding::builder(RULE_ID, format!("mixin-interaction:{}", f.subject))
-                    .severity(if strength >= 90 {
-                        Severity::Warn
-                    } else {
-                        Severity::Note
-                    })
-                    .category(Category::Mixin)
-                    .title(format!("Mixin interaction on {target}"))
-                    .explanation(detail.to_string())
-                    .evidence(EvidenceEdge::subject(f.id))
-                    .affects(target)
-                    .fix(FixCandidate::advice(
-                        "Review mod load order, mixin priority, and compatibility notes for these mods.",
-                    ))
-                    .tag("mixin")
-                    .tag("interaction")
-                    .tag("mixin-detail")
-                    .confidence(f32::from(strength) / 100.0)
-                    .build(),
-            );
-        }
+        out.extend(interaction_summary_findings(ctx));
+        out.extend(conflict_edge_summary_findings(ctx));
 
         Ok(out)
     }
+}
+
+#[derive(Default)]
+struct InteractionSummary {
+    max_strength: u8,
+    facts: Vec<FactId>,
+    details: std::collections::BTreeSet<String>,
+    mods: std::collections::BTreeSet<String>,
+}
+
+/// One navigation card per target. Pairwise interaction facts remain available
+/// for JSON/explain, but a target touched by many mixins must not occupy the
+/// default report with one warning per pair.
+fn interaction_summary_findings(ctx: &RuleCtx<'_>) -> Vec<Finding> {
+    let mut grouped = std::collections::BTreeMap::<String, InteractionSummary>::new();
+    for fact in ctx.store.by_kind(kind::MIXIN_INTERACTION) {
+        let strength =
+            u8::try_from(fact.attr_int("strength").unwrap_or(50).clamp(0, 100)).unwrap_or(50);
+        if strength < 70 {
+            continue;
+        }
+        let target = fact.attr("target").unwrap_or(&fact.subject).to_string();
+        let group = grouped.entry(target).or_default();
+        group.max_strength = group.max_strength.max(strength);
+        group.facts.push(fact.id);
+        group.details.insert(
+            fact.attr("detail")
+                .unwrap_or("mixin interaction")
+                .to_string(),
+        );
+        for attr in ["mod_a", "mod_b"] {
+            if let Some(mod_id) = fact.attr(attr)
+                && !mod_id.is_empty()
+            {
+                group.mods.insert(mod_id.to_string());
+            }
+        }
+    }
+
+    grouped
+        .into_iter()
+        .map(|(target, group)| {
+            let mut details = group.details.iter().take(8).cloned().collect::<Vec<_>>();
+            if group.details.len() > details.len() {
+                details.push(format!(
+                    "{} additional interaction pattern(s) are available in evidence",
+                    group.details.len() - details.len()
+                ));
+            }
+            let mut builder = Finding::builder(
+                RULE_ID,
+                format!("mixin-interaction-summary:{target}"),
+            )
+            .severity(Severity::Note)
+            .category(Category::Mixin)
+            .title(format!(
+                "{} mixin interaction(s) on {target}",
+                group.facts.len()
+            ))
+            .explanation(details.join("; "))
+            .affects(target)
+            .fix(FixCandidate::advice(
+                "Review the participating mods' compatibility notes and the grouped interaction evidence.",
+            ))
+            .tag("mixin")
+            .tag("interaction")
+            .tag("grouped")
+            .visibility(FindingVisibility::Verbose)
+            .confidence(f32::from(group.max_strength) / 100.0);
+            for mod_id in group.mods {
+                builder = builder.affects(mod_id);
+            }
+            for fact_id in group.facts.iter().take(24) {
+                builder = builder.evidence(EvidenceEdge::subject(*fact_id));
+            }
+            if group.facts.len() > 24 {
+                builder = builder.tag("evidence-sample-bounded");
+            }
+            builder.build()
+        })
+        .collect()
+}
+
+#[derive(Default)]
+struct ConflictPairSummary {
+    facts: Vec<FactId>,
+    kinds: std::collections::BTreeSet<String>,
+    sites: std::collections::BTreeSet<String>,
+}
+
+fn conflict_edge_summary_findings(ctx: &RuleCtx<'_>) -> Vec<Finding> {
+    const ACTIONABLE: &[&str] = &[
+        "overwrites-same-method",
+        "redirects-same-call",
+        "shadow-descriptor-conflict",
+        "accessor-conflict",
+        "overwrite-vs-injector",
+        "redirect-vs-wrap-operation",
+        "wrap-condition-suppresses-call",
+        "modify-args-same-invocation",
+        "unique-member-conflict",
+    ];
+    let mut grouped = std::collections::BTreeMap::<(String, String), ConflictPairSummary>::new();
+    for fact in ctx.store.by_kind(kind::MIXIN_CONFLICT_EDGE) {
+        let edge_type = fact.attr("edge_type").unwrap_or("");
+        if !ACTIONABLE.contains(&edge_type) {
+            continue;
+        }
+        let mut source = fact.attr("source_mod").unwrap_or("unknown").to_string();
+        let mut target = fact.attr("target_mod").unwrap_or("unknown").to_string();
+        if source > target {
+            std::mem::swap(&mut source, &mut target);
+        }
+        let group = grouped.entry((source, target)).or_default();
+        group.facts.push(fact.id);
+        group.kinds.insert(edge_type.to_string());
+        let class = fact.attr("target_class").unwrap_or("unknown");
+        let site = fact.attr("site").unwrap_or("");
+        group.sites.insert(if site.is_empty() {
+            class.to_string()
+        } else {
+            format!("{class}::{site}")
+        });
+    }
+
+    grouped
+        .into_iter()
+        .map(|((mod_a, mod_b), group)| {
+            let shown = group.sites.iter().take(8).cloned().collect::<Vec<_>>();
+            let remainder = group.sites.len().saturating_sub(shown.len());
+            let mut explanation = format!(
+                "Exact cross-mod interaction type(s): {}. Affected site(s): {}.",
+                group.kinds.into_iter().collect::<Vec<_>>().join(", "),
+                shown.join(", ")
+            );
+            if remainder > 0 {
+                explanation.push_str(&format!(
+                    " {remainder} additional site(s) are available in evidence."
+                ));
+            }
+            let mut builder = Finding::builder(
+                RULE_ID,
+                format!("mixin-conflict-pair:{mod_a}<->{mod_b}"),
+            )
+            .severity(Severity::Warn)
+            .category(Category::Mixin)
+            .title(format!(
+                "Mixin order/replace conflict between `{mod_a}` and `{mod_b}` ({} edge(s))",
+                group.facts.len()
+            ))
+            .explanation(explanation)
+            .affects(mod_a)
+            .affects(mod_b)
+            .fix(FixCandidate::advice(
+                "Check compatibility notes for this mod pair and reproduce with one side disabled.",
+            ))
+            .tag("mixin")
+            .tag("conflict")
+            .tag("grouped-by-mod-pair")
+            .confidence(0.85);
+            for fact_id in group.facts.iter().take(24) {
+                builder =
+                    builder.evidence(EvidenceEdge::new(*fact_id, Relation::ConflictsWith, 0.9));
+            }
+            if group.facts.len() > 24 {
+                builder = builder.tag("evidence-sample-bounded");
+            }
+            builder.build()
+        })
+        .collect()
 }
 
 /// Surface the mods with the heaviest mixin footprint as an informational note.
@@ -1103,9 +1252,9 @@ fn capability_resource_finding(
 /// Cross-layer security findings (Layer F ↔ Layer G). A mixin that weaves into a
 /// security-sensitive subsystem (networking / class-loading / serialization / save
 /// IO) is already worth a note; when the *same mod* also trips a Layer-G `uses_*`
-/// capability (reflection, Unsafe, process spawn, sockets, dynamic class definition),
-/// the woven code and the dangerous capability compound into an elevated audit
-/// surface that neither layer flagged on its own.
+/// capability, that capability is retained as context. Mod-level co-occurrence is
+/// not causal proof: elevation requires dangerous reflection observed in the
+/// woven handler itself.
 /// Security-surface facts grouped for one (mod, subsystem) pair.
 #[derive(Default)]
 struct SurfaceGroup {
@@ -1122,17 +1271,14 @@ fn cross_layer_security_findings(ctx: &RuleCtx<'_>) -> Vec<Finding> {
     // audit-worthy on their own escalate a woven-subsystem surface to a warning.
     const DANGEROUS: &[(&str, &str)] = &[
         (kind::USES_PROCESS_SPAWN, "spawns processes"),
-        (kind::USES_SOCKET, "opens sockets"),
-        (
-            kind::USES_REFLECTION_SET_ACCESSIBLE,
-            "uses reflection (setAccessible)",
-        ),
-        (kind::USES_UNSAFE, "uses sun.misc.Unsafe"),
         (
             kind::USES_DYNAMIC_CLASS_DEFINITION,
             "defines classes dynamically",
         ),
-        (kind::USES_NATIVE_LIBRARY, "loads native libraries"),
+        (
+            kind::USES_SCRIPT_ENGINE,
+            "evaluates scripts through a JVM engine",
+        ),
     ];
     let mut g_by_mod: BTreeMap<String, Vec<(FactId, &str)>> = BTreeMap::new();
     for (k, label) in DANGEROUS {
@@ -1178,17 +1324,38 @@ fn cross_layer_security_findings(ctx: &RuleCtx<'_>) -> Vec<Finding> {
         let g_hits = g_by_mod.get(mod_id);
         let reflective = reflective_handler.get(mod_id);
 
-        // Elevated when the mod also has a dangerous Layer-G capability.
+        let handler_targets = reflective
+            .map(|(_, targets)| targets.as_str())
+            .unwrap_or("");
+        let handler_is_dangerous = [
+            "java.lang.Runtime",
+            "java/lang/Runtime",
+            "java.lang.ProcessBuilder",
+            "java/lang/ProcessBuilder",
+            "javax.script",
+            "javax/script",
+            "defineClass",
+        ]
+        .iter()
+        .any(|needle| handler_targets.contains(needle));
+
+        // A capability elsewhere in the same artifact is context, not proof that
+        // the woven handler performs it. Only handler-local dangerous reflection
+        // elevates this cross-layer surface.
         let (severity, mut explanation, confidence) = if let Some(hits) = g_hits {
             let caps = hits.iter().map(|(_, l)| *l).collect::<Vec<_>>().join(", ");
             (
-                Severity::Warn,
+                if handler_is_dangerous {
+                    Severity::Warn
+                } else {
+                    Severity::Note
+                },
                 format!(
-                    "`{mod_id}` {reason} AND also {caps} (Layer G). Dangerous capability \
-                     combined with code woven into the {subsystem} subsystem is an elevated audit \
-                     surface — review what the woven handler does."
+                    "`{mod_id}` {reason}. Layer G also observes that this artifact {caps}; \
+                     artifact-level co-occurrence does not prove the woven handler performs that \
+                     operation."
                 ),
-                0.7,
+                if handler_is_dangerous { 0.75 } else { 0.5 },
             )
         } else {
             (
@@ -1228,6 +1395,11 @@ fn cross_layer_security_findings(ctx: &RuleCtx<'_>) -> Vec<Finding> {
             .tag("mixin")
             .tag("cross-layer")
             .tag("security")
+            .visibility(if severity == Severity::Warn {
+                FindingVisibility::Default
+            } else {
+                FindingVisibility::Verbose
+            })
             .confidence(confidence);
         for id in &group.fact_ids {
             b = b.evidence(EvidenceEdge::new(*id, Relation::Supports, 0.7));
@@ -1235,11 +1407,13 @@ fn cross_layer_security_findings(ctx: &RuleCtx<'_>) -> Vec<Finding> {
         if let Some(hits) = g_hits {
             for (id, _) in hits {
                 b = b.evidence(EvidenceEdge::new(*id, Relation::CorrelatesWith, 0.7));
-                b = b.tag("elevated");
             }
         }
         if let Some((id, _)) = reflective {
             b = b.evidence(EvidenceEdge::new(*id, Relation::Supports, 0.6));
+        }
+        if handler_is_dangerous {
+            b = b.tag("elevated").tag("handler-local-dangerous-reflection");
         }
         out.push(b.build());
     }
@@ -1311,9 +1485,12 @@ fn risk_cluster_findings(ctx: &RuleCtx<'_>) -> Vec<Finding> {
         ) {
             continue;
         }
-        // A cluster is a navigation roll-up, not an independent hard
-        // conclusion. Site-level apply/selector findings own Error severity.
-        let severity = parse_severity(f.attr("severity")).min(Severity::Warn);
+        // A cluster is a navigation roll-up, not an independent conclusion.
+        // Site-level apply/selector findings and exact cross-mod conflict pairs
+        // own urgency. Repeating their severity here double-counts the same
+        // condition and turns large, otherwise healthy packs into a wall of
+        // aggregate warnings.
+        let severity = Severity::Note;
         let target = f.attr("target_class").unwrap_or(&f.subject);
         let headline = f.attr("headline").unwrap_or("mixin risk cluster");
         let action = f
@@ -1375,17 +1552,6 @@ fn application_site_is_failing(s: &intermed_doctor_core::facts::Fact) -> bool {
     ) || s.attr("local_capture_status") == Some("local-missing")
 }
 
-/// Parse a severity string from a fact attribute back to [`Severity`].
-fn parse_severity(s: Option<&str>) -> Severity {
-    match s {
-        Some("fatal") => Severity::Fatal,
-        Some("error") => Severity::Error,
-        Some("warn") => Severity::Warn,
-        Some("info") => Severity::Info,
-        _ => Severity::Note,
-    }
-}
-
 /// Confidence that the risk finding's *site resolution* is correct — an
 /// evidence-quality measure, independent of how severe the risk would be.
 ///
@@ -1398,15 +1564,6 @@ fn resolution_confidence(unresolved_points: i64, intermediary_known: bool) -> f3
         c -= (unresolved_points as f32 * 0.1).min(0.5);
     }
     c.clamp(0.2, 0.95)
-}
-
-fn risk_severity(score: u8) -> Severity {
-    match score {
-        0..=30 => Severity::Note,
-        31..=60 => Severity::Note,
-        61..=80 => Severity::Warn,
-        _ => Severity::Warn,
-    }
 }
 
 fn risk_advice(score: u8, hot_path: bool) -> String {
@@ -1703,7 +1860,10 @@ fn enhanced_overwrite_findings(ctx: &RuleCtx<'_>) -> Vec<Finding> {
         }
         let mut builder =
             Finding::builder(RULE_ID, format!("mixin-overwrite-effect:{mixin}->{target}"))
-                .severity(Severity::Warn)
+                // A single overwrite is developer-facing structural risk, not
+                // evidence of an actual pack conflict. Competing overwrite /
+                // redirect sites are emitted separately as conflict-pair Warns.
+                .severity(Severity::Note)
                 .category(Category::Mixin)
                 .title(format!("@Overwrite effect: {target}"))
                 .explanation(explanation)
@@ -2068,5 +2228,160 @@ mod confidence_tests {
         assert!(high > low);
         // Confidence stays within sane bounds.
         assert!(resolution_confidence(99, false) >= 0.2);
+    }
+}
+
+#[cfg(test)]
+mod triage_tests {
+    use super::MixinRiskRule;
+    use intermed_doctor_core::evidence::{FindingVisibility, Severity};
+    use intermed_doctor_core::facts::{FactStore, kind};
+    use intermed_doctor_core::{Rule, RuleCtx, Target, TargetKind};
+
+    fn target() -> Target {
+        Target {
+            path: ".".into(),
+            kind: TargetKind::ModsDir,
+            mods_dir: None,
+            game_root: None,
+            layout: None,
+            instance_type: None,
+            spark_report: None,
+        }
+    }
+
+    fn emit_risk(store: &mut FactStore, class: &str, conflict_class: &str) {
+        store
+            .fact("mixin", kind::MIXIN_RISK_SCORE)
+            .subject(class)
+            .attr("score", 88_i64)
+            .attr("conflict_class", conflict_class)
+            .attr("mods", "a,b")
+            .attr("unresolved_points", 0_i64)
+            .emit();
+    }
+
+    #[test]
+    fn blast_radius_score_without_conflict_is_verbose_note() {
+        let mut store = FactStore::new();
+        emit_risk(
+            &mut store,
+            "net.minecraft.BusyClass",
+            "shared-injection-site",
+        );
+        let target = target();
+        let findings = MixinRiskRule
+            .evaluate(&RuleCtx::for_test(&store, &target))
+            .unwrap();
+        let risk = findings
+            .iter()
+            .find(|finding| finding.id.starts_with("mixin-risk:"))
+            .unwrap();
+        assert_eq!(risk.severity, Severity::Note);
+        assert_eq!(risk.visibility, FindingVisibility::Verbose);
+    }
+
+    #[test]
+    fn typed_risk_rollup_remains_verbose_even_when_actionable() {
+        let mut store = FactStore::new();
+        emit_risk(&mut store, "net.minecraft.Target", "order-sensitive");
+        let target = target();
+        let findings = MixinRiskRule
+            .evaluate(&RuleCtx::for_test(&store, &target))
+            .unwrap();
+        let risk = findings
+            .iter()
+            .find(|finding| finding.id.starts_with("mixin-risk:"))
+            .unwrap();
+        assert_eq!(risk.severity, Severity::Note);
+        assert_eq!(risk.visibility, FindingVisibility::Verbose);
+    }
+
+    #[test]
+    fn pairwise_interactions_are_one_card_per_target() {
+        let mut store = FactStore::new();
+        // Keep the risk-score path active so legacy overlap fallback is irrelevant.
+        emit_risk(&mut store, "net.minecraft.Target", "shared-injection-site");
+        for (subject, a, b) in [("i1", "a", "b"), ("i2", "a", "c")] {
+            store
+                .fact("mixin", kind::MIXIN_INTERACTION)
+                .subject(subject)
+                .attr("target", "net.minecraft.Target")
+                .attr("strength", 95_i64)
+                .attr("detail", "Multiple @Overwrite")
+                .attr("mod_a", a)
+                .attr("mod_b", b)
+                .emit();
+        }
+        let target = target();
+        let findings = MixinRiskRule
+            .evaluate(&RuleCtx::for_test(&store, &target))
+            .unwrap();
+        let interactions = findings
+            .iter()
+            .filter(|finding| finding.id.starts_with("mixin-interaction-summary:"))
+            .collect::<Vec<_>>();
+        assert_eq!(interactions.len(), 1);
+        assert!(interactions[0].title.starts_with("2 mixin interaction(s)"));
+        assert_eq!(interactions[0].evidence.len(), 2);
+    }
+
+    #[test]
+    fn exact_conflict_edges_are_one_warning_per_mod_pair() {
+        let mut store = FactStore::new();
+        emit_risk(&mut store, "net.minecraft.Target", "order-sensitive");
+        for (subject, class) in [("e1", "TargetA"), ("e2", "TargetB")] {
+            store
+                .fact("mixin", kind::MIXIN_CONFLICT_EDGE)
+                .subject(subject)
+                .attr("edge_type", "redirects-same-call")
+                .attr("source_mod", "alpha")
+                .attr("target_mod", "beta")
+                .attr("target_class", class)
+                .attr("site", "tick()V@INVOKE")
+                .emit();
+        }
+        let target = target();
+        let findings = MixinRiskRule
+            .evaluate(&RuleCtx::for_test(&store, &target))
+            .unwrap();
+        let conflicts = findings
+            .iter()
+            .filter(|finding| finding.id == "mixin-conflict-pair:alpha<->beta")
+            .collect::<Vec<_>>();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].severity, Severity::Warn);
+        assert_eq!(conflicts[0].visibility, FindingVisibility::Default);
+        assert_eq!(conflicts[0].evidence.len(), 2);
+    }
+
+    #[test]
+    fn coexistence_edges_do_not_become_default_conflict_warnings() {
+        for edge_type in [
+            "chained-injection",
+            "cancellable-head-vs-return",
+            "modifies-same-local",
+        ] {
+            let mut store = FactStore::new();
+            store
+                .fact("mixin", kind::MIXIN_CONFLICT_EDGE)
+                .subject(edge_type)
+                .attr("edge_type", edge_type)
+                .attr("source_mod", "alpha")
+                .attr("target_mod", "beta")
+                .attr("target_class", "net.minecraft.Target")
+                .attr("site", "tick()V")
+                .emit();
+            let target = target();
+            let findings = MixinRiskRule
+                .evaluate(&RuleCtx::for_test(&store, &target))
+                .unwrap();
+            assert!(
+                findings
+                    .iter()
+                    .all(|finding| !finding.id.starts_with("mixin-conflict-pair:")),
+                "{edge_type} is evidence of interaction, not a proven conflict"
+            );
+        }
     }
 }

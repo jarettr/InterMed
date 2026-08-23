@@ -76,7 +76,9 @@ pub fn build_evidence_graph(store: &FactStore) -> EvidenceGraph {
             ordinal: *ordinal,
         };
         *ordinal = ordinal.saturating_add(1);
-        let active = fact.attr("identity_certainty") != Some("undecidable")
+        let active = fact
+            .attr("identity_certainty")
+            .is_none_or(|certainty| certainty == "confirmed")
             && fact.attr_bool("active_for_instance") != Some(false);
         graph.mods.push(ModInstanceNode {
             id: id.clone(),
@@ -144,8 +146,22 @@ pub fn build_evidence_graph(store: &FactStore) -> EvidenceGraph {
             .get(&fact.subject)
             .cloned()
             .unwrap_or_default();
-        for parent in &parents {
-            let locator = format!("{}!/{}", parent.artifact, nested_name);
+        let mut parent_artifacts = parents
+            .iter()
+            .map(|parent| parent.artifact.clone())
+            .collect::<Vec<_>>();
+        if parent_artifacts.is_empty()
+            && let Some(container) = fact.attr("container")
+        {
+            parent_artifacts.push(artifact_for(
+                container,
+                &mut artifact_by_locator,
+                &mut graph,
+            ));
+        }
+        for parent in parent_artifacts {
+            let nested_path = fact.attr("nested_path").unwrap_or(nested_name);
+            let locator = format!("{parent}!/{nested_path}");
             let nested = ArtifactId::unresolved(&locator);
             graph.artifacts.push(ArtifactNode {
                 id: nested.clone(),
@@ -153,7 +169,7 @@ pub fn build_evidence_graph(store: &FactStore) -> EvidenceGraph {
                 embedded_artifacts: Vec::new(),
             });
             graph.links.push(link(
-                EntityRef::Artifact(parent.artifact.clone()),
+                EntityRef::Artifact(parent),
                 EvidenceRelation::Embeds,
                 EntityRef::Artifact(nested.clone()),
                 EvidenceOrigin::StaticExact,
@@ -336,6 +352,28 @@ fn add_code_and_resource_entities(
         graph.links.push(link(
             site,
             EvidenceRelation::AppliesTo,
+            target,
+            EvidenceOrigin::StaticExact,
+            EvidenceStrength::Exact,
+            fact.id,
+        ));
+    }
+    // Conflict edges are themselves method/site observations. Model their
+    // target class explicitly instead of letting the generic fallback invent a
+    // pseudo-mod named after the edge id. Besides producing honest explain
+    // paths, this lets Layer K match a runtime MixinApplyError attributed to the
+    // target class against the static conflict that named that class.
+    for fact in store.by_kind(kind::MIXIN_CONFLICT_EDGE) {
+        let Some(target_class) = fact.attr("target_class") else {
+            continue;
+        };
+        let site =
+            EntityRef::MixinSite(MixinSiteId::new(format!("mixin-conflict:{}", fact.subject)));
+        let target = class_entity(target_class, fact.attr("namespace"));
+        graph.entities.extend([site.clone(), target.clone()]);
+        graph.links.push(link(
+            site,
+            EvidenceRelation::ConflictsWith,
             target,
             EvidenceOrigin::StaticExact,
             EvidenceStrength::Exact,
@@ -896,7 +934,7 @@ fn strongest_environment_fact(store: &FactStore) -> Option<&Fact> {
 }
 
 pub fn complete_evidence_graph(store: &FactStore, graph: &mut EvidenceGraph, findings: &[Finding]) {
-    let linked = graph
+    let mut linked = graph
         .links
         .iter()
         .map(|link| link.source_fact)
@@ -905,12 +943,24 @@ pub fn complete_evidence_graph(store: &FactStore, graph: &mut EvidenceGraph, fin
         .iter()
         .flat_map(|finding| finding.evidence.iter().map(|edge| edge.fact))
     {
-        if linked.contains(&fact_id) {
+        // Several findings commonly cite the same environment or coverage
+        // fact. Record one canonical self-link, not one copy per finding.
+        if !linked.insert(fact_id) {
             continue;
         }
         let Some(fact) = store.get(fact_id) else {
             continue;
         };
+        // Environment facts are cited directly by the finding and retained as
+        // coverage evidence, but `EntityRef` deliberately has no environment
+        // variant in report-v2. Do not fabricate a mod identity merely to put
+        // them in the graph. A future schema can model environments explicitly.
+        if matches!(
+            fact.kind.as_str(),
+            kind::ENVIRONMENT | kind::ANALYSIS_ENVIRONMENT | kind::JAVA_RUNTIME
+        ) {
+            continue;
+        }
         let entity = if matches!(
             fact.kind.as_str(),
             kind::RUNTIME_EVENT | kind::CRASH_ANCHOR | kind::STACK_FRAME | kind::THROWABLE_NODE
@@ -1638,6 +1688,127 @@ mod tests {
                 .any(|adjustment| adjustment.code == "evidence-path-truncated")
         );
         assert!(graph.links.len() > findings[0].evidence_path.len());
+    }
+
+    #[test]
+    fn environment_evidence_does_not_become_a_fake_mod_entity() {
+        let mut store = FactStore::new();
+        let environment = store
+            .fact("environment", kind::ENVIRONMENT)
+            .subject("instance")
+            .attr("loader", "forge")
+            .emit();
+        let findings = ["first", "second"]
+            .into_iter()
+            .map(|id| {
+                Finding::builder("test", id)
+                    .evidence(EvidenceEdge::subject(environment))
+                    .build()
+            })
+            .collect::<Vec<_>>();
+        let mut graph = EvidenceGraph::default();
+        complete_evidence_graph(&store, &mut graph, &findings);
+        assert_eq!(
+            graph
+                .links
+                .iter()
+                .filter(|link| link.source_fact == environment)
+                .count(),
+            0,
+            "report-v2 has no environment entity; never invent a mod node"
+        );
+    }
+
+    #[test]
+    fn shared_unmodeled_evidence_gets_one_canonical_graph_link() {
+        let mut store = FactStore::new();
+        let evidence = store
+            .fact("metadata", kind::INVALID_METADATA)
+            .subject("broken.jar")
+            .emit();
+        let findings = ["first", "second"]
+            .into_iter()
+            .map(|id| {
+                Finding::builder("test", id)
+                    .evidence(EvidenceEdge::subject(evidence))
+                    .build()
+            })
+            .collect::<Vec<_>>();
+        let mut graph = EvidenceGraph::default();
+
+        complete_evidence_graph(&store, &mut graph, &findings);
+
+        assert_eq!(
+            graph
+                .links
+                .iter()
+                .filter(|link| link.source_fact == evidence)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn mixin_conflict_evidence_names_the_real_target_class() {
+        let mut store = FactStore::new();
+        let conflict = store
+            .fact("mixin", kind::MIXIN_CONFLICT_EDGE)
+            .subject("edge-1")
+            .attr("edge_type", "overwrite-vs-injector")
+            .attr("target_class", "net.minecraft.client.render.WorldRenderer")
+            .emit();
+        let mut graph = build_evidence_graph(&store);
+        let mut findings = vec![
+            Finding::builder("mixin-risk", "mixin-conflict-pair:alpha<->beta")
+                .evidence(EvidenceEdge::subject(conflict))
+                .build(),
+        ];
+
+        reconcile_findings(&store, &mut graph, &mut findings);
+
+        assert!(findings[0].evidence_path.iter().any(|link| {
+            matches!(
+                &link.to,
+                EntityRef::Class(class)
+                    if class.name == "net.minecraft.client.render.WorldRenderer"
+            )
+        }));
+        assert!(!findings[0].evidence_path.iter().any(|link| {
+            matches!(
+                &link.from,
+                EntityRef::Mod(instance) if instance.declared_id == "edge-1"
+            )
+        }));
+    }
+
+    #[test]
+    fn descriptorless_container_still_owns_its_nested_mod_entity() {
+        let mut store = FactStore::new();
+        let nested_fact = store
+            .fact("metadata", kind::NESTED_JAR)
+            .subject("container:kotlinforforge.jar")
+            .attr("nested", "kotlinforforge")
+            .attr("version", "5.11.0")
+            .attr("container", "kotlinforforge.jar")
+            .attr(
+                "nested_path",
+                "META-INF/jarjar/thedarkcolour.kffmod-5.11.0.jar",
+            )
+            .emit();
+
+        let graph = build_evidence_graph(&store);
+        let nested_mod = graph
+            .mods
+            .iter()
+            .find(|node| node.id.declared_id == "kotlinforforge")
+            .expect("nested mod entity");
+        assert_eq!(nested_mod.version.as_deref(), Some("5.11.0"));
+        assert!(graph.links.iter().any(|link| {
+            link.source_fact == nested_fact
+                && link.relation == EvidenceRelation::Embeds
+                && matches!(&link.from, EntityRef::Artifact(_))
+                && matches!(&link.to, EntityRef::Artifact(_))
+        }));
     }
 
     #[test]

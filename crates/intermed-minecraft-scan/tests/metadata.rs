@@ -9,6 +9,91 @@ use intermed_minecraft_scan::MetadataCollector;
 use zip::write::SimpleFileOptions;
 
 #[test]
+fn legacy_forge_mcmod_info_establishes_provider_identity_and_range() {
+    let root = temp_dir("legacy-forge-metadata");
+    let mods = root.join("mods");
+    std::fs::create_dir_all(&mods).unwrap();
+    write_jar(
+        &mods.join("CreativeCore_v1.10.71_mc1.12.2.jar"),
+        &[(
+            "mcmod.info",
+            br#"[{"modid":"creativecore","name":"CreativeCore","version":"1.10.71","requiredMods":["Forge@[14.23.5.2847,)"]}]"#,
+        )],
+    );
+
+    let facts = collect_facts(&mods);
+    let provider = facts
+        .iter()
+        .find(|fact| fact.kind == kind::MOD && fact.subject == "creativecore")
+        .expect("legacy Forge mod identity");
+    assert_eq!(provider.attr("version"), Some("1.10.71"));
+    assert_eq!(provider.attr("loader"), Some("forge"));
+    assert_eq!(provider.attr("identity_certainty"), Some("confirmed"));
+    let dependency = facts
+        .iter()
+        .find(|fact| fact.kind == kind::DEPENDENCY && fact.subject == "creativecore")
+        .expect("legacy Forge requiredMods dependency");
+    assert_eq!(dependency.attr("dep"), Some("forge"));
+    assert_eq!(dependency.attr("range"), Some("[14.23.5.2847,)"));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn forge_1_12_environment_selects_legacy_descriptor_for_real_collector() {
+    let root = temp_dir("legacy-forge-instance-selection");
+    let mods = root.join("mods");
+    std::fs::create_dir_all(&mods).unwrap();
+    write_jar(
+        &mods.join("EnhancedVisuals.jar"),
+        &[
+            (
+                "META-INF/mods.toml",
+                b"[[mods]]\nmodId=\"enhancedvisuals\"\nversion=\"1.3.0\"\n\n[[dependencies.enhancedvisuals]]\nmodId=\"creativecore\"\nmandatory=true\nversionRange=\"[2.0.0,)\"\n",
+            ),
+            (
+                "mcmod.info",
+                br#"[{"modid":"enhancedvisuals","version":"1.3","requiredMods":[]}]"#,
+            ),
+        ],
+    );
+    let target = Target {
+        path: mods.clone(),
+        kind: TargetKind::ModsDir,
+        mods_dir: Some(mods.clone()),
+        game_root: None,
+        layout: None,
+        instance_type: None,
+        spark_report: None,
+    };
+    let mut store = FactStore::new();
+    store
+        .fact("environment", kind::ENVIRONMENT)
+        .subject("")
+        .attr("loader", "forge")
+        .attr("mc_version", "1.12.2")
+        .emit();
+    let settings = default_settings();
+    MetadataCollector.collect(&mut CollectCtx {
+        target: &target,
+        store: &mut store,
+        jar_cache: None,
+        settings,
+    });
+    let artifact = store
+        .by_kind(kind::MOD)
+        .find(|fact| fact.subject == "enhancedvisuals")
+        .unwrap();
+    assert_eq!(artifact.source.inner.as_deref(), Some("mcmod.info"));
+    assert!(
+        !store
+            .by_kind(kind::DEPENDENCY)
+            .any(|fact| fact.subject == "enhancedvisuals"
+                && fact.attr("dep") == Some("creativecore"))
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn fabric_dep_space_and_range_emits_dependency_fact() {
     let root = temp_dir("fabric-deps");
     let mods = root.join("mods");
@@ -1036,6 +1121,51 @@ fn nested_jar_registers_versioned_provider() {
         .find(|f| f.kind == kind::PROVIDED_DEPENDENCY && f.attr("provides") == Some("renderer-api"))
         .expect("provided_dependency for bundled module");
     assert_eq!(provided.attr("version"), Some("3.2.2"));
+}
+
+#[test]
+fn descriptorless_container_retains_nested_mod_as_confirmed_provider() {
+    let root = temp_dir("detached-nested-provider");
+    let mods = root.join("mods");
+    std::fs::create_dir_all(&mods).unwrap();
+
+    let child = build_jar(&[(
+        "META-INF/mods.toml",
+        br#"modLoader="kotlinforforge"
+loaderVersion="[4,)"
+license="LGPL-3.0"
+[[mods]]
+modId="kotlinforforge"
+version="4.12.0"
+displayName="Kotlin for Forge"
+"#,
+    )]);
+    write_jar(
+        &mods.join("kotlinforforge-container.jar"),
+        &[("META-INF/jarjar/kffmod-4.12.0.jar", &child)],
+    );
+
+    let facts = collect_facts(&mods);
+    assert!(!facts.iter().any(|fact| fact.kind == kind::MOD));
+    let provider = facts
+        .iter()
+        .find(|fact| {
+            fact.kind == kind::PROVIDED_DEPENDENCY
+                && fact.attr("provides") == Some("kotlinforforge")
+        })
+        .expect("provider identity from the nested authoritative descriptor");
+    assert_eq!(provider.attr("version"), Some("4.12.0"));
+    assert_eq!(provider.attr("identity_certainty"), Some("confirmed"));
+    assert_eq!(
+        provider.attr("nested_path"),
+        Some("META-INF/jarjar/kffmod-4.12.0.jar")
+    );
+    let nested = facts
+        .iter()
+        .find(|fact| fact.kind == kind::NESTED_JAR && fact.attr("nested") == Some("kotlinforforge"))
+        .expect("nested artifact evidence");
+    assert_eq!(nested.attr("version"), Some("4.12.0"));
+    std::fs::remove_dir_all(root).ok();
 }
 
 fn temp_dir(label: &str) -> std::path::PathBuf {

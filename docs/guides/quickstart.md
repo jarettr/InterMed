@@ -93,6 +93,10 @@ intermed lab discover ./candidates.json --out corpus.lock
 intermed lab run corpus.lock --logs ./captured --out ./runs/latest
 intermed lab report ./runs/latest --out ./site
 
+# real-pack campaign (resumable; runtime execution requires an explicit sandbox plan)
+intermed lab discover-mrpack pack.mrpack --out corpus.lock
+intermed lab campaign campaign.json --out ./campaign-runs/latest
+
 # cache — jar scan cache maintenance
 intermed cache stats
 intermed cache prune
@@ -113,10 +117,12 @@ Full flag lists for every command are in
 ## What a run never does
 
 - It does not edit, move, or delete anything in your pack.
-- It does not download mods or contact the network. (The Compatibility Lab's live
-  server runner is the one opt-in exception, and it is not built in this release.)
-- It does not start the game.
+- It does not download mods or contact the network. Layer K consumes local
+  `.mrpack` archives/materialized instances; acquisition remains explicit.
+- `doctor` never starts the game. `lab campaign` starts a process only when the
+  campaign contains an explicit execution plan and its sandbox policy permits it.
 
-The one command that writes files, `vfs overlay`, writes only to the `--out`
-directory you name, and only the merged copies of resources — never the source
+Commands that produce reports, locks, campaign state, cache entries, or overlays
+write only to their documented output/store locations. `vfs overlay` writes only
+the merged copies of resources—never the source
 jars.

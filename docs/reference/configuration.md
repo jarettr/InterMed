@@ -80,6 +80,9 @@ Flag: `--log-parallel-line-threshold`.
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `excerpt_max` | 280 | Maximum characters of a log excerpt kept in a Lab run. |
+| `campaign_max_attempts` | 2 | Retry budget for campaign infrastructure failures. |
+| `campaign_max_parallel` | 1 | Maximum simultaneous campaign cases; keep at 1 for extreme packs. |
+| `max_log_bytes` | 33554432 | Bounded tail retained when capturing runtime logs. |
 
 ### `[runtime]`
 

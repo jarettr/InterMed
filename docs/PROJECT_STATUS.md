@@ -1,65 +1,88 @@
 # Project status
 
-InterMed 0.1.7-alpha is an alpha static analyzer. Its CLI, schemas, rules, and
-reports are usable, but compatibility is not yet promised across every Minecraft
-or loader release and machine-facing formats may change before 1.0.
+InterMed 0.1.8-alpha is an alpha static analyzer with an operational
+Compatibility Lab. The CLI, report schemas, corpus locks, resumable campaigns,
+and bounded runtime-observation path are usable; compatibility is not promised
+for every Minecraft or loader release and machine-facing formats may still
+change before 1.0.
 
-## What has been validated
+## 0.1.8 real-pack measurement gate
 
-A fresh 0.1.7 coherent-evidence pass on 2026-08-18 covered five materially
-different real targets across Forge and NeoForge 1.20.1/1.21.1. Pixelmon and
-Cobblemon exercise pack identity and compatibility bridges; Better MC Forge
-BMC4 exercises a large full-Mixin corpus; Cave Horror exercises KubeJS discovery
-and resource-mutator completeness; Spaceholecraft combines 397 canonical
-artifacts with a real terminal runtime incident. BMC4 and Spaceholecraft were
-supplied Minecraft client jars and Tiny mappings. Their client jars were
-official-obfuscated while the available Tiny files described intermediary to
-Yarn named symbols, so absence verification correctly remained unavailable
-instead of comparing incompatible namespaces.
+The 2026-08-19 release gate analyzed 12 materialized Modrinth packs spanning
+Fabric, Forge, and NeoForge from Minecraft 1.12.2 through 1.21.1. Every case was
+pinned by an `intermed-corpus-lock-v2` generated from its authoritative
+`.mrpack`. Before Doctor ran, Layer K verified all 27,557 locked files (6.86 GiB)
+against their declared content hashes; no required or optional file was absent.
 
-Every report used `intermed-doctor-report-v2`, had unique finding IDs, and
-completed with zero operational errors. Runs used `--jobs 2`; DuckDB support was
-not enabled or compiled as part of this gate. The final Pixelmon audit used full
-metadata and resource depth and was repeated with and without the cache: finding
-IDs, semantic IDs, assessments, fact counts, and graph cardinalities were
-identical. Timings include cold or partially warm cache work and are therefore
-measurements of these invocations, not cross-machine benchmarks.
+All 12 reports were produced by the same 0.1.8-alpha executable and effective
+rule set (analyzer fingerprint
+`1608e28c4a72276e9c5a15da0df38c4ddb95dcbbe2ee3c94273a7245311e368e`,
+executable SHA-256
+`70f197c01077099318b58a994b211ce4fc8ed7cade1ad1feea1175a7304f6c1a`).
+The campaign completed with zero infrastructure failures, harness failures,
+unfinished cases, or Doctor operational errors.
 
-| Pack | Target evidence | Canonical artifacts | Generated / retained / snapshot-dropped facts | Findings (Error / Warn) | Abstentions | Time | Peak RSS |
+| Pack | Loader / Minecraft | Locked files | Findings (Error / Warn) | Confirmed / review / incomplete | Facts generated / retained / compacted | Doctor time | Peak RSS |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Pixelmon, full metadata/resources | authoritative NeoForge 1.21.1 manifest | 15 | 158,842 / 10,378 / 148,464 | 35 (0 / 11) | 26 | 36.9 s | 346 MiB |
-| Cobblemon | authoritative NeoForge 1.21.1 manifest + Connector evidence | 137 | 61,994 / 11,708 / 50,286 | 116 (0 / 19) | 84 | 48.1 s | 356 MiB |
-| Spaceholecraft | NeoForge 1.21.1 runtime log | 397 | 676,661 / 90,285 / 586,376 | 11,839 (191 / 556) | 68 | 246.7 s | 2,705 MiB |
-| Better MC Forge BMC4 | authoritative Forge 1.20.1 manifest, full Mixin | 536 | 412,100 / 46,458 / 365,642 | 9,112 (2 / 498) | 53 | 211.0 s | 2,250 MiB |
-| Cave Horror | authoritative Forge 1.20.1 manifest + KubeJS | 181 | 189,203 / 23,497 / 165,706 | 3,336 (1 / 147) | 3 | 76.3 s | 1,206 MiB |
+| Better MC Fabric BMC2 | Fabric / 1.20.1 | 4,949 | 2,580 (4 / 53) | 4 / 29 / 3 | 332,682 / 43,189 / 289,493 | 44.0 s | 1,401 MiB |
+| Better MC Fabric BMC3 | Fabric / 1.21.1 | 1,157 | 2,194 (2 / 26) | 2 / 26 / 0 | 255,910 / 36,180 / 219,730 | 41.8 s | 1,155 MiB |
+| Better MC Forge BMC4 | Forge / 1.20.1 | 4,985 | 2,554 (8 / 98) | 8 / 49 / 21 | 376,064 / 36,156 / 339,908 | 55.6 s | 1,816 MiB |
+| Cave Horror | Forge / 1.20.1 | 6,235 | 909 (1 / 12) | 1 / 10 / 2 | 185,354 / 19,926 / 165,428 | 22.3 s | 1,354 MiB |
+| Cobblemon Fabric | Fabric / 1.21.1 | 2,502 | 620 (0 / 3) | 0 / 3 / 0 | 60,951 / 18,007 / 42,944 | 39.4 s | 1,132 MiB |
+| Cobblemon NeoForge | NeoForge / 1.21.1 | 2,505 | 538 (0 / 11) | 0 / 9 / 2 | 58,068 / 16,413 / 41,655 | 38.2 s | 1,104 MiB |
+| Create+ | Forge / 1.19.2 | 1,321 | 1,830 (1 / 36) | 1 / 16 / 20 | 211,858 / 31,021 / 180,837 | 24.6 s | 1,454 MiB |
+| FOM | NeoForge / 1.21.1 | 491 | 1,008 (0 / 20) | 0 / 19 / 1 | 95,616 / 21,692 / 73,924 | 28.2 s | 1,272 MiB |
+| Parasites Reloaded | Forge / 1.12.2 | 350 | 52 (0 / 0) | 0 / 0 / 0 | 26,942 / 26,942 / 0 | 21.7 s | 542 MiB |
+| Prominence II | Fabric / 1.20.1 | 2,163 | 3,615 (1 / 65) | 1 / 44 / 10 | 611,650 / 59,754 / 551,896 | 117.7 s | 2,540 MiB |
+| Slimes Adventure | Fabric / 1.21.1 | 326 | 903 (0 / 11) | 0 / 6 / 2 | 264,070 / 20,446 / 243,624 | 20.7 s | 1,146 MiB |
+| Pixelmon | NeoForge / 1.21.1 | 573 | 70 (0 / 3) | 0 / 2 / 2 | 85,507 / 10,777 / 74,730 | 90.7 s | 613 MiB |
+| **Total / maximum** | 12 reports | **27,557** | **16,873 (17 / 338)** | **17 / 213 / 63** | **2,564,672 / 340,503 / 2,224,169** | **545.0 s** | **2,540 MiB** |
 
-Spaceholecraft's primary terminal incident resolves to the deepest
-`IllegalStateException` (`GL error off-thread`, GLFW 65539), not its outer
-`ReportedException`. The evidence path records
-`createdieselgenerators.EntityFilterItem.appendHoverText` calling
-`create.AllKeys.isKeyDown`; target Java is taken from the log as
-`21.0.7+6-LTS`, not from the analyzer host. Cave Horror's KubeJS tree is reported
-as a runtime mutator, so affected static resource conclusions carry mutator
-coverage rather than claiming final runtime state.
+The 17 hard conclusions were manually inspected in their reports and retained
+facts. They comprise seven absent required providers, two exact version
+conflicts, seven loader mismatches without a compatible runtime bridge, and one
+duplicate active mod ID. Every one is `asserted` and `confirmed` with no
+assessment blocker. Better MC Forge BMC4 contains six required Fabric artifacts
+but no Sinytra Connector runtime artifact; Connector Extras and Forgified Fabric
+API alone do not establish classloading or runtime compatibility. Cave Horror
+contains a Fabric GeckoLib 3 build for Minecraft 1.16.5 in an authoritative
+Forge 1.20.1 pack with no bridge. Conversely, Cobblemon NeoForge does contain a
+runtime Connector bridge, so its two cross-loader cases remain abstained review
+items rather than hard errors. Descriptorless KotlinForForge and
+ConfiguredDefaults language-provider containers are now identified without
+spurious unknown-source findings.
 
-All retained Error/Fatal findings in these reports satisfy the typed assessment
-contract: each is asserted, confirmed, blocker-free, and backed by its declared
-coverage prerequisites. Abstentions remain visible structured conclusions; they
-are not silently discarded errors. Evidence paths are bounded to 256 links per
-finding while the normalized evidence graph retains the complete relationship
-set within its declared graph budgets.
+Mixin analysis was explicitly active at `basic` depth in all 12 packs. No
+Minecraft jar or compatible mappings were supplied, and every report records
+those capabilities as unavailable, so Minecraft class or method absence is not
+promoted to proof. Pixelmon's resource-AST collector is incomplete for a
+different, legitimate reason: multiple language JSON files exceed the configured
+1 MiB relevant-entry limit. Oversized unrelated media does not affect metadata
+completeness.
 
-“Snapshot-dropped” means facts removed only after every registered rule finished;
-it is not collection-time truncation. Tiny-limit regression fixtures verify that
-bounded and unbounded snapshots produce identical finding identities for runtime-
-confirmed Mixin failures, performance/Mixin correlation, reflective handler
-security correlation, and an external rule consuming a droppable predicate.
+The campaign retained 340,503 of 2,564,672 generated facts after all registered
+rules completed. The 2,224,169 compacted facts are snapshot detail, not
+collection-time loss; operational and incomplete-coverage records remain
+visible. The campaign artifacts include per-case target verification, Doctor
+JSON/profile output, observations, persistent state, aggregate JSON, static HTML,
+and semantic finding clusters.
 
-This is validation of execution, retention correctness, report integrity, and
-known fixtures. It is not a claim that every emitted informational record was
-independently confirmed by launching Minecraft.
-Precision and recall per rule still require the Compatibility Lab measurement
-loop described in the roadmap.
+Against the preliminary measurement recorded on the same locked corpus, default
+Warn output fell from 2,466 to 338 and total findings from 20,651 to 16,873.
+The reduction came from corrected Mixin triage, provider/container identity, and
+default-visibility policy; the increase from 11 to 17 hard conclusions is the
+result of distinguishing a lone authoritative foreign descriptor from a
+bridge-ambiguous mixed-loader artifact.
+
+## Runtime-observation gate
+
+A separate synthetic regression uses a multiline Mixin wrapper whose deepest
+cause is `java.lang.OutOfMemoryError: Java heap space` in
+`examplemod.Core.tick`. `lab capture` and Doctor both normalize it to one
+terminal incident, select the deepest throwable rather than the wrapper, retain
+the physical occurrence identity, and classify it as `out-of-memory`. This is a
+parser/correlation fixture, not evidence that any of the 12 real packs was
+launched.
 
 ## Supported use
 
@@ -69,18 +92,24 @@ loop described in the roadmap.
   imported Spark analysis at the documented depth.
 - Terminal, JSON, SARIF, and self-contained HTML reports, with operational
   failures kept separate from domain findings.
+- Content-addressed `.mrpack` locks and materialization, target verification,
+  resumable bounded-parallel Layer-K campaigns, captured runtime observations,
+  explicit sandboxed command plans, accuracy reports, and mismatch clustering.
 - Bounded archive reads, a persistent scan cache, and a configurable worker cap
-  for large packs. On a 16 GiB machine, use `--jobs 2` or `--jobs 1` when running
-  the deepest analysis of a very large pack.
+  for large packs.
 
 ## Not promised by this alpha
 
-- No pack is launched and no runtime compatibility verdict is proved by a static
-  scan alone. Live Compatibility Lab execution remains deferred.
+- `doctor` never launches Minecraft. Layer-K execution requires an explicit
+  command and sandbox policy; loader installation and network acquisition are
+  intentionally separate inputs.
+- A static-only campaign does not produce runtime precision/recall. Runtime
+  absence can refute a prediction only when the required milestone and coverage
+  were actually observed.
 - Security output is a preflight of signatures, identity, and sensitive API
   references; it is not malware certification or full behavioral analysis.
-- Mixin apply absence is conclusive only when the relevant complete classpath is
-  indexed. Partial coverage is reported as partial rather than promoted to proof.
+- Mixin apply absence is conclusive only when the relevant complete classpath and
+  compatible namespace/mappings are available.
 - No minimum Minecraft or loader version has been declared. Older and unusual
   metadata dialects remain an explicit compatibility frontier.
 - InterMed never edits the analyzed pack. Overlay and fix operations are previews
@@ -89,5 +118,5 @@ loop described in the roadmap.
   endpoint, stable installation identifier, or implicit log upload.
 
 The [analysis reference](reference/analysis.md) gives the exact stopping point of
-each analyzer. The [roadmap](ROADMAP.md) tracks measurement, triage, evidence-to-
-action work, and the remaining product decisions.
+each analyzer. The [roadmap](ROADMAP.md) tracks the remaining acquisition,
+runtime coverage, measurement-corpus, evidence-to-action, and product work.

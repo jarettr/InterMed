@@ -68,6 +68,7 @@ fn overwrite_finding_attaches_inject_recommendation_via_site_key() {
         .iter()
         .find(|f| f.id.starts_with("mixin-overwrite-effect:"))
         .expect("enhanced overwrite finding");
+    assert_eq!(overwrite.severity, Severity::Note);
     assert_eq!(overwrite.visibility, FindingVisibility::Verbose);
     assert!(overwrite.explanation.contains("@Inject"));
     assert!(!overwrite.fix_candidates.is_empty());
@@ -300,7 +301,7 @@ fn risk_cluster_fact_becomes_a_finding_citing_failing_sites() {
         .iter()
         .find(|f| f.id == "mixin-cluster:cluster-net.example.Foo")
         .expect("risk cluster finding");
-    assert_eq!(cluster.severity, Severity::Warn);
+    assert_eq!(cluster.severity, Severity::Note);
     assert_eq!(cluster.visibility, FindingVisibility::Verbose);
     // The failing application-site fact is cited as supporting evidence.
     assert!(
@@ -426,9 +427,9 @@ fn runtime_log_confirms_a_static_site() {
 }
 
 #[test]
-fn mixin_security_surface_elevates_with_layer_g_capability() {
-    // A mixin into the networking subsystem + a Layer-G uses_unsafe on the same mod
-    // ⇒ elevated Warn finding citing both.
+fn mod_level_security_capability_does_not_causally_elevate_mixin_surface() {
+    // The process call may live in a launcher helper wholly unrelated to this
+    // handler. Same-artifact co-occurrence is context, not causal evidence.
     let mut store = FactStore::new();
     let surface = store
         .fact("mixin-analyzer", kind::MIXIN_SECURITY_SURFACE)
@@ -441,8 +442,8 @@ fn mixin_security_surface_elevates_with_layer_g_capability() {
         .attr("reason", "weaves into network packet / connection handling")
         .attr("confidence", 90)
         .emit();
-    let unsafe_fact = store
-        .fact("security-audit", kind::USES_UNSAFE)
+    let process_fact = store
+        .fact("security-audit", kind::USES_PROCESS_SPAWN)
         .subject("sketchymod")
         .emit();
 
@@ -454,10 +455,74 @@ fn mixin_security_surface_elevates_with_layer_g_capability() {
         .iter()
         .find(|f| f.id == "mixin-security:sketchymod:networking")
         .expect("security finding");
-    assert_eq!(f.severity, Severity::Warn);
-    assert!(f.machine_tags.iter().any(|t| t == "elevated"));
+    assert_eq!(f.severity, Severity::Note);
+    assert_eq!(f.visibility, FindingVisibility::Verbose);
+    assert!(!f.machine_tags.iter().any(|t| t == "elevated"));
     assert!(f.evidence.iter().any(|e| e.fact == surface));
-    assert!(f.evidence.iter().any(|e| e.fact == unsafe_fact));
+    assert!(f.evidence.iter().any(|e| e.fact == process_fact));
+}
+
+#[test]
+fn handler_local_dangerous_reflection_elevates_mixin_surface() {
+    let mut store = FactStore::new();
+    store
+        .fact("mixin-analyzer", kind::MIXIN_SECURITY_SURFACE)
+        .subject("sketchymod")
+        .attr("subsystem", "networking")
+        .attr("reason", "weaves into network handling")
+        .emit();
+    store
+        .fact("mixin-analyzer", kind::MIXIN_HANDLER_BODY)
+        .subject("sketchymod")
+        .attr("uses_reflection", true)
+        .attr("reflective_targets", "java.lang.Runtime")
+        .emit();
+    store
+        .fact("security-audit", kind::USES_PROCESS_SPAWN)
+        .subject("sketchymod")
+        .emit();
+
+    let target = mods_target(std::path::Path::new("."));
+    let findings = rule()
+        .evaluate(&RuleCtx::for_test(&store, &target))
+        .unwrap();
+    let finding = findings
+        .iter()
+        .find(|finding| finding.id == "mixin-security:sketchymod:networking")
+        .unwrap();
+    assert_eq!(finding.severity, Severity::Warn);
+    assert!(
+        finding
+            .machine_tags
+            .iter()
+            .any(|tag| tag == "handler-local-dangerous-reflection")
+    );
+}
+
+#[test]
+fn common_low_level_capability_does_not_elevate_mixin_surface() {
+    let mut store = FactStore::new();
+    store
+        .fact("mixin-analyzer", kind::MIXIN_SECURITY_SURFACE)
+        .subject("performance-mod")
+        .attr("subsystem", "networking")
+        .attr("reason", "weaves into network handling")
+        .emit();
+    store
+        .fact("security-audit", kind::USES_UNSAFE)
+        .subject("performance-mod")
+        .emit();
+
+    let target = mods_target(std::path::Path::new("."));
+    let findings = rule()
+        .evaluate(&RuleCtx::for_test(&store, &target))
+        .unwrap();
+    let finding = findings
+        .iter()
+        .find(|finding| finding.id == "mixin-security:performance-mod:networking")
+        .unwrap();
+    assert_eq!(finding.severity, Severity::Note);
+    assert!(!finding.machine_tags.iter().any(|tag| tag == "elevated"));
 }
 
 #[test]

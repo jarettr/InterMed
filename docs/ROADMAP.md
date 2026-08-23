@@ -155,8 +155,10 @@ A roadmap is also a list of refusals.
   deliberately *not* promised here, possibly not even reachable.
 - **The unified contour as a committed feature.** It is a research track, not a
   deliverable.
-- **[OPEN] Live Compatibility-Lab runner** (fetching + launching candidates) —
-  stays deferred, or cut from scope entirely?
+- **[PARTIAL] Compatibility-Lab execution ecosystem** — resumable campaigns,
+  explicit sandboxed process plans, `.mrpack` locks, structured observations,
+  and coverage-aware evaluation ship in 0.1.8; automatic network acquisition
+  and loader installation remain intentionally separate.
 - **[OPEN] Trimming the engine backends** toward in-process + a single oracle
   (DuckDB), retiring the speculative ones?
 - **[OPEN] Minimum supported Minecraft / loader versions.**

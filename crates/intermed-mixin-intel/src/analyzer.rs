@@ -1035,16 +1035,30 @@ fn detect_advanced_conflicts(
     }
 
     // ── two mods add the same member name without @Unique ──
-    let mut members: BTreeMap<(String, String), Vec<(&MixinClassRecord, bool)>> = BTreeMap::new();
+    type AddedMemberKey = (String, String, String, crate::model::MemberKind);
+    type AddedMemberOwners<'a> = Vec<(&'a MixinClassRecord, bool)>;
+    let mut members: BTreeMap<AddedMemberKey, AddedMemberOwners<'_>> = BTreeMap::new();
     for model in models {
         for m in &model.record.added_members {
+            // javac emits this synthetic implementation field for every class
+            // containing an `assert`. It is not an authored mixin member and
+            // grouping it across unrelated mixins creates ubiquitous false
+            // conflict warnings.
+            if m.name == "$assertionsDisabled" {
+                continue;
+            }
             members
-                .entry((m.target.clone(), m.name.clone()))
+                .entry((
+                    m.target.clone(),
+                    m.name.clone(),
+                    m.descriptor.clone(),
+                    m.kind,
+                ))
                 .or_default()
                 .push((&model.record, m.unique));
         }
     }
-    for ((target, name), group) in &members {
+    for ((target, name, descriptor, _kind), group) in &members {
         for i in 0..group.len() {
             for j in (i + 1)..group.len() {
                 let (a, a_unique) = group[i];
@@ -1058,7 +1072,7 @@ fn detect_advanced_conflicts(
                         a,
                         b,
                         target,
-                        format!("added-member:{name}"),
+                        format!("added-member:{name}{descriptor}"),
                         60,
                     );
                 }
@@ -1282,6 +1296,11 @@ fn compute_risk_scores(
         }
         let modifies_return = effects.iter().any(|e| {
             e.target == overlap.target
+                && !overlap.shared_methods.is_empty()
+                && overlap
+                    .shared_methods
+                    .iter()
+                    .any(|method| method == &e.method)
                 && e.handler_effect
                     .as_ref()
                     .is_some_and(|h| h.early_return || h.modifies_return)
@@ -1490,6 +1509,20 @@ fn compute_risk_scores(
             fragility: fragility as u8,
             blast_radius: blast as u8,
             actionability: actionability as u8,
+            conflict_class: if has_overwrite && overlap.method_conflict {
+                "competing-overwrite"
+            } else if shadow_skew {
+                "signature-conflict"
+            } else if advanced {
+                "order-sensitive"
+            } else if modifies_return && overlap.method_conflict {
+                "return-mutation"
+            } else if overlap.method_conflict {
+                "shared-injection-site"
+            } else {
+                "disjoint-methods"
+            }
+            .to_string(),
             reasons,
             mods: overlap.mods.clone(),
             hot_path: overlap.hot_path,
@@ -1747,6 +1780,42 @@ mod tests {
             !edges
                 .iter()
                 .any(|e| e.edge_type == ConflictEdgeType::UniqueMemberConflict)
+        );
+    }
+
+    #[test]
+    fn added_member_identity_includes_descriptor_and_ignores_assertion_field() {
+        let mut a = record("alpha", &[], &[MixinOperation::Inject]);
+        let mut b = record("beta", &[], &[MixinOperation::Inject]);
+        let member = |name: &str, descriptor: &str| crate::model::MixinAddedMember {
+            target: "net.minecraft.client.renderer.LevelRenderer".into(),
+            name: name.into(),
+            descriptor: descriptor.into(),
+            kind: MemberKind::Field,
+            origin: "added".into(),
+            unique: false,
+        };
+
+        a.added_members = vec![member("shared", "I")];
+        b.added_members = vec![member("shared", "Ljava/lang/String;")];
+        let (_, edges, _) = detect_interactions(
+            &[a.clone().into(), b.clone().into()],
+            &[],
+            &HierarchyIndex::new(),
+        );
+        assert!(
+            !edges
+                .iter()
+                .any(|edge| edge.edge_type == ConflictEdgeType::UniqueMemberConflict)
+        );
+
+        a.added_members = vec![member("$assertionsDisabled", "Z")];
+        b.added_members = vec![member("$assertionsDisabled", "Z")];
+        let (_, edges, _) = detect_interactions(&[a.into(), b.into()], &[], &HierarchyIndex::new());
+        assert!(
+            !edges
+                .iter()
+                .any(|edge| edge.edge_type == ConflictEdgeType::UniqueMemberConflict)
         );
     }
 

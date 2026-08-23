@@ -30,7 +30,9 @@ use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
-use intermed_doctor_core::evidence::{Category, EvidenceEdge, Finding, FixCandidate, Severity};
+use intermed_doctor_core::evidence::{
+    Category, EvidenceEdge, Finding, FindingVisibility, FixCandidate, Severity,
+};
 use intermed_doctor_core::facts::{SourceRef, kind};
 use intermed_doctor_core::{
     CollectCtx, Collector, CollectorOutcome, JarCache, Layer, Rule, RuleCtx, Target, TargetKind,
@@ -42,7 +44,7 @@ const EXTRACTOR: &str = "security-scanner";
 /// Cache key version for this collector's payload. The crate version invalidates
 /// the cache automatically on every release; bump the trailing revision when the
 /// detection logic changes within a single release.
-const CACHE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-r4");
+const CACHE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-r6");
 
 /// Implementation status for help text.
 pub const STATUS: &str = "active: Phase 6";
@@ -77,6 +79,10 @@ pub struct ModSecurityRecord {
     /// capability. Populated by the scanner; empty for older cached records.
     #[serde(default)]
     pub signal_class_counts: BTreeMap<SecuritySignal, usize>,
+    /// Classes owned by a recognized embedded runtime framework and therefore
+    /// not attributed to the containing mod's own security surface.
+    #[serde(default)]
+    pub framework_classes_excluded: usize,
     /// Reasons this jar's class scan was truncated by a resource limit (DoS
     /// guard). Empty when the jar scanned fully.
     #[serde(default)]
@@ -218,6 +224,10 @@ fn emit_scan(ctx: &mut CollectCtx<'_>, scan: &SecurityScan) -> usize {
                 .attr("evidence_strength", detection.strength.as_str())
                 .attr("dangerous_classes", count_attr(r.dangerous_classes))
                 .attr("classes_scanned", count_attr(r.classes_scanned))
+                .attr(
+                    "framework_classes_excluded",
+                    count_attr(r.framework_classes_excluded),
+                )
                 .attr(
                     "affected_classes",
                     count_attr(
@@ -382,7 +392,11 @@ pub fn security_findings_from_drafts(
             continue;
         }
 
-        let severity = combined_severity(&draft.signals);
+        // A constant-pool reference proves capability, not harmful execution or
+        // intent. Keep the standalone Layer-G conclusion informational; the
+        // cross-layer synthesis may elevate it when independent provenance or
+        // runtime evidence supplies the missing suspicion contract.
+        let severity = Severity::Note;
         let structural_labels: Vec<_> = draft
             .signals
             .iter()
@@ -448,7 +462,9 @@ pub fn security_findings_from_drafts(
                 .affects(&mod_id)
                 .fix(FixCandidate::advice(finding_advice(severity)))
                 .tag("security")
-                .tag("grouped");
+                .tag("grouped")
+                .tag("structural-preflight")
+                .visibility(FindingVisibility::Verbose);
 
         if !draft.corroborated_only.is_empty() {
             builder = builder.tag("reflection-corroborated");
@@ -598,6 +614,7 @@ pub fn scan_mods_dir_filtered(
                 classes_scanned: partial.classes_scanned,
                 dangerous_classes: partial.dangerous_classes,
                 signal_class_counts: partial.signal_class_counts,
+                framework_classes_excluded: partial.framework_classes_excluded,
                 truncations: partial.truncations,
             }),
             CachedSecurityJar::Err(reason) => {
@@ -622,6 +639,8 @@ struct CachedSecurityPartial {
     dangerous_classes: usize,
     #[serde(default)]
     signal_class_counts: BTreeMap<SecuritySignal, usize>,
+    #[serde(default)]
+    framework_classes_excluded: usize,
     #[serde(default)]
     truncations: Vec<String>,
 }
@@ -660,6 +679,7 @@ fn scan_jar(jar: &Path) -> Result<CachedSecurityPartial, SecurityScanError> {
     let mut classes_scanned = 0usize;
     let mut dangerous_classes = 0usize;
     let mut signal_class_counts: BTreeMap<SecuritySignal, usize> = BTreeMap::new();
+    let mut framework_classes_excluded = 0usize;
     let mut truncations: Vec<String> = Vec::new();
     let mut total_bytes: u64 = 0;
 
@@ -672,6 +692,10 @@ fn scan_jar(jar: &Path) -> Result<CachedSecurityPartial, SecurityScanError> {
         }
         let name = entry.name().to_string();
         if !is_class_entry(&name) {
+            continue;
+        }
+        if is_embedded_framework_class(&name) {
+            framework_classes_excluded += 1;
             continue;
         }
         if classes_scanned >= MAX_CLASSES {
@@ -728,8 +752,18 @@ fn scan_jar(jar: &Path) -> Result<CachedSecurityPartial, SecurityScanError> {
         classes_scanned,
         dangerous_classes,
         signal_class_counts,
+        framework_classes_excluded,
         truncations,
     })
+}
+
+/// Code under these package roots belongs to a runtime framework, not to the
+/// mod that happened to shade it. Attributing Mixin's instrumentation agent and
+/// classloader to every containing mod created repeatable false security Warns.
+/// The framework remains present in the archive/SBOM; only mod ownership of its
+/// API calls is withheld.
+fn is_embedded_framework_class(name: &str) -> bool {
+    name.starts_with("org/spongepowered/asm/") || name.starts_with("org/spongepowered/tools/")
 }
 
 /// Per-jar `.class` scan limits — untrusted archives can declare a huge class, a
@@ -781,6 +815,7 @@ mod tests {
             classes_scanned: 1,
             dangerous_classes: 1,
             signal_class_counts: BTreeMap::new(),
+            framework_classes_excluded: 0,
             truncations: Vec::new(),
         }
     }

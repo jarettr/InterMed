@@ -64,6 +64,187 @@ fn fabric_multiline_description_is_identified_consistently() {
 }
 
 #[test]
+fn descriptorless_connector_uses_exact_bootstrap_identity() {
+    let root = temp_dir("connector-bootstrap");
+    let mods = root.join("mods");
+    std::fs::create_dir_all(&mods).unwrap();
+    let file = std::fs::File::create(mods.join("opaque-name.jar")).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    for (name, bytes) in [
+        (
+            "META-INF/MANIFEST.MF",
+            &b"Manifest-Version: 1.0\nSpecification-Title: connector\nImplementation-Version: 2.0.0\n"[..],
+        ),
+        (
+            "META-INF/services/cpw.mods.modlauncher.api.ITransformationService",
+            &b"org.sinytra.connector.service.ConnectorLoaderService\n"[..],
+        ),
+        (
+            "META-INF/services/net.neoforged.neoforgespi.locating.IModFileCandidateLocator",
+            &b"org.sinytra.connector.locator.ConnectorLocator\n"[..],
+        ),
+    ] {
+        zip.start_file(name, SimpleFileOptions::default()).unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.finish().unwrap();
+
+    let scan = scan_mods_dir(&mods).unwrap();
+    let record = &scan.records[0];
+    assert_eq!(record.mod_id.as_deref(), Some("connector"));
+    assert_eq!(record.version.as_deref(), Some("2.0.0"));
+    assert_eq!(record.loader.as_deref(), Some("neoforge"));
+    assert_eq!(record.source_class, SourceClass::Identified);
+    assert!(!record.is_unidentified());
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn descriptorless_essential_loader_uses_service_and_properties_identity() {
+    let root = temp_dir("essential-bootstrap");
+    let mods = root.join("mods");
+    std::fs::create_dir_all(&mods).unwrap();
+    let file = std::fs::File::create(mods.join("opaque-name.jar")).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    for (name, bytes) in [
+        (
+            "META-INF/MANIFEST.MF",
+            &b"Manifest-Version: 1.0\nFMLModType: LIBRARY\n"[..],
+        ),
+        (
+            "META-INF/services/cpw.mods.modlauncher.api.ITransformationService",
+            &b"gg.essential.container.loader.stage0.EssentialTransformationService\n"[..],
+        ),
+        (
+            "essential-loader.properties",
+            &b"publisherSlug=essential\nmodSlug=essential\npinnedFileVersion=1.3.10.8\n"[..],
+        ),
+    ] {
+        zip.start_file(name, SimpleFileOptions::default()).unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.finish().unwrap();
+
+    let scan = scan_mods_dir(&mods).unwrap();
+    let record = &scan.records[0];
+    assert_eq!(record.mod_id.as_deref(), Some("essential"));
+    assert_eq!(record.version.as_deref(), Some("1.3.10.8"));
+    assert_eq!(record.source_class, SourceClass::Identified);
+    assert!(!record.is_unidentified());
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn descriptorless_jarjar_container_uses_single_nested_mod_identity() {
+    let root = temp_dir("nested-identity");
+    let mods = root.join("mods");
+    std::fs::create_dir_all(&mods).unwrap();
+    let nested = build_jar_bytes(&[(
+        "META-INF/mods.toml",
+        br#"modLoader="kotlinforforge"
+loaderVersion="[4,)"
+license="LGPL-3.0"
+[[mods]]
+modId="kotlinforforge"
+version="4.12.0"
+"#,
+    )]);
+    let file = std::fs::File::create(mods.join("opaque-container.jar")).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    zip.start_file(
+        "META-INF/jarjar/kffmod-4.12.0.jar",
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored),
+    )
+    .unwrap();
+    zip.write_all(&nested).unwrap();
+    zip.finish().unwrap();
+
+    let scan = scan_mods_dir(&mods).unwrap();
+    let record = &scan.records[0];
+    assert_eq!(record.mod_id.as_deref(), Some("kotlinforforge"));
+    assert_eq!(record.version.as_deref(), Some("4.12.0"));
+    assert_eq!(record.loader.as_deref(), Some("forge"));
+    assert_eq!(record.source_class, SourceClass::Identified);
+    assert!(
+        record
+            .identity_detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("META-INF/jarjar/kffmod-4.12.0.jar"))
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn multi_mod_jarjar_container_is_partial_not_unidentified() {
+    let root = temp_dir("multi-nested-identity");
+    let mods = root.join("mods");
+    std::fs::create_dir_all(&mods).unwrap();
+    let alpha = build_jar_bytes(&[(
+        "fabric.mod.json",
+        br#"{"schemaVersion":1,"id":"alpha","version":"1.0.0"}"#,
+    )]);
+    let beta = build_jar_bytes(&[(
+        "fabric.mod.json",
+        br#"{"schemaVersion":1,"id":"beta","version":"2.0.0"}"#,
+    )]);
+    let file = std::fs::File::create(mods.join("multi-container.jar")).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    for (name, bytes) in [
+        ("META-INF/jars/alpha.jar", alpha.as_slice()),
+        ("META-INF/jars/beta.jar", beta.as_slice()),
+    ] {
+        zip.start_file(name, SimpleFileOptions::default()).unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.finish().unwrap();
+
+    let scan = scan_mods_dir(&mods).unwrap();
+    let record = &scan.records[0];
+    assert_eq!(record.source_class, SourceClass::PartiallyIdentified);
+    assert_eq!(record.loader.as_deref(), Some("jarjar"));
+    assert!(!record.is_unidentified());
+    assert!(
+        record
+            .identity_detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("alpha") && detail.contains("beta"))
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn forge_language_provider_is_partial_artifact_identity() {
+    let root = temp_dir("forge-language-provider");
+    let mods = root.join("mods");
+    std::fs::create_dir_all(&mods).unwrap();
+    let file = std::fs::File::create(mods.join("configured-defaults.jar")).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    for (name, bytes) in [
+        (
+            "META-INF/MANIFEST.MF",
+            &b"Manifest-Version: 1.0\nImplementation-Title: Configured Defaults\nImplementation-Version: 8.0.4\nImplementation-URL: https://example.invalid/source\nFMLModType: LANGPROVIDER\n"[..],
+        ),
+        (
+            "META-INF/services/net.minecraftforge.forgespi.language.IModLanguageProvider",
+            &b"example.ConfiguredDefaultsLanguageProvider\n"[..],
+        ),
+    ] {
+        zip.start_file(name, SimpleFileOptions::default()).unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.finish().unwrap();
+
+    let scan = scan_mods_dir(&mods).unwrap();
+    let record = &scan.records[0];
+    assert_eq!(record.mod_id, None);
+    assert_eq!(record.version.as_deref(), Some("8.0.4"));
+    assert_eq!(record.loader.as_deref(), Some("forge-language-provider"));
+    assert_eq!(record.source_class, SourceClass::PartiallyIdentified);
+    assert!(!record.is_unidentified());
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn content_cache_never_reuses_the_old_archive_locator() {
     let root = temp_dir("cache-locator");
     let first = root.join("first");
@@ -132,6 +313,29 @@ fn scan_records_forge_mods_toml_identity() {
     assert_eq!(r.source_class, SourceClass::Identified);
     assert!(!r.is_unidentified());
 
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn scan_records_legacy_forge_mcmod_info_identity() {
+    let root = temp_dir("legacy-forge");
+    let mods = root.join("mods");
+    std::fs::create_dir_all(&mods).unwrap();
+    let file = std::fs::File::create(mods.join("CreativeCore.jar")).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    zip.start_file("mcmod.info", SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(br#"[{"modid":"creativecore","version":"1.10.71"}]"#)
+        .unwrap();
+    zip.finish().unwrap();
+
+    let scan = scan_mods_dir(&mods).unwrap();
+    let record = &scan.records[0];
+    assert_eq!(record.mod_id.as_deref(), Some("creativecore"));
+    assert_eq!(record.version.as_deref(), Some("1.10.71"));
+    assert_eq!(record.loader.as_deref(), Some("forge"));
+    assert_eq!(record.source_class, SourceClass::Identified);
+    assert!(!record.is_unidentified());
     std::fs::remove_dir_all(root).ok();
 }
 
@@ -349,6 +553,18 @@ fn write_raw_jar(path: &Path, payload: &[u8]) {
     zip.start_file("data/x.txt", options).unwrap();
     zip.write_all(payload).unwrap();
     zip.finish().unwrap();
+}
+
+fn build_jar_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    let mut zip = zip::ZipWriter::new(&mut cursor);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for (name, payload) in entries {
+        zip.start_file(*name, options).unwrap();
+        zip.write_all(payload).unwrap();
+    }
+    zip.finish().unwrap();
+    cursor.into_inner()
 }
 
 fn temp_dir(label: &str) -> PathBuf {

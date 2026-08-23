@@ -27,8 +27,19 @@ use crate::forge_annotation;
 /// Cache key version for this collector's payload. The crate version invalidates
 /// the cache automatically on every release; bump the trailing revision when the
 /// scan/parse logic changes within a single release.
-const CACHE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-r21");
+const CACHE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-r25");
 const MAX_PACK_CALL_EDGES: usize = 20_000;
+
+fn minecraft_uses_legacy_forge_descriptor(version: &str) -> bool {
+    let mut parts = version.split(['.', '-']);
+    matches!(
+        (
+            parts.next().and_then(|v| v.parse::<u32>().ok()),
+            parts.next().and_then(|v| v.parse::<u32>().ok())
+        ),
+        (Some(1), Some(0..=12))
+    )
+}
 
 pub struct MetadataCollector;
 
@@ -76,9 +87,19 @@ impl Collector for MetadataCollector {
             .by_kind(kind::ENVIRONMENT)
             .find_map(|fact| fact.attr("loader").and_then(Loader::parse))
             .or_else(|| crate::env::loader_for_target(ctx.target));
+        let expected_minecraft = ctx
+            .store
+            .by_kind(kind::ENVIRONMENT)
+            .find_map(|fact| fact.attr("mc_version"))
+            .map(str::to_string);
+        let prefer_legacy_forge = expected_loader == Some(Loader::Forge)
+            && expected_minecraft
+                .as_deref()
+                .is_some_and(minecraft_uses_legacy_forge_descriptor);
         let loader_scope = expected_loader.map_or("unknown", |loader| loader.as_str());
+        let minecraft_scope = expected_minecraft.as_deref().unwrap_or("unknown");
         let cache_version = format!(
-            "{CACHE_VERSION}-{}-{loader_scope}",
+            "{CACHE_VERSION}-{}-{loader_scope}-{minecraft_scope}",
             metadata_level_name(metadata_level)
         );
         let scanned: Vec<(PathBuf, String, CachedJarOutcome)> = jars
@@ -91,9 +112,11 @@ impl Collector for MetadataCollector {
                     .to_string();
                 let outcome = match cache {
                     Some(cache) => cache.get_or_scan(collector_id, &cache_version, jar, || {
-                        scan_jar_cached(jar, metadata_level, expected_loader)
+                        scan_jar_cached(jar, metadata_level, expected_loader, prefer_legacy_forge)
                     }),
-                    None => scan_jar_cached(jar, metadata_level, expected_loader),
+                    None => {
+                        scan_jar_cached(jar, metadata_level, expected_loader, prefer_legacy_forge)
+                    }
                 };
                 (jar.clone(), name, outcome)
             })
@@ -104,6 +127,7 @@ impl Collector for MetadataCollector {
             match outcome {
                 CachedJarOutcome::Parsed {
                     artifacts,
+                    detached_providers,
                     truncations,
                     identity_certainty,
                     descriptor_candidates,
@@ -118,6 +142,9 @@ impl Collector for MetadataCollector {
                             &descriptor_candidates,
                             &mut call_edges_remaining,
                         );
+                    }
+                    for provider in detached_providers {
+                        emitted += emit_detached_provider(ctx, &name, &provider);
                     }
                     // Surface per-entry caps that fired while scanning this jar
                     // (oversized/crafted archive), consistent with the VFS /
@@ -154,7 +181,8 @@ impl Collector for MetadataCollector {
                     failed += 1;
                     incomplete = true;
                     let active_for_instance = expected_loader.is_none_or(|loader| {
-                        preferred_descriptor(Some(loader)) == descriptor_for_manifest(&manifest)
+                        descriptor_for_manifest(&manifest)
+                            .is_some_and(|descriptor| descriptor.matches_loader(loader))
                     });
                     ctx.store
                         .fact(self.id(), kind::INVALID_METADATA)
@@ -198,6 +226,36 @@ impl Collector for MetadataCollector {
             CollectorOutcome::active(emitted, summary)
         }
     }
+}
+
+fn emit_detached_provider(
+    ctx: &mut CollectCtx<'_>,
+    container: &str,
+    provider: &NestedProvider,
+) -> usize {
+    let subject = format!("container:{container}");
+    ctx.store
+        .fact("metadata-scanner", kind::PROVIDED_DEPENDENCY)
+        .subject(subject.clone())
+        .attr("provides", provider.id.clone())
+        .attr("version", provider.version.clone())
+        .attr("bundled", true)
+        .attr("scope", "classpath")
+        .attr("identity_certainty", "confirmed")
+        .attr("container", container)
+        .attr("nested_path", provider.path.clone())
+        .source(SourceRef::inside(container, provider.path.clone()))
+        .emit();
+    ctx.store
+        .fact("metadata-scanner", kind::NESTED_JAR)
+        .subject(subject)
+        .attr("nested", provider.id.clone())
+        .attr("version", provider.version.clone())
+        .attr("container", container)
+        .attr("nested_path", provider.path.clone())
+        .source(SourceRef::inside(container, provider.path.clone()))
+        .emit();
+    2
 }
 
 fn emit_artifact(
@@ -767,10 +825,19 @@ struct CachedArtifact {
     package_roots: Vec<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct NestedProvider {
+    id: String,
+    version: String,
+    path: String,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 enum CachedJarOutcome {
     Parsed {
         artifacts: Vec<CachedArtifact>,
+        #[serde(default)]
+        detached_providers: Vec<NestedProvider>,
         #[serde(default)]
         truncations: Vec<String>,
         #[serde(default = "confirmed_identity_certainty")]
@@ -794,14 +861,20 @@ fn scan_jar_cached(
     path: &Path,
     metadata_level: MetadataLevel,
     expected_loader: Option<Loader>,
+    prefer_legacy_forge: bool,
 ) -> CachedJarOutcome {
-    match parse_jar(path, metadata_level, expected_loader) {
+    match parse_jar_for_instance(path, metadata_level, expected_loader, prefer_legacy_forge) {
         // No artifacts and nothing truncated: a benign manifest-less jar.
-        Ok(parsed) if parsed.artifacts.is_empty() && parsed.truncations.is_empty() => {
+        Ok(parsed)
+            if parsed.artifacts.is_empty()
+                && parsed.detached_providers.is_empty()
+                && parsed.truncations.is_empty() =>
+        {
             CachedJarOutcome::NoManifest
         }
         Ok(parsed) => CachedJarOutcome::Parsed {
             artifacts: parsed.artifacts.iter().map(artifact_to_cached).collect(),
+            detached_providers: parsed.detached_providers,
             truncations: parsed.truncations,
             identity_certainty: parsed.identity_certainty.to_string(),
             descriptor_candidates: parsed.descriptor_candidates,
@@ -1023,6 +1096,7 @@ fn manifest_static(s: &str) -> &'static str {
         "quilt.mod.json" => "quilt.mod.json",
         "META-INF/mods.toml" => "META-INF/mods.toml",
         "META-INF/neoforge.mods.toml" => "META-INF/neoforge.mods.toml",
+        "mcmod.info" => "mcmod.info",
         "plugin.yml" => "plugin.yml",
         "paper-plugin.yml" => "paper-plugin.yml",
         "@Mod" => "@Mod",
@@ -1223,6 +1297,7 @@ fn is_metadata_scan_entry(name: &str) -> bool {
             | "plugin.yml"
             | "META-INF/mods.toml"
             | "META-INF/neoforge.mods.toml"
+            | "mcmod.info"
             | "META-INF/MANIFEST.MF"
             | "META-INF/accesstransformer.cfg"
             | "META-INF/coremods.json"
@@ -1272,9 +1347,10 @@ struct ParsedArchive {
 /// Parse every descriptor before choosing an active identity. This prevents the
 /// deterministic descriptor iteration order from becoming evidence about the
 /// target loader when the instance itself did not establish one.
-fn parse_archive<R: Read + Seek>(
+fn parse_archive_for_instance<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
     expected_loader: Option<Loader>,
+    prefer_legacy_forge: bool,
 ) -> Result<ParsedArchive, ParseErr> {
     // Universal server plugins (e.g. ViaVersion) may bundle a mod manifest for
     // proxy-side hooks; the Bukkit/Paper plugin descriptor stays the *primary*
@@ -1282,10 +1358,10 @@ fn parse_archive<R: Read + Seek>(
     // loader-mismatch false positives the ordering deliberately prevents). The
     // co-present mod manifest is recorded as a non-rule `secondary` identity so
     // the second role is not lost.
-    let preferred = preferred_descriptor(expected_loader);
+    let preferred = preferred_descriptor(expected_loader, prefer_legacy_forge);
     let mut first_inactive_error = None;
     let mut parsed_candidates: Vec<(Descriptor, Vec<Artifact>)> = Vec::new();
-    for descriptor in descriptor_order(expected_loader) {
+    for descriptor in descriptor_order(expected_loader, prefer_legacy_forge) {
         let parsed = match descriptor {
             Descriptor::Paper => read_entry(archive, "paper-plugin.yml").map(|text| {
                 parse_plugin_yml(&text, Loader::Paper, "paper-plugin.yml").map(|mut artifact| {
@@ -1307,11 +1383,18 @@ fn parse_archive<R: Read + Seek>(
                 .map(|text| parse_forge_toml(&text, Loader::NeoForge)),
             Descriptor::Forge => read_entry(archive, "META-INF/mods.toml")
                 .map(|text| parse_forge_toml(&text, Loader::Forge)),
+            Descriptor::LegacyForge => {
+                read_entry(archive, "mcmod.info").map(|text| parse_legacy_forge(&text))
+            }
         };
         if let Some(result) = parsed {
             match result {
                 Ok(artifacts) => parsed_candidates.push((descriptor, artifacts)),
-                Err(error) if Some(descriptor) == preferred => return Err(error),
+                Err(error)
+                    if expected_loader.is_some_and(|loader| descriptor.matches_loader(loader)) =>
+                {
+                    return Err(error);
+                }
                 Err(error) => {
                     // With no matching instance descriptor, continue looking for
                     // a valid co-present identity. Report the first syntax error
@@ -1353,14 +1436,21 @@ fn parse_archive<R: Read + Seek>(
     // dependency assertions as hard truth. Plugin descriptors retain their
     // established primary-role precedence for universal proxy/plugin jars.
     let selected_descriptor = parsed_candidates[selected].0;
-    let identity_certainty = if preferred == Some(selected_descriptor)
-        || parsed_candidates.len() == 1
-        || matches!(selected_descriptor, Descriptor::Paper | Descriptor::Bukkit)
-    {
-        "confirmed"
-    } else {
-        "undecidable"
-    };
+    let identity_certainty =
+        if expected_loader.is_some_and(|loader| selected_descriptor.matches_loader(loader)) {
+            "confirmed"
+        } else if preferred.is_some() {
+            // The instance has an authoritative loader, but this archive exposes no
+            // matching descriptor. Preserve the candidate for loader/bridge
+            // diagnosis without treating its dependency declarations as active.
+            "cross-loader-unresolved"
+        } else if parsed_candidates.len() == 1
+            || matches!(selected_descriptor, Descriptor::Paper | Descriptor::Bukkit)
+        {
+            "confirmed"
+        } else {
+            "undecidable"
+        };
     let (_, artifacts) = parsed_candidates.swap_remove(selected);
     Ok(ParsedArchive {
         artifacts,
@@ -1377,6 +1467,7 @@ enum Descriptor {
     Quilt,
     NeoForge,
     Forge,
+    LegacyForge,
 }
 
 impl Descriptor {
@@ -1388,16 +1479,29 @@ impl Descriptor {
             Self::Quilt => "quilt.mod.json",
             Self::NeoForge => "META-INF/neoforge.mods.toml",
             Self::Forge => "META-INF/mods.toml",
+            Self::LegacyForge => "mcmod.info",
         }
+    }
+
+    fn matches_loader(self, loader: Loader) -> bool {
+        matches!(
+            (self, loader),
+            (Self::Paper, Loader::Paper | Loader::Spigot)
+                | (Self::Bukkit, Loader::Bukkit)
+                | (Self::Fabric, Loader::Fabric)
+                | (Self::Quilt, Loader::Quilt)
+                | (Self::NeoForge, Loader::NeoForge)
+                | (Self::Forge | Self::LegacyForge, Loader::Forge)
+        )
     }
 }
 
 /// Active-instance descriptor first, then deterministic fallbacks. A malformed
 /// inactive descriptor can no longer shadow a valid active one merely because
 /// its filename happened to appear earlier in a global priority list.
-fn descriptor_order(expected_loader: Option<Loader>) -> Vec<Descriptor> {
-    let preferred = preferred_descriptor(expected_loader);
-    let mut order = Vec::with_capacity(6);
+fn descriptor_order(expected_loader: Option<Loader>, prefer_legacy_forge: bool) -> Vec<Descriptor> {
+    let preferred = preferred_descriptor(expected_loader, prefer_legacy_forge);
+    let mut order = Vec::with_capacity(7);
     if let Some(preferred) = preferred {
         order.push(preferred);
     }
@@ -1408,6 +1512,7 @@ fn descriptor_order(expected_loader: Option<Loader>) -> Vec<Descriptor> {
         Descriptor::Quilt,
         Descriptor::NeoForge,
         Descriptor::Forge,
+        Descriptor::LegacyForge,
     ] {
         if Some(descriptor) != preferred {
             order.push(descriptor);
@@ -1416,14 +1521,21 @@ fn descriptor_order(expected_loader: Option<Loader>) -> Vec<Descriptor> {
     order
 }
 
-fn preferred_descriptor(expected_loader: Option<Loader>) -> Option<Descriptor> {
+fn preferred_descriptor(
+    expected_loader: Option<Loader>,
+    prefer_legacy_forge: bool,
+) -> Option<Descriptor> {
     match expected_loader {
         Some(Loader::Paper | Loader::Spigot) => Some(Descriptor::Paper),
         Some(Loader::Bukkit) => Some(Descriptor::Bukkit),
         Some(Loader::Fabric) => Some(Descriptor::Fabric),
         Some(Loader::Quilt) => Some(Descriptor::Quilt),
         Some(Loader::NeoForge) => Some(Descriptor::NeoForge),
-        Some(Loader::Forge) => Some(Descriptor::Forge),
+        Some(Loader::Forge) => Some(if prefer_legacy_forge {
+            Descriptor::LegacyForge
+        } else {
+            Descriptor::Forge
+        }),
         Some(Loader::Vanilla) | None => None,
     }
 }
@@ -1436,6 +1548,7 @@ fn descriptor_for_manifest(manifest: &str) -> Option<Descriptor> {
         "quilt.mod.json" => Some(Descriptor::Quilt),
         "META-INF/neoforge.mods.toml" => Some(Descriptor::NeoForge),
         "META-INF/mods.toml" => Some(Descriptor::Forge),
+        "mcmod.info" => Some(Descriptor::LegacyForge),
         _ => None,
     }
 }
@@ -1459,6 +1572,12 @@ fn detect_secondary_mod<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Opt
     if read_entry(archive, "META-INF/mods.toml").is_some() {
         return Some("forge:<mods.toml>".to_string());
     }
+    if let Some(text) = read_entry(archive, "mcmod.info")
+        && let Ok(mods) = intermed_doctor_core::legacy_forge::parse_mcmod_info(&text)
+        && let Some(first) = mods.first()
+    {
+        return Some(format!("forge:{}", first.mod_id));
+    }
     None
 }
 
@@ -1473,7 +1592,9 @@ fn collect_bundled<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
     depth: u8,
     expected_loader: Option<Loader>,
-    out: &mut Vec<(String, String)>,
+    prefer_legacy_forge: bool,
+    parent_path: &str,
+    out: &mut Vec<NestedProvider>,
 ) {
     if depth == 0 {
         return;
@@ -1485,37 +1606,66 @@ fn collect_bundled<R: Read + Seek>(
         })
         .collect();
     for name in names {
+        let nested_path = if parent_path.is_empty() {
+            name.clone()
+        } else {
+            format!("{parent_path}!/{name}")
+        };
         let Some(bytes) = read_entry_bytes(archive, &name) else {
             continue;
         };
         let Ok(mut inner) = zip::ZipArchive::new(Cursor::new(bytes)) else {
             continue;
         };
-        if let Ok(parsed) = parse_archive(&mut inner, expected_loader) {
+        if let Ok(parsed) =
+            parse_archive_for_instance(&mut inner, expected_loader, prefer_legacy_forge)
+        {
             for a in parsed.artifacts {
                 if !a.id.is_empty() {
                     // Resolve the nested jar's own `${file.jarVersion}` against
                     // its manifest, so a bundled provider carries a real version.
                     let version = jar_meta::resolve_jar_version(&a.version, &mut inner);
-                    out.push((a.id, version));
+                    out.push(NestedProvider {
+                        id: a.id,
+                        version,
+                        path: nested_path.clone(),
+                    });
                 }
             }
         }
-        collect_bundled(&mut inner, depth - 1, expected_loader, out);
+        collect_bundled(
+            &mut inner,
+            depth - 1,
+            expected_loader,
+            prefer_legacy_forge,
+            &nested_path,
+            out,
+        );
     }
 }
 
 struct ParsedJar {
     artifacts: Vec<Artifact>,
+    detached_providers: Vec<NestedProvider>,
     truncations: Vec<String>,
     identity_certainty: &'static str,
     descriptor_candidates: Vec<String>,
 }
 
+#[cfg(test)]
 fn parse_jar(
     path: &Path,
     metadata_level: MetadataLevel,
     expected_loader: Option<Loader>,
+) -> Result<ParsedJar, ParseErr> {
+    parse_jar_for_instance(path, metadata_level, expected_loader, false)
+}
+
+fn parse_jar_for_instance(
+    path: &Path,
+    metadata_level: MetadataLevel,
+    expected_loader: Option<Loader>,
+    prefer_legacy_forge: bool,
 ) -> Result<ParsedJar, ParseErr> {
     let file = std::fs::File::open(path).map_err(|e| ParseErr::archive(format!("open: {e}")))?;
     let mut archive =
@@ -1525,7 +1675,8 @@ fn parse_jar(
     // them; this is the diagnostic half).
     let mut truncations = oversized_entries(&mut archive);
 
-    let parsed_archive = parse_archive(&mut archive, expected_loader)?;
+    let parsed_archive =
+        parse_archive_for_instance(&mut archive, expected_loader, prefer_legacy_forge)?;
     let mut artifacts = parsed_archive.artifacts;
     if artifacts.is_empty() {
         let (discovered, gaps) = forge_annotation::discover_mods_from_jar(&mut archive);
@@ -1565,15 +1716,28 @@ fn parse_jar(
 
     // Attach bundled Jar-in-Jar providers to the primary artifact.
     let mut bundled = Vec::new();
-    collect_bundled(&mut archive, MAX_NEST_DEPTH, expected_loader, &mut bundled);
+    collect_bundled(
+        &mut archive,
+        MAX_NEST_DEPTH,
+        expected_loader,
+        prefer_legacy_forge,
+        "",
+        &mut bundled,
+    );
+    let mut detached_providers = Vec::new();
     if !bundled.is_empty() {
         bundled.sort();
         bundled.dedup();
         let own: std::collections::HashSet<&str> =
             artifacts.iter().map(|a| a.id.as_str()).collect();
-        bundled.retain(|(id, _)| !own.contains(id.as_str()));
+        bundled.retain(|provider| !own.contains(provider.id.as_str()));
         if let Some(primary) = artifacts.first_mut() {
-            primary.bundled = bundled;
+            primary.bundled = bundled
+                .iter()
+                .map(|provider| (provider.id.clone(), provider.version.clone()))
+                .collect();
+        } else {
+            detached_providers = bundled;
         }
     }
 
@@ -1617,6 +1781,7 @@ fn parse_jar(
 
     Ok(ParsedJar {
         artifacts,
+        detached_providers,
         truncations,
         identity_certainty: parsed_archive.identity_certainty,
         descriptor_candidates: parsed_archive.descriptor_candidates,
@@ -1627,31 +1792,15 @@ fn discover_bootstrap_bridge<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
     expected_loader: Option<Loader>,
 ) -> Option<Artifact> {
-    let manifest = read_entry(archive, "META-INF/MANIFEST.MF")?;
-    let title = manifest_attribute(&manifest, "Specification-Title")
-        .or_else(|| manifest_attribute(&manifest, "Implementation-Title"))?;
-    if !title.trim().eq_ignore_ascii_case("connector") {
-        return None;
-    }
-    let has_transformer = archive
-        .by_name("META-INF/services/cpw.mods.modlauncher.api.ITransformationService")
-        .is_ok();
-    let has_candidate_locator = archive
-        .by_name("META-INF/services/net.neoforged.neoforgespi.locating.IModFileCandidateLocator")
-        .is_ok();
-    if !has_transformer || !has_candidate_locator {
-        return None;
-    }
+    let bridge = intermed_doctor_core::bootstrap_bridge::detect_connector(archive)?;
     let loader = match expected_loader {
         Some(Loader::Forge) => Loader::Forge,
         Some(Loader::NeoForge) => Loader::NeoForge,
-        _ => Loader::NeoForge, // the exact NeoForge SPI above establishes this family
+        _ => Loader::NeoForge, // the exact NeoForge SPI establishes this family
     };
     Some(Artifact {
-        id: "connector".to_string(),
-        version: manifest_attribute(&manifest, "Implementation-Version")
-            .unwrap_or("unknown")
-            .to_string(),
+        id: bridge.id,
+        version: bridge.version.unwrap_or_else(|| "unknown".to_string()),
         loader,
         side: Some("both"),
         deps: Vec::new(),
@@ -1666,7 +1815,7 @@ fn discover_bootstrap_bridge<R: Read + Seek>(
         access_transforms: Vec::new(),
         coremods: Vec::new(),
         mixin_configs: Vec::new(),
-        name: Some(title.to_string()),
+        name: Some("Connector".to_string()),
         description: Some(
             "Loader bootstrap bridge identified from manifest and service-provider entries"
                 .to_string(),
@@ -1679,13 +1828,6 @@ fn discover_bootstrap_bridge<R: Read + Seek>(
         bytecode: BytecodeSignals::default(),
         secondary: None,
         package_roots: Vec::new(),
-    })
-}
-
-fn manifest_attribute<'a>(manifest: &'a str, key: &str) -> Option<&'a str> {
-    manifest.lines().find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        name.trim().eq_ignore_ascii_case(key).then(|| value.trim())
     })
 }
 
@@ -2200,6 +2342,87 @@ fn quilt_provides_id(v: &serde_json::Value) -> Option<String> {
         serde_json::Value::Object(o) => o.get("id").and_then(|x| x.as_str()).map(str::to_string),
         _ => None,
     }
+}
+
+fn parse_legacy_forge(text: &str) -> Result<Vec<Artifact>, ParseErr> {
+    let mods = intermed_doctor_core::legacy_forge::parse_mcmod_info(text)
+        .map_err(|error| ParseErr::descriptor("mcmod.info", error.to_string()))?;
+    if mods.is_empty() {
+        return Err(ParseErr::descriptor("mcmod.info", "no mod entries"));
+    }
+    Ok(mods
+        .into_iter()
+        .map(|entry| Artifact {
+            id: entry.mod_id,
+            version: entry.version.unwrap_or_else(|| "unknown".to_string()),
+            loader: Loader::Forge,
+            side: None,
+            deps: entry
+                .required_mods
+                .iter()
+                .filter_map(|requirement| parse_legacy_forge_requirement(requirement))
+                .collect(),
+            provides: Vec::new(),
+            is_plugin: false,
+            manifest_name: "mcmod.info",
+            api_version: None,
+            load_order: None,
+            bundled: Vec::new(),
+            entrypoints: Vec::new(),
+            access_widener_files: Vec::new(),
+            access_transforms: Vec::new(),
+            coremods: Vec::new(),
+            mixin_configs: Vec::new(),
+            name: entry.name,
+            description: entry.description,
+            authors: entry.authors,
+            license: None,
+            icon: entry.logo_file,
+            update_json: entry.update_url,
+            data_signals: DataSignals::default(),
+            bytecode: BytecodeSignals::default(),
+            secondary: None,
+            package_roots: Vec::new(),
+        })
+        .collect())
+}
+
+/// Legacy Forge dependency tokens occur as `modid`, `modid@range`, or with a
+/// load-order prefix such as `required-after:modid@range`. `requiredMods`
+/// already establishes mandatory semantics; load-order prefixes are therefore
+/// normalized away rather than mistaken for part of the provider id.
+fn parse_legacy_forge_requirement(requirement: &str) -> Option<Dep> {
+    let token = requirement.trim();
+    let token = token
+        .split_once(':')
+        .filter(|(prefix, _)| {
+            matches!(
+                *prefix,
+                "required-after" | "required-before" | "after" | "before"
+            )
+        })
+        .map_or(token, |(_, value)| value);
+    let (id, range) = token
+        .split_once('@')
+        .map_or((token, "*"), |(id, range)| (id, range));
+    let id = id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    Some(Dep {
+        // Legacy FML treated dependency labels as mod identifiers while many
+        // published `mcmod.info` files used `Forge` with title case. Canonical
+        // provider ids in the fact graph are lowercase (`forge`).
+        id: id.to_ascii_lowercase(),
+        range: if range.trim().is_empty() {
+            "*".to_string()
+        } else {
+            range.trim().to_string()
+        },
+        mandatory: true,
+        relation: "depends",
+        feature: None,
+    })
 }
 
 fn parse_forge_toml(text: &str, loader: Loader) -> Result<Vec<Artifact>, ParseErr> {
@@ -2981,7 +3204,7 @@ mod fabric_json_compat_tests {
 
 #[cfg(test)]
 mod jar_version_tests {
-    use super::{MetadataLevel, bounded_zip, parse_jar};
+    use super::{MetadataLevel, bounded_zip, parse_jar, parse_jar_for_instance};
     use intermed_doctor_core::Loader;
     use std::io::Write;
 
@@ -3073,6 +3296,26 @@ mod jar_version_tests {
     }
 
     #[test]
+    fn forge_1_12_prefers_mcmod_info_over_inert_mods_toml() {
+        let jar = write_jar(&[
+            (
+                "META-INF/mods.toml",
+                "[[mods]]\nmodId=\"enhancedvisuals\"\nversion=\"1.3.0\"\n\n[[dependencies.enhancedvisuals]]\nmodId=\"creativecore\"\nmandatory=true\nversionRange=\"[2.0.0,)\"\n",
+            ),
+            (
+                "mcmod.info",
+                r#"[{"modid":"enhancedvisuals","version":"1.3","requiredMods":[]}]"#,
+            ),
+        ]);
+        let parsed = parse_jar_for_instance(&jar, MetadataLevel::Basic, Some(Loader::Forge), true)
+            .expect("parse legacy Forge identity");
+        assert_eq!(parsed.artifacts[0].manifest_name, "mcmod.info");
+        assert!(parsed.artifacts[0].deps.is_empty());
+        assert_eq!(parsed.identity_certainty, "confirmed");
+        std::fs::remove_dir_all(jar.parent().unwrap()).ok();
+    }
+
+    #[test]
     fn neoforge_instance_selects_neoforge_descriptor_when_both_exist() {
         let jar = write_jar(&[
             (
@@ -3107,6 +3350,18 @@ mod jar_version_tests {
         let parsed = parse_jar(&jar, MetadataLevel::Basic, None).expect("parse candidates");
         assert_eq!(parsed.identity_certainty, "undecidable");
         assert_eq!(parsed.descriptor_candidates.len(), 2);
+        std::fs::remove_dir_all(jar.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn authoritative_forge_does_not_activate_fabric_only_descriptor() {
+        let jar = write_jar(&[(
+            "fabric.mod.json",
+            r#"{"schemaVersion":1,"id":"geckolib3","version":"3.0.42","depends":{"fabric":"*"}}"#,
+        )]);
+        let parsed = parse_jar(&jar, MetadataLevel::Basic, Some(Loader::Forge)).expect("parse");
+        assert_eq!(parsed.artifacts[0].id, "geckolib3");
+        assert_eq!(parsed.identity_certainty, "cross-loader-unresolved");
         std::fs::remove_dir_all(jar.parent().unwrap()).ok();
     }
 

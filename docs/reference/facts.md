@@ -84,12 +84,16 @@ The canonical JSON report is schema `intermed-doctor-report-v2`. Its fields are 
 | Schema | Produced by |
 |--------|-------------|
 | `intermed-doctor-report-v2` | `doctor --json` (canonical) |
-| `intermed-doctor-report-v1` | `doctor --json --report-schema v1` (lossy compatibility writer through 0.1.7) |
+| `intermed-doctor-report-v1` | `doctor --json --report-schema v1` (temporary lossy alpha compatibility writer) |
 | `intermed-doctor-profile-v1` | `doctor --profile` |
 | `intermed-telemetry-event-v1` | explicit `doctor --telemetry-out` / `--telemetry-endpoint` |
 | `intermed-modpack-graph-v1` | `deps graph` |
 | `intermed-deps-resolution-v1` | `deps resolve` |
 | `intermed-config-v1` | the config file and `--dump-config` |
+| `intermed-lab-campaign-v1` | immutable Layer-K campaign plan |
+| `intermed-lab-campaign-state-v1` | resumable campaign state |
+| `intermed-execution-observation-v1` | coverage-aware structured runtime observation |
+| `intermed-lab-campaign-report-v1` | campaign metrics and mismatch triage |
 
 See [Schema and migration policy](schema-migrations.md) for the v1 compatibility
 window and the breaking/additive change rules.

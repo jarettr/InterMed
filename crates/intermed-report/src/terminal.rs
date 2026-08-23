@@ -69,6 +69,9 @@ pub fn render_terminal_with_facts(report: &DoctorReport, color: bool, facts: &[F
             ""
         };
         let _ = writeln!(out, "Build: {short}{dirty} · cache={}", fp.cache_mode);
+    } else if let Some(executable) = &fp.executable_sha256 {
+        let short = executable.get(..12).unwrap_or(executable);
+        let _ = writeln!(out, "Build: binary={short} · cache={}", fp.cache_mode);
     }
 
     // Environment line

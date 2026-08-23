@@ -180,7 +180,7 @@ pub struct DoctorOutputArgs {
     pub json: Option<Option<PathBuf>>,
 
     /// JSON report schema. `v1` is a temporary lossy compatibility writer
-    /// retained through 0.1.7; v2 is canonical.
+    /// retained temporarily during alpha; v2 is canonical.
     #[arg(long = "report-schema", value_enum, default_value_t = ReportSchemaArg::V2)]
     pub report_schema: ReportSchemaArg,
 
@@ -868,12 +868,74 @@ pub struct LabArgs {
 pub enum LabCommand {
     /// Build a reproducible corpus lock from a candidate pool.
     Discover(LabDiscoverArgs),
+    /// Build an authoritative lock from `modrinth.index.json`.
+    DiscoverMrpack(LabDiscoverMrpackArgs),
     /// Classify captured smoke-test outputs against a corpus lock.
     Run(LabRunArgs),
     /// Render a compatibility matrix (JSON + HTML) from a lab run.
     Report(LabReportArgs),
     /// Score Doctor predictions against lab ground truth (precision/recall).
     Eval(LabEvalArgs),
+    /// Materialize a locked corpus through the content-addressed Lab store.
+    Materialize(LabMaterializeArgs),
+    /// Execute or resume a reproducible real-pack campaign.
+    Campaign(LabCampaignArgs),
+    /// Convert a launcher/server log into a bounded smoke artifact.
+    Capture(LabCaptureArgs),
+}
+
+#[derive(Args)]
+pub struct LabCaptureArgs {
+    pub log: PathBuf,
+    #[arg(long)]
+    pub environment: String,
+    /// Observed process exit code. Omit when unavailable.
+    #[arg(long)]
+    pub exit_code: Option<i32>,
+    #[arg(long)]
+    pub timed_out: bool,
+    #[arg(long)]
+    pub max_bytes: Option<u64>,
+    #[arg(long)]
+    pub out: PathBuf,
+}
+
+#[derive(Args)]
+pub struct LabDiscoverMrpackArgs {
+    /// `.mrpack` archive or extracted `modrinth.index.json`.
+    pub manifest: PathBuf,
+    #[arg(long, default_value = "corpus.lock")]
+    pub out: PathBuf,
+}
+
+#[derive(Args)]
+pub struct LabMaterializeArgs {
+    /// Corpus lock produced by `lab discover`.
+    pub lock: PathBuf,
+    /// Directory containing the locked artifacts.
+    #[arg(long)]
+    pub source: PathBuf,
+    /// Content-addressed store root.
+    #[arg(long, default_value = ".intermed-lab-store")]
+    pub store: PathBuf,
+    /// Immutable materialized instance directory.
+    #[arg(long)]
+    pub out: PathBuf,
+}
+
+#[derive(Args)]
+pub struct LabCampaignArgs {
+    /// Campaign manifest (`intermed-lab-campaign-v1`).
+    pub campaign: PathBuf,
+    /// Persistent state and per-case observations.
+    #[arg(long, default_value = "campaign-runs/latest")]
+    pub out: PathBuf,
+    /// Retry budget for infrastructure failures.
+    #[arg(long)]
+    pub max_attempts: Option<u32>,
+    /// Maximum concurrent cases. Use 1 for very large packs.
+    #[arg(long)]
+    pub max_parallel: Option<usize>,
 }
 
 /// Severity gate for `lab eval`: predictions weaker than this count as

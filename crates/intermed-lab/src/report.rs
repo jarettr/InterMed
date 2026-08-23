@@ -291,6 +291,7 @@ mod tests {
                 loader: "fabric".into(),
                 mc_version: "1.20.1".into(),
                 side: "server".into(),
+                loader_version: None,
             },
             results: vec![
                 SmokeResult {
@@ -301,6 +302,7 @@ mod tests {
                     attributions: Vec::new(),
                     detail: "Clean startup".into(),
                     log_excerpt: None,
+                    observation: None,
                 },
                 SmokeResult {
                     environment: "b".into(),
@@ -310,6 +312,7 @@ mod tests {
                     attributions: Vec::new(),
                     detail: "Out of memory".into(),
                     log_excerpt: Some("OutOfMemoryError".into()),
+                    observation: None,
                 },
             ],
         }
@@ -336,6 +339,7 @@ mod tests {
             attributions: Vec::new(),
             detail: "Mixin failed to apply (+1 other failure(s))".into(),
             log_excerpt: None,
+            observation: None,
         });
         let m = CompatibilityMatrix::from_run(&r);
         // Both the dominant and the secondary failure are counted.
@@ -365,6 +369,7 @@ mod tests {
             attributions: Vec::new(),
             detail: "Mixin failed to apply (+1 other failure(s))".into(),
             log_excerpt: None,
+            observation: None,
         });
         let html = render_html(&CompatibilityMatrix::from_run(&r));
         assert!(html.contains("Failures by family"));

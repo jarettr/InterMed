@@ -718,17 +718,6 @@ fn needs_intermediary_bridge(dotted: &str) -> bool {
     is_intermediary_obfuscated(dotted) && !dotted.contains(".class_")
 }
 
-/// The namespace a Minecraft target reference is *written* in: intermediary
-/// (`net.minecraft.class_310`) or named/official (`net.minecraft.world.…`). Used
-/// to compare against the loader's runtime namespace for `remap=false` targets.
-fn minecraft_target_namespace(dotted: &str) -> Namespace {
-    if dotted.contains(".class_") {
-        Namespace::Intermediary
-    } else {
-        Namespace::Named
-    }
-}
-
 fn minecraft_class_namespace(target: &str) -> MinecraftClassNamespace {
     let slash = target.replace('.', "/");
     if slash.starts_with("net/minecraft/class_") {
@@ -769,18 +758,32 @@ fn mapping_source_namespace(mapping: &TinyMappings, target: &str) -> Option<&'st
     }
 }
 
-/// Whether a `remap=false` Minecraft target resolves verbatim under `runtime`.
+/// Whether a `remap=false` Minecraft method selector resolves verbatim under
+/// `runtime`.
 ///
 /// Unobfuscated targets (`com.mojang.*` libraries — see [`is_intermediary_obfuscated`])
 /// keep their real names on every loader, so they always resolve. Only obfuscated
 /// `net.minecraft.*` is namespace-sensitive: intermediary (`class_NNN`) on
 /// Fabric/Quilt, named on Forge/NeoForge. `Unknown` runtime is handled by the
 /// caller (never accused).
-fn remap_false_resolves(target: &str, runtime: Namespace) -> bool {
+fn remap_false_resolves(target: &str, selector: &str, runtime: Namespace) -> bool {
     if !is_intermediary_obfuscated(target) {
         return true;
     }
-    minecraft_target_namespace(target) == runtime
+    let method = method_simple_name(selector);
+    if matches!(method, "<init>" | "<clinit>") {
+        return true;
+    }
+    match runtime {
+        // `method_NNN` is an explicit intermediary token and therefore cannot
+        // resolve verbatim on Forge/NeoForge's named runtime.
+        Namespace::Named => !method.starts_with("method_"),
+        // The inverse is not sound from spelling alone. `run`, `close`, lambda
+        // names and mod-added target methods may remain verbatim on Fabric, and
+        // official-looking aliases can be introduced by compatibility tooling.
+        // Without a compatible mapping/classpath proof, fail closed.
+        Namespace::Intermediary | Namespace::Unknown => true,
+    }
 }
 
 /// The loader family that presents `ns` as its runtime namespace, for messages.
@@ -794,7 +797,13 @@ fn runtime_loader_label(ns: Namespace) -> &'static str {
 
 /// The simple method name from a resolved reference like `tick()V` or `tick`.
 fn method_simple_name(resolved: &str) -> &str {
-    resolved.split(['(', ' ']).next().unwrap_or(resolved)
+    resolved
+        .split(['(', ' '])
+        .next()
+        .unwrap_or(resolved)
+        .rsplit(';')
+        .next()
+        .unwrap_or(resolved)
 }
 
 /// Resolve a mixin target to the slash form used by [`TargetClassIndex`].
@@ -887,17 +896,17 @@ fn detect_for_class(
         let comparable = index.namespace_comparable(&inj.target, global_mappings);
         let slash = index.resolve_target_slash(&inj.target, global_mappings);
 
-        // remap = false takes the reference verbatim, so it resolves only when the
-        // target is *already* written in the loader's runtime namespace. It is
-        // suspicious only when the written namespace differs from the runtime
-        // one — named target on Fabric/Quilt (runtime is intermediary), or an
-        // intermediary target on Forge/NeoForge (runtime is named). A matching
-        // namespace (named on Forge, intermediary on Fabric — both common and
-        // correct) is fine, and an unknown loader is not accused.
+        // `remap` belongs to the injector selector, not to the class-level
+        // `@Mixin` target. The class may therefore be named while a deliberate
+        // `method_NNN` selector already uses Fabric's intermediary runtime name.
+        // Compare the selector itself; comparing only `inj.target` falsely
+        // accused this common pattern (for example LMFT's `method_29439`).
         if inj.meta.remap == Some(false) && is_minecraft_target(&inj.target) {
             let runtime = class.runtime_namespace;
-            let written = minecraft_target_namespace(&inj.target);
-            if runtime != Namespace::Unknown && !remap_false_resolves(&inj.target, runtime) {
+            let selector = method_simple_name(&inj.resolved);
+            if runtime != Namespace::Unknown
+                && !remap_false_resolves(&inj.target, &inj.resolved, runtime)
+            {
                 out.push(ApplyFailure {
                     kind: ApplyFailureKind::RemapFalseSuspicious,
                     mod_id: class.mod_id.clone(),
@@ -905,11 +914,9 @@ fn detect_for_class(
                     target: inj.target.clone(),
                     member: inj.resolved.clone(),
                     detail: format!(
-                        "remap = false targets the {written} name `{}`, but this {loader} \
+                        "remap = false uses the intermediary selector `{selector}`, but this {loader} \
                          loader runs mixins against the {runtime} namespace — the reference \
                          is used verbatim and will not resolve",
-                        inj.target,
-                        written = written.as_str(),
                         runtime = runtime.as_str(),
                         loader = runtime_loader_label(runtime),
                     ),
@@ -1291,6 +1298,7 @@ mod tests {
         assert!(needs_intermediary_bridge("net.minecraft.client.Minecraft"));
         assert!(remap_false_resolves(
             "com.mojang.blaze3d.platform.GlStateManager",
+            "_enableBlend()V",
             Namespace::Intermediary
         ));
     }
@@ -1559,9 +1567,10 @@ mod tests {
 
     #[test]
     fn remap_false_namespace_mismatch_is_suspicious() {
-        // Named target on a Fabric (intermediary-runtime) loader: the verbatim
-        // named reference cannot resolve against intermediary runtime classes.
-        let mut fabric = record_targeting("alpha", "net.minecraft.client.Foo", "method_1()V");
+        // A method spelling alone cannot prove a Fabric mismatch: stable,
+        // synthetic, or mod-added target methods routinely keep non-method_NNN
+        // names under intermediary runtime.
+        let mut fabric = record_targeting("alpha", "net.minecraft.client.Foo", "tick()V");
         fabric.runtime_namespace = Namespace::Intermediary;
         fabric.injected_methods[0].meta.remap = Some(false);
         let failures =
@@ -1569,7 +1578,7 @@ mod tests {
         assert!(
             failures
                 .iter()
-                .any(|f| f.kind == ApplyFailureKind::RemapFalseSuspicious)
+                .all(|f| f.kind != ApplyFailureKind::RemapFalseSuspicious)
         );
 
         // Intermediary target on a Forge (named-runtime) loader: the reverse miss.
@@ -1602,6 +1611,25 @@ mod tests {
                 .iter()
                 .all(|f| f.kind != ApplyFailureKind::RemapFalseSuspicious),
             "named target on a Forge loader must not be flagged"
+        );
+
+        // The class-level @Mixin target is remapped independently. A named
+        // class plus an explicit intermediary selector is therefore valid on
+        // Fabric (the real LMFT pattern that motivated this regression).
+        let mut mixed = record_targeting(
+            "lmft",
+            "net.minecraft.server.MinecraftServer",
+            "method_29439()V",
+        );
+        mixed.runtime_namespace = Namespace::Intermediary;
+        mixed.injected_methods[0].meta.remap = Some(false);
+        let failures =
+            detect_apply_failures(&[mixed], &TargetClassIndex::new(), &BTreeSet::new(), None);
+        assert!(
+            failures
+                .iter()
+                .all(|f| f.kind != ApplyFailureKind::RemapFalseSuspicious),
+            "an intermediary selector on a named class target must remain valid"
         );
 
         // Fabric mod with an intermediary target (pehkui pattern): intermediary ==

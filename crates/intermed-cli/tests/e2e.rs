@@ -684,7 +684,8 @@ fn doctor_phase6_security_finding_for_process_spawn() {
     assert!(findings.iter().any(|f| {
         f["rule_id"] == "security-api-risk"
             && f["id"].as_str() == Some("security-api-risk:risky")
-            && f["severity"] == "warn"
+            && f["severity"] == "note"
+            && f["visibility"] == "verbose"
     }));
 }
 

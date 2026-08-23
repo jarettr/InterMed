@@ -177,7 +177,10 @@ pub fn pairwise_findings(ctx: &RuleCtx<'_>, rule_id: &str) -> Vec<Finding> {
     for f in store
         .by_kind(kind::MOD)
         .chain(store.by_kind(kind::PLUGIN))
-        .filter(|fact| fact.attr("identity_certainty") != Some("undecidable"))
+        .filter(|fact| {
+            fact.attr("identity_certainty")
+                .is_none_or(|certainty| certainty == "confirmed")
+        })
     {
         installed
             .entry(f.subject.clone())
@@ -231,7 +234,10 @@ pub fn pairwise_findings(ctx: &RuleCtx<'_>, rule_id: &str) -> Vec<Finding> {
     plausible_artifacts.extend(
         store
             .by_kind(kind::MOD)
-            .filter(|fact| fact.attr("identity_certainty") == Some("undecidable"))
+            .filter(|fact| {
+                fact.attr("identity_certainty")
+                    .is_some_and(|certainty| certainty != "confirmed")
+            })
             .filter_map(|fact| fact.attr("file").map(|file| (file.to_string(), fact.id))),
     );
 
@@ -252,29 +258,61 @@ pub fn pairwise_findings(ctx: &RuleCtx<'_>, rule_id: &str) -> Vec<Finding> {
         let mandatory = dep.attr_bool("mandatory").unwrap_or(true);
         let relation = dep.attr("relation").unwrap_or("depends");
 
-        if dep.attr("identity_certainty") == Some("undecidable") {
+        if let Some(certainty) = dep
+            .attr("identity_certainty")
+            .filter(|certainty| *certainty != "confirmed")
+        {
             if mandatory && !is_platform_dep(dep_id) && !is_ordering_relation(relation) {
+                let cross_loader = certainty == "cross-loader-unresolved";
                 out.push(
                     Finding::builder(
                         rule_id,
-                        format!("dependency-identity-undecidable:{modid}->{dep_id}"),
+                        format!(
+                            "{}:{modid}->{dep_id}",
+                            if cross_loader {
+                                "dependency-cross-loader-inactive"
+                            } else {
+                                "dependency-identity-undecidable"
+                            }
+                        ),
                     )
-                    .family("dependency-identity-undecidable")
+                    .family(if cross_loader {
+                        "dependency-cross-loader-inactive"
+                    } else {
+                        "dependency-identity-undecidable"
+                    })
                     .severity(Severity::Note)
                     .confidence(0.35)
                     .category(Category::Dependency)
-                    .title(format!("Cannot select the active descriptor for {modid}"))
-                    .explanation(format!(
-                        "One descriptor candidate says {modid} requires {dep_id} ({range}), but \
-                         the target loader is unknown and this archive contains multiple loader \
-                         descriptors. The assertion is retained as context, not treated as a \
-                         confirmed missing or incompatible dependency."
-                    ))
+                    .title(if cross_loader {
+                        format!("Inactive cross-loader descriptor for {modid}")
+                    } else {
+                        format!("Cannot select the active descriptor for {modid}")
+                    })
+                    .explanation(if cross_loader {
+                        format!(
+                            "A descriptor for a different loader says {modid} requires {dep_id} \
+                             ({range}). The authoritative target loader does not activate that \
+                             descriptor, and no proven runtime bridge makes its dependency \
+                             assertion hard truth."
+                        )
+                    } else {
+                        format!(
+                            "One descriptor candidate says {modid} requires {dep_id} ({range}), \
+                             but the archive's active identity is undecidable. The assertion is \
+                             retained as context, not treated as a confirmed missing or \
+                             incompatible dependency."
+                        )
+                    })
                     .evidence(EvidenceEdge::subject(dep.id))
                     .affects(modid)
                     .affects(dep_id)
                     .tag("dependency")
-                    .tag("undecidable-identity")
+                    .tag(if cross_loader {
+                        "cross-loader-inactive"
+                    } else {
+                        "undecidable-identity"
+                    })
                     .build(),
                 );
             }
@@ -316,7 +354,6 @@ pub fn pairwise_findings(ctx: &RuleCtx<'_>, rule_id: &str) -> Vec<Finding> {
                         .family("incompatible-mod")
                         .coverage_requirement(CoverageRequirement::LocalArtifact)
                         .coverage_requirement(CoverageRequirement::ActiveDescriptor)
-                        .coverage_requirement(CoverageRequirement::KnownBridgeSemantics)
                         .proof_kind(ProofKind::DeterministicDerivation)
                         .impact(Impact::StartupBlocking)
                         .evidence_origin(EvidenceOrigin::StaticExact)

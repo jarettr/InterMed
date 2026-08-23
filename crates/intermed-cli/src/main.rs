@@ -236,6 +236,7 @@ fn populate_analyzer_fingerprint(
         digest_bytes(text.as_bytes())
     });
     report.analysis_configuration.fingerprint = intermed_doctor_core::report::AnalyzerFingerprint {
+        executable_sha256: digest_current_executable(),
         git_commit: option_env!("INTERMED_GIT_COMMIT").map(str::to_string),
         git_dirty: option_env!("INTERMED_GIT_DIRTY").and_then(|v| v.parse().ok()),
         cargo_features: features,
@@ -254,6 +255,22 @@ fn populate_analyzer_fingerprint(
                 sha256,
             },
         );
+    }
+}
+
+fn digest_current_executable() -> Option<String> {
+    if let Ok(path) = std::env::current_exe()
+        && let Some(digest) = digest_file(&path)
+    {
+        return Some(digest);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        digest_file(Path::new("/proc/self/exe"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
     }
 }
 
@@ -1705,6 +1722,35 @@ fn run_lab(args: LabArgs, config_path: Option<&Path>) -> ExitCode {
                 }
             }
         }
+        LabCommand::DiscoverMrpack(args) => {
+            match intermed_lab::lock_modrinth_manifest(&args.manifest, &args.out) {
+                Ok(lock) => {
+                    println!("InterMed Lab — Modrinth corpus lock");
+                    println!(
+                        "Environment: {} loader {} / Minecraft {} ({})",
+                        lock.environment.loader,
+                        lock.environment
+                            .loader_version
+                            .as_deref()
+                            .unwrap_or("unknown"),
+                        lock.environment.mc_version,
+                        lock.environment.side
+                    );
+                    println!(
+                        "Pack files: {} | mods: {}",
+                        lock.files.len(),
+                        lock.mods.len()
+                    );
+                    println!("Digest: {}", lock.digest);
+                    println!("Written: {}", args.out.display());
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         LabCommand::Run(args) => {
             let mut cfg = match IntermedConfig::load(config_path) {
                 Ok(cfg) => cfg,
@@ -1783,6 +1829,181 @@ fn run_lab(args: LabArgs, config_path: Option<&Path>) -> ExitCode {
             }
         }
         LabCommand::Eval(args) => run_lab_eval(args),
+        LabCommand::Materialize(args) => {
+            let result = (|| {
+                let lock = intermed_lab::read_lock(&args.lock)?;
+                let store = intermed_lab::ArtifactStore::open(&args.store)?;
+                store.materialize(&lock, &args.source, &args.out)
+            })();
+            match result {
+                Ok(record) => {
+                    let bytes = record
+                        .artifacts
+                        .iter()
+                        .map(|artifact| artifact.bytes)
+                        .sum::<u64>();
+                    println!("InterMed Lab — materialization");
+                    println!("Corpus digest: {}", record.corpus_digest);
+                    println!("Artifacts: {} | bytes: {}", record.artifacts.len(), bytes);
+                    println!("Written: {}", args.out.display());
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+        LabCommand::Campaign(args) => {
+            let cfg = match IntermedConfig::load(config_path) {
+                Ok(cfg) => cfg,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            let max_attempts = args.max_attempts.unwrap_or(cfg.lab.campaign_max_attempts);
+            let max_parallel = args.max_parallel.unwrap_or(cfg.lab.campaign_max_parallel);
+            let result = (|| {
+                let campaign = intermed_lab::read_campaign(&args.campaign)?;
+                let base_dir = args
+                    .campaign
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf();
+                let executor = intermed_lab::FileCampaignExecutor::new(
+                    base_dir,
+                    campaign.doctor_args.clone(),
+                    config_path.map(Path::to_path_buf),
+                    campaign.analyzer_fingerprint.clone(),
+                );
+                intermed_lab::run_campaign(
+                    &campaign,
+                    &args.out,
+                    &executor,
+                    intermed_lab::CampaignOptions {
+                        max_attempts,
+                        max_parallel,
+                    },
+                )
+            })();
+            match result {
+                Ok(state) => {
+                    let campaign_report =
+                        match intermed_lab::write_campaign_report(&state, &args.out) {
+                            Ok(report) => report,
+                            Err(error) => {
+                                eprintln!("error: could not write campaign report: {error}");
+                                return ExitCode::from(2);
+                            }
+                        };
+                    let complete = state
+                        .cases
+                        .iter()
+                        .filter(|case| case.status == intermed_lab::CampaignCaseStatus::Complete)
+                        .count();
+                    let infrastructure = state
+                        .cases
+                        .iter()
+                        .filter(|case| {
+                            case.status == intermed_lab::CampaignCaseStatus::InfrastructureFailure
+                        })
+                        .count();
+                    let harness = state
+                        .cases
+                        .iter()
+                        .filter(|case| {
+                            case.status == intermed_lab::CampaignCaseStatus::HarnessFailure
+                        })
+                        .count();
+                    // Use the report's canonical status accounting rather than
+                    // duplicating the compatibility mapping for legacy
+                    // `skipped` and current `static-complete` states here.
+                    let static_only = campaign_report.static_only;
+                    let unfinished = state
+                        .cases
+                        .iter()
+                        .filter(|case| {
+                            matches!(
+                                case.status,
+                                intermed_lab::CampaignCaseStatus::Pending
+                                    | intermed_lab::CampaignCaseStatus::Running
+                            )
+                        })
+                        .count();
+                    println!("InterMed Lab — campaign");
+                    println!("Campaign: {}", state.campaign_id);
+                    println!(
+                        "Cases: {} | runtime complete: {} | static-only: {} | infrastructure: {} | harness: {} | unfinished: {}",
+                        state.cases.len(),
+                        complete,
+                        static_only,
+                        infrastructure,
+                        harness,
+                        unfinished
+                    );
+                    println!("State: {}/campaign-state.json", args.out.display());
+                    println!(
+                        "Evaluation: {} FP | {} inconclusive | {} abstained",
+                        campaign_report.false_positive,
+                        campaign_report.inconclusive_coverage,
+                        campaign_report.abstained
+                    );
+                    println!(
+                        "Static: {} reports | {} confirmed | {} review | {} incomplete",
+                        campaign_report.static_totals.reports,
+                        campaign_report.static_totals.confirmed_problems,
+                        campaign_report.static_totals.needs_review,
+                        campaign_report.static_totals.incomplete_analysis
+                    );
+                    println!("Report: {}/campaign-report.html", args.out.display());
+                    if infrastructure == 0 && harness == 0 && unfinished == 0 {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::from(2)
+                    }
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+        LabCommand::Capture(args) => {
+            let cfg = match IntermedConfig::load(config_path) {
+                Ok(cfg) => cfg,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            match intermed_lab::capture_log(
+                &args.log,
+                &args.environment,
+                args.exit_code,
+                args.timed_out,
+                args.max_bytes.unwrap_or(cfg.lab.max_log_bytes),
+                &args.out,
+            ) {
+                Ok(raw) => {
+                    let observation = intermed_lab::observe_smoke(&raw);
+                    println!("InterMed Lab — captured runtime evidence");
+                    println!("Status: {:?}", observation.status);
+                    println!(
+                        "Incidents: {} | background events: {} | log complete: {}",
+                        observation.incidents.len(),
+                        observation.background_events.len(),
+                        observation.coverage.log_complete
+                    );
+                    println!("Written: {}", args.out.display());
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
     }
 }
 
@@ -1834,14 +2055,16 @@ fn run_lab_eval(args: LabEvalArgs) -> ExitCode {
                 );
             }
             let fl = &report.finding_level;
-            if fl.attributed {
+            if fl.attributed || fl.coverage_aware {
                 println!(
-                    "Finding-level (attributed) — precision: {:.2} | recall: {:.2} (tp {} fp {} fn {}, {} predictions / {} attributions)",
+                    "Finding-level (attributed/coverage-aware) — precision: {:.2} | recall: {:.2} (tp {} fp {} fn {}, {} inconclusive, {} abstained; {} predictions / {} attributions)",
                     fl.precision,
                     fl.recall,
                     fl.true_positive,
                     fl.false_positive,
                     fl.false_negative,
+                    fl.inconclusive_coverage,
+                    fl.abstained,
                     fl.predictions,
                     fl.attributions,
                 );

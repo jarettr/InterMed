@@ -52,7 +52,7 @@ souffle\t'Soufflé Datalog backend (requires the `souffle` binary). Same IR, ext
 duckdb\t'In-process DuckDB SQL rule backend (requires `--features duckdb`). Same IR'"
 complete -c intermed -n "__fish_intermed_using_subcommand doctor" -l jobs -l threads -d 'Cap the worker thread count for parallel jar/log scanning. Unset or `0` uses all available cores; lower it on weak machines or shared CI runners' -r
 complete -c intermed -n "__fish_intermed_using_subcommand doctor" -l json -d 'Emit the full report as canonical `intermed-doctor-report-v2` JSON' -r -F
-complete -c intermed -n "__fish_intermed_using_subcommand doctor" -l report-schema -d 'JSON report schema. `v1` is a temporary lossy compatibility writer retained through 0.1.7; v2 is canonical' -r -f -a "v1\t''
+complete -c intermed -n "__fish_intermed_using_subcommand doctor" -l report-schema -d 'JSON report schema. `v1` is a temporary lossy compatibility writer retained temporarily during alpha; v2 is canonical' -r -f -a "v1\t''
 v2\t''"
 complete -c intermed -n "__fish_intermed_using_subcommand doctor" -l sarif -d 'Emit SARIF 2.1.0 (for IDE / CI code-scanning)' -r -F
 complete -c intermed -n "__fish_intermed_using_subcommand doctor" -l html -d 'Write a self-contained HTML report (`index.html` style)' -r -F
@@ -258,22 +258,32 @@ complete -c intermed -n "__fish_intermed_using_subcommand spark-map" -l dump-con
 complete -c intermed -n "__fish_intermed_using_subcommand spark-map" -l quiet -d 'Suppress informational progress messages on stderr (errors still print)'
 complete -c intermed -n "__fish_intermed_using_subcommand spark-map" -s v -l verbose -d 'Increase informational detail (repeatable: `-v`, `-vv`)'
 complete -c intermed -n "__fish_intermed_using_subcommand spark-map" -s h -l help -d 'Print help'
-complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover run report eval help" -l config -d 'Config file (`intermed-config-v1` TOML). Overrides discovery; see docs/reference/configuration.md' -r -F
-complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover run report eval help" -l dump-config -d 'Print the fully merged config (defaults, files, environment, and doctor CLI overrides) as TOML and exit. A subcommand is optional'
-complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover run report eval help" -l quiet -d 'Suppress informational progress messages on stderr (errors still print)'
-complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover run report eval help" -s v -l verbose -d 'Increase informational detail (repeatable: `-v`, `-vv`)'
-complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover run report eval help" -s h -l help -d 'Print help'
-complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover run report eval help" -f -a "discover" -d 'Build a reproducible corpus lock from a candidate pool'
-complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover run report eval help" -f -a "run" -d 'Classify captured smoke-test outputs against a corpus lock'
-complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover run report eval help" -f -a "report" -d 'Render a compatibility matrix (JSON + HTML) from a lab run'
-complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover run report eval help" -f -a "eval" -d 'Score Doctor predictions against lab ground truth (precision/recall)'
-complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover run report eval help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover discover-mrpack run report eval materialize campaign capture help" -l config -d 'Config file (`intermed-config-v1` TOML). Overrides discovery; see docs/reference/configuration.md' -r -F
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover discover-mrpack run report eval materialize campaign capture help" -l dump-config -d 'Print the fully merged config (defaults, files, environment, and doctor CLI overrides) as TOML and exit. A subcommand is optional'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover discover-mrpack run report eval materialize campaign capture help" -l quiet -d 'Suppress informational progress messages on stderr (errors still print)'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover discover-mrpack run report eval materialize campaign capture help" -s v -l verbose -d 'Increase informational detail (repeatable: `-v`, `-vv`)'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover discover-mrpack run report eval materialize campaign capture help" -s h -l help -d 'Print help'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover discover-mrpack run report eval materialize campaign capture help" -f -a "discover" -d 'Build a reproducible corpus lock from a candidate pool'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover discover-mrpack run report eval materialize campaign capture help" -f -a "discover-mrpack" -d 'Build an authoritative lock from `modrinth.index.json`'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover discover-mrpack run report eval materialize campaign capture help" -f -a "run" -d 'Classify captured smoke-test outputs against a corpus lock'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover discover-mrpack run report eval materialize campaign capture help" -f -a "report" -d 'Render a compatibility matrix (JSON + HTML) from a lab run'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover discover-mrpack run report eval materialize campaign capture help" -f -a "eval" -d 'Score Doctor predictions against lab ground truth (precision/recall)'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover discover-mrpack run report eval materialize campaign capture help" -f -a "materialize" -d 'Materialize a locked corpus through the content-addressed Lab store'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover discover-mrpack run report eval materialize campaign capture help" -f -a "campaign" -d 'Execute or resume a reproducible real-pack campaign'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover discover-mrpack run report eval materialize campaign capture help" -f -a "capture" -d 'Convert a launcher/server log into a bounded smoke artifact'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and not __fish_seen_subcommand_from discover discover-mrpack run report eval materialize campaign capture help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from discover" -l out -d 'Output lock path' -r -F
 complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from discover" -l config -d 'Config file (`intermed-config-v1` TOML). Overrides discovery; see docs/reference/configuration.md' -r -F
 complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from discover" -l dump-config -d 'Print the fully merged config (defaults, files, environment, and doctor CLI overrides) as TOML and exit. A subcommand is optional'
 complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from discover" -l quiet -d 'Suppress informational progress messages on stderr (errors still print)'
 complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from discover" -s v -l verbose -d 'Increase informational detail (repeatable: `-v`, `-vv`)'
 complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from discover" -s h -l help -d 'Print help'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from discover-mrpack" -l out -r -F
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from discover-mrpack" -l config -d 'Config file (`intermed-config-v1` TOML). Overrides discovery; see docs/reference/configuration.md' -r -F
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from discover-mrpack" -l dump-config -d 'Print the fully merged config (defaults, files, environment, and doctor CLI overrides) as TOML and exit. A subcommand is optional'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from discover-mrpack" -l quiet -d 'Suppress informational progress messages on stderr (errors still print)'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from discover-mrpack" -s v -l verbose -d 'Increase informational detail (repeatable: `-v`, `-vv`)'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from discover-mrpack" -s h -l help -d 'Print help'
 complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from run" -l logs -d 'Directory of captured smoke outputs (`intermed-smoke-output-v1` JSON)' -r -F
 complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from run" -l out -d 'Output directory for the run artifact (`lab-run.json`)' -r -F
 complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from run" -l lab-excerpt-max -d 'Maximum characters kept from a failure log excerpt (default: 280)' -r
@@ -300,10 +310,40 @@ complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_s
 complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from eval" -l quiet -d 'Suppress informational progress messages on stderr (errors still print)'
 complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from eval" -s v -l verbose -d 'Increase informational detail (repeatable: `-v`, `-vv`)'
 complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from eval" -s h -l help -d 'Print help'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from materialize" -l source -d 'Directory containing the locked artifacts' -r -F
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from materialize" -l store -d 'Content-addressed store root' -r -F
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from materialize" -l out -d 'Immutable materialized instance directory' -r -F
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from materialize" -l config -d 'Config file (`intermed-config-v1` TOML). Overrides discovery; see docs/reference/configuration.md' -r -F
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from materialize" -l dump-config -d 'Print the fully merged config (defaults, files, environment, and doctor CLI overrides) as TOML and exit. A subcommand is optional'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from materialize" -l quiet -d 'Suppress informational progress messages on stderr (errors still print)'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from materialize" -s v -l verbose -d 'Increase informational detail (repeatable: `-v`, `-vv`)'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from materialize" -s h -l help -d 'Print help'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from campaign" -l out -d 'Persistent state and per-case observations' -r -F
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from campaign" -l max-attempts -d 'Retry budget for infrastructure failures' -r
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from campaign" -l max-parallel -d 'Maximum concurrent cases. Use 1 for very large packs' -r
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from campaign" -l config -d 'Config file (`intermed-config-v1` TOML). Overrides discovery; see docs/reference/configuration.md' -r -F
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from campaign" -l dump-config -d 'Print the fully merged config (defaults, files, environment, and doctor CLI overrides) as TOML and exit. A subcommand is optional'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from campaign" -l quiet -d 'Suppress informational progress messages on stderr (errors still print)'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from campaign" -s v -l verbose -d 'Increase informational detail (repeatable: `-v`, `-vv`)'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from campaign" -s h -l help -d 'Print help'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from capture" -l environment -r
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from capture" -l exit-code -d 'Observed process exit code. Omit when unavailable' -r
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from capture" -l max-bytes -r
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from capture" -l out -r -F
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from capture" -l config -d 'Config file (`intermed-config-v1` TOML). Overrides discovery; see docs/reference/configuration.md' -r -F
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from capture" -l timed-out
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from capture" -l dump-config -d 'Print the fully merged config (defaults, files, environment, and doctor CLI overrides) as TOML and exit. A subcommand is optional'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from capture" -l quiet -d 'Suppress informational progress messages on stderr (errors still print)'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from capture" -s v -l verbose -d 'Increase informational detail (repeatable: `-v`, `-vv`)'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from capture" -s h -l help -d 'Print help'
 complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from help" -f -a "discover" -d 'Build a reproducible corpus lock from a candidate pool'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from help" -f -a "discover-mrpack" -d 'Build an authoritative lock from `modrinth.index.json`'
 complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from help" -f -a "run" -d 'Classify captured smoke-test outputs against a corpus lock'
 complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from help" -f -a "report" -d 'Render a compatibility matrix (JSON + HTML) from a lab run'
 complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from help" -f -a "eval" -d 'Score Doctor predictions against lab ground truth (precision/recall)'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from help" -f -a "materialize" -d 'Materialize a locked corpus through the content-addressed Lab store'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from help" -f -a "campaign" -d 'Execute or resume a reproducible real-pack campaign'
+complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from help" -f -a "capture" -d 'Convert a launcher/server log into a bounded smoke artifact'
 complete -c intermed -n "__fish_intermed_using_subcommand lab; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c intermed -n "__fish_intermed_using_subcommand rules; and not __fish_seen_subcommand_from check generate sign verify update registry install explain help" -l config -d 'Config file (`intermed-config-v1` TOML). Overrides discovery; see docs/reference/configuration.md' -r -F
 complete -c intermed -n "__fish_intermed_using_subcommand rules; and not __fish_seen_subcommand_from check generate sign verify update registry install explain help" -l dump-config -d 'Print the fully merged config (defaults, files, environment, and doctor CLI overrides) as TOML and exit. A subcommand is optional'
@@ -571,9 +611,13 @@ complete -c intermed -n "__fish_intermed_using_subcommand help; and __fish_seen_
 complete -c intermed -n "__fish_intermed_using_subcommand help; and __fish_seen_subcommand_from impact" -f -a "remove" -d 'Blast radius of removing a mod (reverse resource graph + dependents)'
 complete -c intermed -n "__fish_intermed_using_subcommand help; and __fish_seen_subcommand_from impact" -f -a "update" -d 'Blast radius of bumping a mod\'s version (which declared ranges reject it)'
 complete -c intermed -n "__fish_intermed_using_subcommand help; and __fish_seen_subcommand_from lab" -f -a "discover" -d 'Build a reproducible corpus lock from a candidate pool'
+complete -c intermed -n "__fish_intermed_using_subcommand help; and __fish_seen_subcommand_from lab" -f -a "discover-mrpack" -d 'Build an authoritative lock from `modrinth.index.json`'
 complete -c intermed -n "__fish_intermed_using_subcommand help; and __fish_seen_subcommand_from lab" -f -a "run" -d 'Classify captured smoke-test outputs against a corpus lock'
 complete -c intermed -n "__fish_intermed_using_subcommand help; and __fish_seen_subcommand_from lab" -f -a "report" -d 'Render a compatibility matrix (JSON + HTML) from a lab run'
 complete -c intermed -n "__fish_intermed_using_subcommand help; and __fish_seen_subcommand_from lab" -f -a "eval" -d 'Score Doctor predictions against lab ground truth (precision/recall)'
+complete -c intermed -n "__fish_intermed_using_subcommand help; and __fish_seen_subcommand_from lab" -f -a "materialize" -d 'Materialize a locked corpus through the content-addressed Lab store'
+complete -c intermed -n "__fish_intermed_using_subcommand help; and __fish_seen_subcommand_from lab" -f -a "campaign" -d 'Execute or resume a reproducible real-pack campaign'
+complete -c intermed -n "__fish_intermed_using_subcommand help; and __fish_seen_subcommand_from lab" -f -a "capture" -d 'Convert a launcher/server log into a bounded smoke artifact'
 complete -c intermed -n "__fish_intermed_using_subcommand help; and __fish_seen_subcommand_from rules" -f -a "check" -d 'Validate rule-pack JSON/YAML files under a path'
 complete -c intermed -n "__fish_intermed_using_subcommand help; and __fish_seen_subcommand_from rules" -f -a "generate" -d 'Generate backend artifacts (SQL, Datalog, Rust stubs) from a rule pack'
 complete -c intermed -n "__fish_intermed_using_subcommand help; and __fish_seen_subcommand_from rules" -f -a "sign" -d 'Sign a v2 rule pack with an Ed25519 key'

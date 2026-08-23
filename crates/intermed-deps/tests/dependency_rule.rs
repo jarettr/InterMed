@@ -268,6 +268,47 @@ fn game_prefixed_mod_version_is_undecidable_not_wrong() {
 }
 
 #[test]
+fn maven_dialect_orders_mc_prefixed_versions_exactly() {
+    let mut store = FactStore::new();
+    store
+        .fact("meta", kind::MOD)
+        .subject("radiantgear")
+        .attr("version", "2.0.4+1.19.2")
+        .attr("loader", "forge")
+        .emit();
+    store
+        .fact("meta", kind::MOD)
+        .subject("curios")
+        .attr("version", "1.19.2-5.1.6.4")
+        .attr("loader", "forge")
+        .emit();
+    store
+        .fact("meta", kind::MOD_METADATA)
+        .subject("curios")
+        .attr("version_ambiguous", true)
+        .emit();
+    store
+        .fact("meta", kind::DEPENDENCY)
+        .subject("radiantgear")
+        .attr("dep", "curios")
+        .attr("range", "[1.19.2-5.1.0.0,)")
+        .attr("mandatory", true)
+        .attr("relation", "depends")
+        .attr("version_dialect", "maven-range")
+        .emit();
+
+    let target = Target::with_kind(".", TargetKind::ModsDir);
+    let findings = DependencyRule
+        .evaluate(&RuleCtx::for_test(&store, &target))
+        .unwrap();
+    assert!(findings.iter().all(|finding| {
+        !finding.id.starts_with("wrong-version:")
+            && !finding.id.starts_with("version-undecidable:")
+            && finding.id != "dependency-unsat:global"
+    }));
+}
+
+#[test]
 fn fabric_extended_semver_accepts_newer_core_prerelease_builds() {
     let mut store = FactStore::new();
     for (id, version) in [

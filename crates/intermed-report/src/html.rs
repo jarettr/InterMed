@@ -261,6 +261,13 @@ fn summary_section(report: &DoctorReport) -> String {
             report.analysis_configuration.disabled_collectors.join(", "),
         ),
         (
+            "Executable SHA-256",
+            fingerprint
+                .executable_sha256
+                .clone()
+                .unwrap_or_else(|| "unavailable".into()),
+        ),
+        (
             "Git commit",
             fingerprint
                 .git_commit

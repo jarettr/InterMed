@@ -73,7 +73,7 @@ Fatal conclusions are permitted only when their declared contract is satisfied.
 
 - `intermed-doctor-report-v2` is canonical from 0.1.6.
 - The v1 reader remains supported.
-- `doctor --report-schema v1` is a temporary, lossy writer through 0.1.7. It
+- `doctor --report-schema v1` is a temporary, lossy alpha writer. It
   removes assessment and target-capability detail that v1 consumers cannot
   represent.
 - Additive optional fields do not change the schema identifier. Removing a

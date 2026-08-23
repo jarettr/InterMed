@@ -652,6 +652,7 @@ pub fn emit_scan_with_settings(
             .attr("blast_radius", i64::from(risk.blast_radius))
             .attr("fragility", i64::from(risk.fragility))
             .attr("actionability", i64::from(risk.actionability))
+            .attr("conflict_class", risk.conflict_class.clone())
             .attr("reasons", risk.reasons.join("; "))
             .attr("mods", risk.mods.join(","))
             .attr("hot_path", risk.hot_path)

@@ -62,7 +62,10 @@ impl VersionDialect {
     /// version, even when InterMed's display normalizer marks its numeric groups
     /// as ambiguous (for example `1.20-Fabric-4.0.6`).
     pub fn orders_raw_extended_versions(self) -> bool {
-        matches!(self, Self::FabricExtendedSemver | Self::Quilt)
+        matches!(
+            self,
+            Self::FabricExtendedSemver | Self::Quilt | Self::MavenRange
+        )
     }
 }
 
@@ -147,7 +150,10 @@ impl MavenVersion {
         let mut items = Vec::new();
         let mut token = String::new();
         let mut numeric = None;
-        let flush = |token: &mut String, numeric: Option<bool>, items: &mut Vec<MavenItem>| {
+        let flush = |token: &mut String,
+                     numeric: Option<bool>,
+                     short_alias_before_digit: bool,
+                     items: &mut Vec<MavenItem>| {
             if token.is_empty() {
                 return;
             }
@@ -159,13 +165,16 @@ impl MavenVersion {
                     normalized.to_string()
                 }));
             } else {
-                items.push(MavenItem::Qualifier(normalize_maven_qualifier(token)));
+                items.push(MavenItem::Qualifier(normalize_maven_qualifier(
+                    token,
+                    short_alias_before_digit,
+                )));
             }
             token.clear();
         };
         for ch in raw.chars() {
             if matches!(ch, '.' | '-' | '_' | '+') {
-                flush(&mut token, numeric, &mut items);
+                flush(&mut token, numeric, false, &mut items);
                 if ch == '-' {
                     items.push(MavenItem::Minus);
                 }
@@ -174,13 +183,22 @@ impl MavenVersion {
             }
             let is_numeric = ch.is_ascii_digit();
             if numeric.is_some_and(|was_numeric| was_numeric != is_numeric) {
-                flush(&mut token, numeric, &mut items);
+                // Maven only expands the one-letter `a`/`b`/`m` aliases when
+                // the qualifier is immediately followed by a digit (`1a1`). A
+                // terminal `1.0.12a` keeps unknown qualifier `a`, which sorts
+                // after the release and is commonly used as a Forge hotfix.
+                flush(
+                    &mut token,
+                    numeric,
+                    is_numeric && numeric == Some(false),
+                    &mut items,
+                );
                 items.push(MavenItem::Minus);
             }
             numeric = Some(is_numeric);
             token.push(ch.to_ascii_lowercase());
         }
-        flush(&mut token, numeric, &mut items);
+        flush(&mut token, numeric, false, &mut items);
         (!items.is_empty()).then_some(Self(items))
     }
 }
@@ -205,11 +223,11 @@ impl PartialOrd for MavenVersion {
     }
 }
 
-fn normalize_maven_qualifier(raw: &str) -> String {
+fn normalize_maven_qualifier(raw: &str, short_alias_before_digit: bool) -> String {
     match raw.to_ascii_lowercase().as_str() {
-        "a" => "alpha".into(),
-        "b" => "beta".into(),
-        "m" => "milestone".into(),
+        "a" if short_alias_before_digit => "alpha".into(),
+        "b" if short_alias_before_digit => "beta".into(),
+        "m" if short_alias_before_digit => "milestone".into(),
         "cr" => "rc".into(),
         "ga" | "final" | "release" => String::new(),
         value => value.to_string(),
@@ -901,6 +919,20 @@ mod tests {
         );
         assert!(MavenVersion::parse("1.0.0-1").unwrap() < MavenVersion::parse("1.0.0.1").unwrap());
         assert_eq!(MavenVersion::parse("1a1"), MavenVersion::parse("1-alpha-1"));
+        // Real Forge pack versions: Maven's one-letter alias is contextual.
+        // A terminal `a` is an unknown qualifier and sorts after the release;
+        // only `a` followed by a digit is the shorthand for `alpha`.
+        assert_eq!(
+            version_in_range_with_dialect("1.0.12a", "[1.0.12,)", dialect),
+            Some(true)
+        );
+        assert_eq!(
+            version_in_range_with_dialect("1.6.9a", "[1.6.9,)", dialect),
+            Some(true)
+        );
+        assert!(
+            MavenVersion::parse("1.0.12-alpha").unwrap() < MavenVersion::parse("1.0.12").unwrap()
+        );
     }
 
     #[test]

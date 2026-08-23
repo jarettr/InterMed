@@ -49,6 +49,37 @@ fn scan_is_clean_for_benign_jar() {
 }
 
 #[test]
+fn shaded_mixin_framework_calls_are_not_attributed_to_the_mod() {
+    let root = temp_dir("shaded-mixin");
+    let mods = root.join("mods");
+    std::fs::create_dir_all(&mods).unwrap();
+    let class = fixtures::class_with_method_ref(
+        "java/lang/ClassLoader",
+        "defineClass",
+        "(Ljava/lang/String;[BII)Ljava/lang/Class;",
+    );
+    let file = std::fs::File::create(mods.join("legacy-mod.jar")).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("fabric.mod.json", options).unwrap();
+    zip.write_all(br#"{"id":"legacy-mod","version":"1"}"#)
+        .unwrap();
+    zip.start_file(
+        "org/spongepowered/tools/agent/MixinAgentClassLoader.class",
+        options,
+    )
+    .unwrap();
+    zip.write_all(&class).unwrap();
+    zip.finish().unwrap();
+
+    let scan = scan_mods_dir(&mods).unwrap();
+    let record = &scan.records[0];
+    assert!(!record.has_signal(SecuritySignal::DynamicClassDefinition));
+    assert_eq!(record.framework_classes_excluded, 1);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn scan_skips_fake_class_entries_without_magic() {
     let root = temp_dir("fake-class");
     let mods = root.join("mods");

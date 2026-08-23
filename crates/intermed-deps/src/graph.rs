@@ -122,7 +122,10 @@ pub fn build_graph(store: &FactStore) -> ModpackGraph {
     let loader_by_mod: HashMap<String, String> = store
         .by_kind(kind::MOD)
         .chain(store.by_kind(kind::PLUGIN))
-        .filter(|fact| fact.attr("identity_certainty") != Some("undecidable"))
+        .filter(|fact| {
+            fact.attr("identity_certainty")
+                .is_none_or(|certainty| certainty == "confirmed")
+        })
         .filter_map(|fact| {
             fact.attr("loader")
                 .map(|loader| (fact.subject.clone(), loader.to_string()))
@@ -132,7 +135,10 @@ pub fn build_graph(store: &FactStore) -> ModpackGraph {
     for f in store
         .by_kind(kind::MOD)
         .chain(store.by_kind(kind::PLUGIN))
-        .filter(|fact| fact.attr("identity_certainty") != Some("undecidable"))
+        .filter(|fact| {
+            fact.attr("identity_certainty")
+                .is_none_or(|certainty| certainty == "confirmed")
+        })
     {
         let version = f.attr("version").unwrap_or("0").to_string();
         // `version_ambiguous` describes the generic display normalizer, not the
@@ -186,10 +192,10 @@ pub fn build_graph(store: &FactStore) -> ModpackGraph {
     }
 
     let mut edges = Vec::new();
-    for dep in store
-        .by_kind(kind::DEPENDENCY)
-        .filter(|fact| fact.attr("identity_certainty") != Some("undecidable"))
-    {
+    for dep in store.by_kind(kind::DEPENDENCY).filter(|fact| {
+        fact.attr("identity_certainty")
+            .is_none_or(|certainty| certainty == "confirmed")
+    }) {
         let dep_id = dep.attr("dep").unwrap_or("").to_string();
         if dep_id.is_empty() {
             continue;

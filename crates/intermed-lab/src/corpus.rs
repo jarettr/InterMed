@@ -17,8 +17,9 @@ use crate::{LabError, read_json, write_json_atomic};
 
 /// Schema tag for the candidate-pool input.
 pub const CORPUS_CANDIDATES_SCHEMA: &str = "intermed-corpus-candidates-v1";
-/// Schema tag for the emitted lock.
-pub const CORPUS_LOCK_SCHEMA: &str = "intermed-corpus-lock-v1";
+/// Canonical schema tag for the emitted lock.
+pub const CORPUS_LOCK_SCHEMA: &str = "intermed-corpus-lock-v2";
+pub const CORPUS_LOCK_SCHEMA_V1: &str = "intermed-corpus-lock-v1";
 
 /// The environment a corpus is pinned for.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -30,6 +31,9 @@ pub struct CorpusEnvironment {
     /// `client`, `server`, or `both`.
     #[serde(default = "default_side")]
     pub side: String,
+    /// Exact loader version when an authoritative pack manifest declares it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loader_version: Option<String>,
 }
 
 fn default_side() -> String {
@@ -73,6 +77,30 @@ pub struct LockedMod {
     pub download_url: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct LockedPackFile {
+    /// Safe path relative to the materialized instance root.
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha512: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub downloads: Vec<String>,
+    #[serde(default)]
+    pub client_required: bool,
+    #[serde(default)]
+    pub server_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackIdentity {
+    pub provider: String,
+    pub name: String,
+    pub version_id: String,
+    pub manifest_sha256: String,
+}
+
 /// A reproducible, content-addressed corpus lock.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CorpusLock {
@@ -80,6 +108,10 @@ pub struct CorpusLock {
     pub environment: CorpusEnvironment,
     /// Pinned mods, deduped by project and sorted for determinism.
     pub mods: Vec<LockedMod>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<LockedPackFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack: Option<PackIdentity>,
     /// SHA-256 over the canonical lock contents — the lock's identity. Two locks
     /// with this digest pin the exact same corpus for the exact same environment.
     pub digest: String,
@@ -146,11 +178,13 @@ impl CorpusLock {
             })
             .collect();
 
-        let digest = lock_digest(&candidates.environment, &mods);
+        let digest = lock_digest(&candidates.environment, &mods, &[], None);
         CorpusLock {
             schema: CORPUS_LOCK_SCHEMA.to_string(),
             environment: candidates.environment.clone(),
             mods,
+            files: Vec::new(),
+            pack: None,
             digest,
         }
     }
@@ -158,7 +192,55 @@ impl CorpusLock {
     /// Recompute the digest and verify it matches the stored one (lock integrity).
     #[must_use]
     pub fn verify_digest(&self) -> bool {
-        self.digest == lock_digest(&self.environment, &self.mods)
+        let expected = if self.schema == CORPUS_LOCK_SCHEMA_V1 {
+            legacy_lock_digest(&self.environment, &self.mods)
+        } else {
+            lock_digest(
+                &self.environment,
+                &self.mods,
+                &self.files,
+                self.pack.as_ref(),
+            )
+        };
+        self.digest == expected
+    }
+
+    #[must_use]
+    pub fn from_pack_manifest(
+        environment: CorpusEnvironment,
+        mut files: Vec<LockedPackFile>,
+        pack: PackIdentity,
+    ) -> Self {
+        files.sort();
+        files.dedup();
+        let mods = files
+            .iter()
+            .filter(|file| file.path.starts_with("mods/") && file.path.ends_with(".jar"))
+            .map(|file| {
+                let file_name = file
+                    .path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&file.path)
+                    .to_string();
+                LockedMod {
+                    project_id: file_name.trim_end_matches(".jar").to_string(),
+                    version_id: "manifest-pinned".to_string(),
+                    file_name,
+                    sha512: file.sha512.clone(),
+                    download_url: file.downloads.first().cloned(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let digest = lock_digest(&environment, &mods, &files, Some(&pack));
+        Self {
+            schema: CORPUS_LOCK_SCHEMA.to_string(),
+            environment,
+            mods,
+            files,
+            pack: Some(pack),
+            digest,
+        }
     }
 }
 
@@ -174,7 +256,12 @@ impl CorpusLock {
 /// (Modrinth's immutable `version_id` is not guaranteed elsewhere), and `sha512`
 /// exists specifically to pin content, so it is folded in here. Mods without a
 /// known hash contribute an empty field, leaving them coordinate-pinned only.
-fn lock_digest(env: &CorpusEnvironment, mods: &[LockedMod]) -> String {
+fn lock_digest(
+    env: &CorpusEnvironment,
+    mods: &[LockedMod],
+    files: &[LockedPackFile],
+    pack: Option<&PackIdentity>,
+) -> String {
     let mut hasher = Sha256::new();
     hasher.update(env.loader.as_bytes());
     hasher.update(b"\0");
@@ -182,6 +269,11 @@ fn lock_digest(env: &CorpusEnvironment, mods: &[LockedMod]) -> String {
     hasher.update(b"\0");
     hasher.update(env.side.as_bytes());
     hasher.update(b"\n");
+    if let Some(loader_version) = &env.loader_version {
+        hasher.update(b"loader-version\0");
+        hasher.update(loader_version.as_bytes());
+        hasher.update(b"\n");
+    }
     let mut lines: Vec<String> = mods
         .iter()
         .map(|m| {
@@ -193,6 +285,63 @@ fn lock_digest(env: &CorpusEnvironment, mods: &[LockedMod]) -> String {
             )
         })
         .collect();
+    lines.sort();
+    for line in lines {
+        hasher.update(line.as_bytes());
+        hasher.update(b"\n");
+    }
+    if let Some(pack) = pack {
+        hasher.update(b"pack\0");
+        hasher.update(pack.provider.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(pack.name.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(pack.version_id.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(pack.manifest_sha256.as_bytes());
+        hasher.update(b"\n");
+    }
+    for file in files {
+        hasher.update(b"file\0");
+        hasher.update(file.path.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(file.sha512.as_deref().unwrap_or("").as_bytes());
+        hasher.update(b"\0");
+        hasher.update(file.sha256.as_deref().unwrap_or("").as_bytes());
+        hasher.update(b"\0");
+        hasher.update(if file.client_required { b"c1" } else { b"c0" });
+        hasher.update(b"\0");
+        hasher.update(if file.server_required { b"s1" } else { b"s0" });
+        let mut downloads = file.downloads.clone();
+        downloads.sort();
+        for download in downloads {
+            hasher.update(b"\0url\0");
+            hasher.update(download.as_bytes());
+        }
+        hasher.update(b"\n");
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn legacy_lock_digest(env: &CorpusEnvironment, mods: &[LockedMod]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(env.loader.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(env.mc_version.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(env.side.as_bytes());
+    hasher.update(b"\n");
+    let mut lines = mods
+        .iter()
+        .map(|module| {
+            format!(
+                "{}@{}#{}",
+                module.project_id,
+                module.version_id,
+                module.sha512.as_deref().unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>();
     lines.sort();
     for line in lines {
         hasher.update(line.as_bytes());
@@ -212,8 +361,15 @@ pub fn discover_lock(provider: &dyn CandidateProvider, out: &Path) -> Result<Cor
 /// Load and validate a lock file.
 pub fn read_lock(path: &Path) -> Result<CorpusLock, LabError> {
     let lock: CorpusLock = read_json(path)?;
-    if lock.schema != CORPUS_LOCK_SCHEMA {
-        return Err(LabError::schema(path, CORPUS_LOCK_SCHEMA, &lock.schema));
+    if !matches!(
+        lock.schema.as_str(),
+        CORPUS_LOCK_SCHEMA | CORPUS_LOCK_SCHEMA_V1
+    ) {
+        return Err(LabError::schema(
+            path,
+            "intermed-corpus-lock-v1 or intermed-corpus-lock-v2",
+            &lock.schema,
+        ));
     }
     if !lock.verify_digest() {
         return Err(LabError::new(format!(
@@ -233,6 +389,7 @@ mod tests {
             loader: "fabric".into(),
             mc_version: "1.20.1".into(),
             side: "server".into(),
+            loader_version: None,
         }
     }
 
@@ -322,5 +479,18 @@ mod tests {
         let lock_b = CorpusLock::from_candidates(&swapped);
 
         assert_ne!(lock_a.digest, lock_b.digest);
+    }
+
+    #[test]
+    fn legacy_v1_lock_digest_remains_readable() {
+        let candidates = CorpusCandidates {
+            schema: CORPUS_CANDIDATES_SCHEMA.into(),
+            environment: env(),
+            candidates: vec![candidate("a", "1", 1)],
+        };
+        let mut lock = CorpusLock::from_candidates(&candidates);
+        lock.schema = CORPUS_LOCK_SCHEMA_V1.into();
+        lock.digest = legacy_lock_digest(&lock.environment, &lock.mods);
+        assert!(lock.verify_digest());
     }
 }

@@ -1132,6 +1132,10 @@ pub struct MixinRiskAssessment {
     /// How clear the fix is (0–100). Reported, not folded into `score`.
     #[serde(default)]
     pub actionability: u8,
+    /// Typed interaction semantics. Composite score also contains hot-path and
+    /// blast-radius terms, so it must not decide user-facing urgency alone.
+    #[serde(default = "default_conflict_class")]
+    pub conflict_class: String,
     pub reasons: Vec<String>,
     pub mods: Vec<String>,
     pub hot_path: bool,
@@ -1140,6 +1144,10 @@ pub struct MixinRiskAssessment {
 
 fn default_certainty() -> u8 {
     100
+}
+
+fn default_conflict_class() -> String {
+    "unclassified".to_string()
 }
 
 /// Serializable graph export for reports and visualization.

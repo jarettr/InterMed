@@ -9,6 +9,7 @@
 //! offline-testable evidence path is fully implemented here; a live runner is a
 //! later, optional plug-in behind the same trait.
 
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
@@ -59,6 +60,33 @@ pub struct RawSmokeOutput {
     /// Captured stdout+stderr (or log file contents).
     #[serde(default)]
     pub log: String,
+    /// Actual process exit code when a live runner observed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// Whether `log` contains the complete captured stream. Legacy v1 inputs
+    /// default to true; live runners set this false on byte-budget truncation.
+    #[serde(default = "default_true")]
+    pub log_complete: bool,
+    /// The environment could not be prepared or launched. This is never a pack
+    /// compatibility failure.
+    #[serde(default)]
+    pub infrastructure_failure: bool,
+    /// The harness itself failed after launch (observer, shutdown, capture).
+    #[serde(default)]
+    pub harness_failure: bool,
+    /// Static-only campaign case; no runtime verdict was attempted.
+    #[serde(default)]
+    pub skipped: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_time_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enforced_limits: Vec<String>,
+    #[serde(default)]
+    pub isolation: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Outcome of a smoke test after classification.
@@ -109,6 +137,10 @@ pub struct SmokeResult {
     pub detail: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_excerpt: Option<String>,
+    /// Structured Layer-D-compatible observation used by coverage-aware Lab
+    /// evaluation. Optional for backwards compatibility with older run files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<crate::observation::ExecutionObservation>,
 }
 
 /// A classified lab run for one corpus.
@@ -121,9 +153,9 @@ pub struct LabRun {
     pub results: Vec<SmokeResult>,
 }
 
-/// Produces raw smoke outputs for a locked corpus. The default in-tree
-/// implementation ingests captured outputs; a live server runner is a deferred
-/// donor implementing this trait.
+/// Produces raw smoke outputs for a locked corpus. Captured-output ingestion and
+/// explicit sandboxed command execution both ultimately use this schema; loader
+/// acquisition/bootstrap remains outside the trait.
 pub trait SmokeRunner {
     fn run(&self, lock: &CorpusLock) -> Result<Vec<RawSmokeOutput>, LabError>;
 }
@@ -181,18 +213,55 @@ pub fn classify(raw: &RawSmokeOutput) -> SmokeResult {
 #[must_use]
 pub fn classify_with_options(raw: &RawSmokeOutput, options: LabRunOptions) -> SmokeResult {
     let excerpt_max = options.excerpt_max;
-    if raw.timed_out {
+    let observation = crate::observation::observe_smoke(raw);
+    if matches!(
+        observation.status,
+        crate::observation::ObservationStatus::TimedOutBeforeReadiness
+            | crate::observation::ObservationStatus::TimedOutAfterReadiness
+    ) {
+        let detail = match observation.status {
+            crate::observation::ObservationStatus::TimedOutAfterReadiness => {
+                "Smoke test reached readiness, then exceeded its soak budget"
+            }
+            _ => "Smoke test exceeded its time budget before readiness",
+        };
         return SmokeResult {
             environment: raw.environment.clone(),
             status: SmokeStatus::Timeout,
             failure: None,
             additional_failures: Vec::new(),
             attributions: Vec::new(),
-            detail: "Smoke test exceeded its time budget".to_string(),
+            detail: detail.to_string(),
             log_excerpt: excerpt(&raw.log, None, excerpt_max),
+            observation: Some(observation),
         };
     }
-    if raw.exited_ok {
+    if matches!(
+        observation.status,
+        crate::observation::ObservationStatus::InfrastructureFailure
+            | crate::observation::ObservationStatus::HarnessFailure
+    ) {
+        return SmokeResult {
+            environment: raw.environment.clone(),
+            status: SmokeStatus::Fail,
+            failure: None,
+            additional_failures: Vec::new(),
+            attributions: Vec::new(),
+            detail: if raw.infrastructure_failure {
+                "Lab infrastructure failed; pack compatibility was not evaluated".to_string()
+            } else {
+                "Lab harness failed; pack compatibility was not evaluated".to_string()
+            },
+            log_excerpt: excerpt(&raw.log, None, excerpt_max),
+            observation: Some(observation),
+        };
+    }
+    if matches!(
+        observation.status,
+        crate::observation::ObservationStatus::Passed
+            | crate::observation::ObservationStatus::Degraded
+            | crate::observation::ObservationStatus::Inconclusive
+    ) {
         let perf = classify_log_all(&raw.log)
             .into_iter()
             .find(|c| *c == FailureCategory::PerformanceRegression);
@@ -206,21 +275,32 @@ pub fn classify_with_options(raw: &RawSmokeOutput, options: LabRunOptions) -> Sm
                 attributions,
                 detail: category.title().to_string(),
                 log_excerpt: excerpt(&raw.log, Some(category), excerpt_max),
+                observation: Some(observation),
             };
         }
+        let conclusive = matches!(
+            observation.status,
+            crate::observation::ObservationStatus::Passed
+        );
         return SmokeResult {
             environment: raw.environment.clone(),
             status: SmokeStatus::Pass,
             failure: None,
             additional_failures: Vec::new(),
             attributions: Vec::new(),
-            detail: "Clean startup".to_string(),
+            detail: if conclusive {
+                "Readiness milestone reached without a terminal incident".to_string()
+            } else {
+                "Process exited cleanly before a recognized readiness milestone; result inconclusive"
+                    .to_string()
+            },
             log_excerpt: None,
+            observation: Some(observation),
         };
     }
     // Collect every independent failure; the first (highest-priority) is the
     // dominant one that drives the verdict, the rest are surfaced as context.
-    let mut all = classify_log_all(&raw.log);
+    let mut all = observation.failure_categories.clone();
     let category = if all.is_empty() {
         FailureCategory::Unknown
     } else {
@@ -251,6 +331,7 @@ pub fn classify_with_options(raw: &RawSmokeOutput, options: LabRunOptions) -> Sm
         attributions,
         detail,
         log_excerpt: excerpt(&raw.log, Some(category), excerpt_max),
+        observation: Some(observation),
     }
 }
 
@@ -353,6 +434,48 @@ pub fn read_run(path: &Path) -> Result<LabRun, LabError> {
     Ok(run)
 }
 
+/// Convert an existing raw log into the campaign smoke-input schema using a
+/// bounded tail buffer. This is the migration path for real runs captured by a
+/// launcher or external harness.
+pub fn capture_log(
+    log_path: &Path,
+    environment: &str,
+    exit_code: Option<i32>,
+    timed_out: bool,
+    max_bytes: u64,
+    out: &Path,
+) -> Result<RawSmokeOutput, LabError> {
+    let mut file = std::fs::File::open(log_path)
+        .map_err(|error| LabError::new(format!("open {}: {error}", log_path.display())))?;
+    let len = file
+        .metadata()
+        .map_err(|error| LabError::new(format!("stat {}: {error}", log_path.display())))?
+        .len();
+    let start = len.saturating_sub(max_bytes);
+    file.seek(SeekFrom::Start(start))
+        .map_err(|error| LabError::new(format!("seek {}: {error}", log_path.display())))?;
+    let mut bytes = Vec::with_capacity((len - start).min(usize::MAX as u64) as usize);
+    file.read_to_end(&mut bytes)
+        .map_err(|error| LabError::new(format!("read {}: {error}", log_path.display())))?;
+    let raw = RawSmokeOutput {
+        schema: SMOKE_OUTPUT_SCHEMA.to_string(),
+        environment: environment.to_string(),
+        exited_ok: exit_code == Some(0) && !timed_out,
+        timed_out,
+        log: String::from_utf8_lossy(&bytes).into_owned(),
+        exit_code,
+        log_complete: start == 0,
+        infrastructure_failure: false,
+        harness_failure: false,
+        skipped: false,
+        wall_time_ms: None,
+        enforced_limits: Vec::new(),
+        isolation: "external-capture".to_string(),
+    };
+    write_json_atomic(out, &raw)?;
+    Ok(raw)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,6 +487,14 @@ mod tests {
             exited_ok: ok,
             timed_out: false,
             log: log.into(),
+            exit_code: ok.then_some(0),
+            log_complete: true,
+            infrastructure_failure: false,
+            harness_failure: false,
+            skipped: false,
+            wall_time_ms: None,
+            enforced_limits: Vec::new(),
+            isolation: "test".into(),
         }
     }
 

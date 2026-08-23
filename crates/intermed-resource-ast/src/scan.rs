@@ -34,6 +34,7 @@ use crate::semantic::namespace::path_namespace;
 /// cap is the caller's `max_json_bytes`.
 const MAX_RESOURCE_ENTRIES: usize = 50_000;
 const MAX_TOTAL_PARSED_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_DESCRIPTOR_BYTES: u64 = 1024 * 1024;
 
 /// Cached AST scan for one jar.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,22 +198,10 @@ fn archive_stem(name: &str) -> String {
 /// scanner so a resource is attributed to the same writer in both layers.
 fn detect_writer_id(archive: &mut zip::ZipArchive<std::fs::File>) -> Option<String> {
     read_zip_text(archive, "fabric.mod.json")
-        .and_then(|text| {
-            serde_json::from_str::<serde_json::Value>(&text)
-                .ok()
-                .and_then(|v| v.get("id").and_then(|x| x.as_str()).map(str::to_string))
-        })
+        .and_then(|text| descriptor_writer_id(&text, false))
         .or_else(|| {
-            read_zip_text(archive, "quilt.mod.json").and_then(|text| {
-                serde_json::from_str::<serde_json::Value>(&text)
-                    .ok()
-                    .and_then(|v| {
-                        v.get("quilt_loader")
-                            .and_then(|q| q.get("id"))
-                            .and_then(|x| x.as_str())
-                            .map(str::to_string)
-                    })
-            })
+            read_zip_text(archive, "quilt.mod.json")
+                .and_then(|text| descriptor_writer_id(&text, true))
         })
         .or_else(|| {
             read_zip_text(archive, "META-INF/mods.toml")
@@ -221,9 +210,55 @@ fn detect_writer_id(archive: &mut zip::ZipArchive<std::fs::File>) -> Option<Stri
         })
 }
 
+fn descriptor_writer_id(text: &str, quilt: bool) -> Option<String> {
+    // Fabric Loader parses metadata with Gson, which accepts literal control
+    // characters in strings. Use the same bounded, lenient parser as Layer B so
+    // all layers attribute one artifact to the same mod identity.
+    let value = intermed_doctor_core::fabric_json::parse_value(text).ok()?;
+    let id = if quilt {
+        value.get("quilt_loader")?.get("id")?
+    } else {
+        value.get("id")?
+    };
+    id.as_str().map(str::to_string)
+}
+
 fn read_zip_text(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Option<String> {
     let mut entry = archive.by_name(name).ok()?;
+    if entry.size() > MAX_DESCRIPTOR_BYTES {
+        return None;
+    }
     let mut text = String::new();
-    entry.read_to_string(&mut text).ok()?;
+    entry
+        .by_ref()
+        .take(MAX_DESCRIPTOR_BYTES + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    if text.len() as u64 > MAX_DESCRIPTOR_BYTES {
+        return None;
+    }
     Some(text)
+}
+
+#[cfg(test)]
+mod writer_identity_tests {
+    use super::descriptor_writer_id;
+
+    #[test]
+    fn fabric_gson_control_characters_do_not_split_layer_identity() {
+        let metadata = "{\"id\":\"betterend\",\"description\":\"line one\nline two\"}";
+        assert_eq!(
+            descriptor_writer_id(metadata, false).as_deref(),
+            Some("betterend")
+        );
+    }
+
+    #[test]
+    fn quilt_writer_comes_from_quilt_loader_identity() {
+        let metadata = r#"{"quilt_loader":{"id":"quilt_mod"}}"#;
+        assert_eq!(
+            descriptor_writer_id(metadata, true).as_deref(),
+            Some("quilt_mod")
+        );
+    }
 }

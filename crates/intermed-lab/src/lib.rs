@@ -20,20 +20,11 @@
 //! * [`report`] — `lab report`: a [`CompatibilityMatrix`](report::CompatibilityMatrix)
 //!   plus a self-contained HTML page.
 //!
-//! ## Deferred donors (rewrite-hard, network/process)
-//!
-//! The *live execution* pieces stay out of the deterministic core and are added
-//! later behind existing traits, so the offline evidence path never depends on
-//! the network or a JVM:
-//!
-//! * `ModrinthClient` (corpus discovery: 50% downloads / 25% follows / 25%
-//!   updated, dedupe by project id) → a networked [`CandidateProvider`](corpus::CandidateProvider).
-//! * `EnvironmentBootstrap`, the loader installers
-//!   (`FabricServerInstaller`/`ForgeServerInstaller`/`NeoForgeServerInstaller`),
-//!   `VanillaServerFetcher`, `ServerProcessRunner` → a live
-//!   [`SmokeRunner`](run::SmokeRunner) that produces the same
-//!   [`RawSmokeOutput`](run::RawSmokeOutput) the in-tree
-//!   [`CapturedLogRunner`](run::CapturedLogRunner) ingests today.
+//! Layer K also owns resumable campaigns, content-addressed materialization,
+//! fail-closed sandbox execution contracts, Layer-D-compatible runtime
+//! observations, coverage-aware evaluation, and semantic mismatch clustering.
+//! Network acquisition and loader installation remain separate operations;
+//! executing an arbitrary pack requires an explicit sandbox plan.
 //!
 //! All file writes use a temp-then-rename atomic discipline (see
 //! [`write_atomic`]).
@@ -47,40 +38,65 @@ use serde::de::DeserializeOwned;
 use thiserror::Error;
 
 pub mod attribution;
+pub mod campaign;
+pub mod campaign_report;
 pub mod classify;
 pub mod corpus;
 pub mod eval;
 pub mod execution;
+pub mod modrinth;
+pub mod observation;
 pub mod report;
 pub mod run;
+pub mod store;
+pub mod triage;
 
 pub use attribution::{FailureAttribution, SEVERITY_CALIBRATION_MIN_SUPPORT, extract_attributions};
+pub use campaign::{
+    CAMPAIGN_SCHEMA, CAMPAIGN_STATE_SCHEMA, Campaign, CampaignCase, CampaignCaseState,
+    CampaignCaseStatus, CampaignExecutor, CampaignOptions, CampaignState, FileCampaignExecutor,
+    read_campaign, run_campaign,
+};
+pub use campaign_report::{
+    CAMPAIGN_REPORT_SCHEMA, CampaignReport, build_campaign_report, write_campaign_report,
+};
 pub use classify::{FailureCategory, FailureFamily, classify_log, classify_log_all};
 pub use corpus::{
-    CORPUS_CANDIDATES_SCHEMA, CORPUS_LOCK_SCHEMA, CandidateMod, CandidateProvider,
-    CorpusCandidates, CorpusEnvironment, CorpusLock, FileCandidateProvider, LockedMod,
-    discover_lock, read_lock,
+    CORPUS_CANDIDATES_SCHEMA, CORPUS_LOCK_SCHEMA, CORPUS_LOCK_SCHEMA_V1, CandidateMod,
+    CandidateProvider, CorpusCandidates, CorpusEnvironment, CorpusLock, FileCandidateProvider,
+    LockedMod, discover_lock, read_lock,
 };
 pub use eval::{
     CategoryAccuracy, EVAL_MANIFEST_SCHEMA, FindingAccuracy, FindingLevelAccuracy,
-    RULE_ACCURACY_SCHEMA, RuleAccuracy, RuleAccuracyReport, evaluate, evaluate_manifest,
-    evaluate_pair,
+    RULE_ACCURACY_SCHEMA, RuleAccuracy, RuleAccuracyReport, case_from_observation_files, evaluate,
+    evaluate_manifest, evaluate_observation_pair, evaluate_pair,
 };
 pub use execution::{
-    EnvironmentRunner, EnvironmentSpec, ProcessOutcome, RunningProcess, ServerProcessRunner,
+    CommandExecutionBackend, EnvironmentRunner, EnvironmentSpec, ExecutionLimits, ExecutionPlan,
+    NetworkPolicy, ProcessOutcome, RunningProcess, SandboxPolicy, ServerProcessRunner,
     outcome_to_smoke,
+};
+pub use modrinth::lock_modrinth_manifest;
+pub use observation::{
+    ExecutionCoverage, ExecutionObservation, IncidentObservation, OBSERVATION_SCHEMA,
+    ObservationStatus, RuntimeMilestone, observe_smoke,
 };
 pub use report::{
     COMPAT_MATRIX_SCHEMA, CompatibilityMatrix, MatrixCell, render_html, write_report,
 };
 pub use run::{
     CapturedLogRunner, DEFAULT_EXCERPT_MAX, LAB_RUN_SCHEMA, LabRun, LabRunOptions, RawSmokeOutput,
-    SMOKE_OUTPUT_SCHEMA, SmokeResult, SmokeRunner, SmokeStatus, classify_with_options, read_run,
-    run_lab, run_lab_with, run_with,
+    SMOKE_OUTPUT_SCHEMA, SmokeResult, SmokeRunner, SmokeStatus, capture_log, classify_with_options,
+    read_run, run_lab, run_lab_with, run_with,
 };
+pub use store::{
+    ArtifactStore, MaterializationRecord, STORE_MANIFEST_SCHEMA, TARGET_VERIFICATION_SCHEMA,
+    TargetVerification, verify_target,
+};
+pub use triage::{MismatchCluster, TRIAGE_SCHEMA, TriageReport, cluster_accuracy};
 
 /// Implementation status for the CLI's help / `--list-layers` output.
-pub const STATUS: &str = "active: Phase 8 (offline evidence path; live runner deferred)";
+pub const STATUS: &str = "active: measured real-pack campaigns and compatibility evidence";
 
 /// A lab operation failure.
 #[derive(Debug, Error)]

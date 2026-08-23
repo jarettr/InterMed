@@ -3,7 +3,7 @@
 use std::sync::LazyLock;
 
 use intermed_deps::DependencyRule;
-use intermed_doctor_core::evidence::Severity;
+use intermed_doctor_core::evidence::{CoverageRequirement, Severity};
 use intermed_doctor_core::facts::{FactStore, kind};
 use intermed_doctor_core::{Rule, RuleCtx, Target, TargetKind};
 
@@ -92,6 +92,11 @@ fn incompatible_mod_present_emits_error() {
         .find(|f| f.id == "incompatible-mod:create->radium")
         .expect("incompatible installed mod");
     assert_eq!(conflict.severity, Severity::Error);
+    assert!(
+        !conflict
+            .coverage_requirements
+            .contains(&CoverageRequirement::KnownBridgeSemantics)
+    );
 }
 
 #[test]

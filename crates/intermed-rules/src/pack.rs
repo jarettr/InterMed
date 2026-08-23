@@ -155,7 +155,7 @@ pub fn default_core_pack_v3() -> RulePack {
 
     let mut pack = default_core_pack_v2();
     pack.schema = RULE_PACK_SCHEMA_V3.to_string();
-    pack.version = "0.1.7".to_string();
+    pack.version = "0.1.8".to_string();
     for rule in &mut pack.rules {
         let hard = matches!(rule.finding.severity.as_str(), "error" | "fatal");
         let coverage_requirements = match rule.id.as_str() {

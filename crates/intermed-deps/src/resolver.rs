@@ -234,4 +234,37 @@ mod tests {
         let outcome = resolve_store(&store).expect("resolve");
         assert!(matches!(outcome, ResolutionOutcome::Unsatisfiable { .. }));
     }
+
+    #[test]
+    fn maven_mc_prefixed_version_does_not_create_false_global_unsat() {
+        let mut store = FactStore::new();
+        store
+            .fact("meta", kind::MOD)
+            .subject("radiantgear")
+            .attr("version", "2.0.4+1.19.2")
+            .attr("loader", "forge")
+            .emit();
+        store
+            .fact("meta", kind::MOD)
+            .subject("curios")
+            .attr("version", "1.19.2-5.1.6.4")
+            .attr("loader", "forge")
+            .emit();
+        store
+            .fact("meta", kind::MOD_METADATA)
+            .subject("curios")
+            .attr("version_ambiguous", true)
+            .emit();
+        store
+            .fact("meta", kind::DEPENDENCY)
+            .subject("radiantgear")
+            .attr("dep", "curios")
+            .attr("range", "[1.19.2-5.1.0.0,)")
+            .attr("mandatory", true)
+            .attr("relation", "depends")
+            .attr("version_dialect", "maven-range")
+            .emit();
+        let outcome = resolve_store(&store).expect("resolve");
+        assert!(matches!(outcome, ResolutionOutcome::Satisfied { .. }));
+    }
 }

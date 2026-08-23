@@ -28,7 +28,7 @@ use crate::model::{
 };
 
 /// Schema tag for the cached resource-AST payload (cache-invalidating).
-pub const RESOURCE_AST_CACHE_SCHEMA: &str = "intermed-resource-ast-cache-v3";
+pub const RESOURCE_AST_CACHE_SCHEMA: &str = "intermed-resource-ast-cache-v4";
 
 /// Uniform output of a single domain parser.
 pub struct DomainParse {

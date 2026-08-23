@@ -54,7 +54,7 @@ Register-ArgumentCompleter -Native -CommandName 'intermed' -ScriptBlock {
             [CompletionResult]::new('--jobs', '--jobs', [CompletionResultType]::ParameterName, 'Cap the worker thread count for parallel jar/log scanning. Unset or `0` uses all available cores; lower it on weak machines or shared CI runners')
             [CompletionResult]::new('--threads', '--threads', [CompletionResultType]::ParameterName, 'Cap the worker thread count for parallel jar/log scanning. Unset or `0` uses all available cores; lower it on weak machines or shared CI runners')
             [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Emit the full report as canonical `intermed-doctor-report-v2` JSON')
-            [CompletionResult]::new('--report-schema', '--report-schema', [CompletionResultType]::ParameterName, 'JSON report schema. `v1` is a temporary lossy compatibility writer retained through 0.1.7; v2 is canonical')
+            [CompletionResult]::new('--report-schema', '--report-schema', [CompletionResultType]::ParameterName, 'JSON report schema. `v1` is a temporary lossy compatibility writer retained temporarily during alpha; v2 is canonical')
             [CompletionResult]::new('--sarif', '--sarif', [CompletionResultType]::ParameterName, 'Emit SARIF 2.1.0 (for IDE / CI code-scanning)')
             [CompletionResult]::new('--html', '--html', [CompletionResultType]::ParameterName, 'Write a self-contained HTML report (`index.html` style)')
             [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Write wall-clock phase profile JSON (`intermed-doctor-profile-v1`)')
@@ -389,14 +389,29 @@ Register-ArgumentCompleter -Native -CommandName 'intermed' -ScriptBlock {
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('discover', 'discover', [CompletionResultType]::ParameterValue, 'Build a reproducible corpus lock from a candidate pool')
+            [CompletionResult]::new('discover-mrpack', 'discover-mrpack', [CompletionResultType]::ParameterValue, 'Build an authoritative lock from `modrinth.index.json`')
             [CompletionResult]::new('run', 'run', [CompletionResultType]::ParameterValue, 'Classify captured smoke-test outputs against a corpus lock')
             [CompletionResult]::new('report', 'report', [CompletionResultType]::ParameterValue, 'Render a compatibility matrix (JSON + HTML) from a lab run')
             [CompletionResult]::new('eval', 'eval', [CompletionResultType]::ParameterValue, 'Score Doctor predictions against lab ground truth (precision/recall)')
+            [CompletionResult]::new('materialize', 'materialize', [CompletionResultType]::ParameterValue, 'Materialize a locked corpus through the content-addressed Lab store')
+            [CompletionResult]::new('campaign', 'campaign', [CompletionResultType]::ParameterValue, 'Execute or resume a reproducible real-pack campaign')
+            [CompletionResult]::new('capture', 'capture', [CompletionResultType]::ParameterValue, 'Convert a launcher/server log into a bounded smoke artifact')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
         'intermed;lab;discover' {
             [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'Output lock path')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Config file (`intermed-config-v1` TOML). Overrides discovery; see docs/reference/configuration.md')
+            [CompletionResult]::new('--dump-config', '--dump-config', [CompletionResultType]::ParameterName, 'Print the fully merged config (defaults, files, environment, and doctor CLI overrides) as TOML and exit. A subcommand is optional')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress informational progress messages on stderr (errors still print)')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase informational detail (repeatable: `-v`, `-vv`)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase informational detail (repeatable: `-v`, `-vv`)')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
+        'intermed;lab;discover-mrpack' {
+            [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'out')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Config file (`intermed-config-v1` TOML). Overrides discovery; see docs/reference/configuration.md')
             [CompletionResult]::new('--dump-config', '--dump-config', [CompletionResultType]::ParameterName, 'Print the fully merged config (defaults, files, environment, and doctor CLI overrides) as TOML and exit. A subcommand is optional')
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress informational progress messages on stderr (errors still print)')
@@ -445,15 +460,63 @@ Register-ArgumentCompleter -Native -CommandName 'intermed' -ScriptBlock {
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
             break
         }
+        'intermed;lab;materialize' {
+            [CompletionResult]::new('--source', '--source', [CompletionResultType]::ParameterName, 'Directory containing the locked artifacts')
+            [CompletionResult]::new('--store', '--store', [CompletionResultType]::ParameterName, 'Content-addressed store root')
+            [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'Immutable materialized instance directory')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Config file (`intermed-config-v1` TOML). Overrides discovery; see docs/reference/configuration.md')
+            [CompletionResult]::new('--dump-config', '--dump-config', [CompletionResultType]::ParameterName, 'Print the fully merged config (defaults, files, environment, and doctor CLI overrides) as TOML and exit. A subcommand is optional')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress informational progress messages on stderr (errors still print)')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase informational detail (repeatable: `-v`, `-vv`)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase informational detail (repeatable: `-v`, `-vv`)')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
+        'intermed;lab;campaign' {
+            [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'Persistent state and per-case observations')
+            [CompletionResult]::new('--max-attempts', '--max-attempts', [CompletionResultType]::ParameterName, 'Retry budget for infrastructure failures')
+            [CompletionResult]::new('--max-parallel', '--max-parallel', [CompletionResultType]::ParameterName, 'Maximum concurrent cases. Use 1 for very large packs')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Config file (`intermed-config-v1` TOML). Overrides discovery; see docs/reference/configuration.md')
+            [CompletionResult]::new('--dump-config', '--dump-config', [CompletionResultType]::ParameterName, 'Print the fully merged config (defaults, files, environment, and doctor CLI overrides) as TOML and exit. A subcommand is optional')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress informational progress messages on stderr (errors still print)')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase informational detail (repeatable: `-v`, `-vv`)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase informational detail (repeatable: `-v`, `-vv`)')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
+        'intermed;lab;capture' {
+            [CompletionResult]::new('--environment', '--environment', [CompletionResultType]::ParameterName, 'environment')
+            [CompletionResult]::new('--exit-code', '--exit-code', [CompletionResultType]::ParameterName, 'Observed process exit code. Omit when unavailable')
+            [CompletionResult]::new('--max-bytes', '--max-bytes', [CompletionResultType]::ParameterName, 'max-bytes')
+            [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'out')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Config file (`intermed-config-v1` TOML). Overrides discovery; see docs/reference/configuration.md')
+            [CompletionResult]::new('--timed-out', '--timed-out', [CompletionResultType]::ParameterName, 'timed-out')
+            [CompletionResult]::new('--dump-config', '--dump-config', [CompletionResultType]::ParameterName, 'Print the fully merged config (defaults, files, environment, and doctor CLI overrides) as TOML and exit. A subcommand is optional')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress informational progress messages on stderr (errors still print)')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase informational detail (repeatable: `-v`, `-vv`)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase informational detail (repeatable: `-v`, `-vv`)')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
         'intermed;lab;help' {
             [CompletionResult]::new('discover', 'discover', [CompletionResultType]::ParameterValue, 'Build a reproducible corpus lock from a candidate pool')
+            [CompletionResult]::new('discover-mrpack', 'discover-mrpack', [CompletionResultType]::ParameterValue, 'Build an authoritative lock from `modrinth.index.json`')
             [CompletionResult]::new('run', 'run', [CompletionResultType]::ParameterValue, 'Classify captured smoke-test outputs against a corpus lock')
             [CompletionResult]::new('report', 'report', [CompletionResultType]::ParameterValue, 'Render a compatibility matrix (JSON + HTML) from a lab run')
             [CompletionResult]::new('eval', 'eval', [CompletionResultType]::ParameterValue, 'Score Doctor predictions against lab ground truth (precision/recall)')
+            [CompletionResult]::new('materialize', 'materialize', [CompletionResultType]::ParameterValue, 'Materialize a locked corpus through the content-addressed Lab store')
+            [CompletionResult]::new('campaign', 'campaign', [CompletionResultType]::ParameterValue, 'Execute or resume a reproducible real-pack campaign')
+            [CompletionResult]::new('capture', 'capture', [CompletionResultType]::ParameterValue, 'Convert a launcher/server log into a bounded smoke artifact')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
         'intermed;lab;help;discover' {
+            break
+        }
+        'intermed;lab;help;discover-mrpack' {
             break
         }
         'intermed;lab;help;run' {
@@ -463,6 +526,15 @@ Register-ArgumentCompleter -Native -CommandName 'intermed' -ScriptBlock {
             break
         }
         'intermed;lab;help;eval' {
+            break
+        }
+        'intermed;lab;help;materialize' {
+            break
+        }
+        'intermed;lab;help;campaign' {
+            break
+        }
+        'intermed;lab;help;capture' {
             break
         }
         'intermed;lab;help;help' {
@@ -1023,12 +1095,19 @@ Register-ArgumentCompleter -Native -CommandName 'intermed' -ScriptBlock {
         }
         'intermed;help;lab' {
             [CompletionResult]::new('discover', 'discover', [CompletionResultType]::ParameterValue, 'Build a reproducible corpus lock from a candidate pool')
+            [CompletionResult]::new('discover-mrpack', 'discover-mrpack', [CompletionResultType]::ParameterValue, 'Build an authoritative lock from `modrinth.index.json`')
             [CompletionResult]::new('run', 'run', [CompletionResultType]::ParameterValue, 'Classify captured smoke-test outputs against a corpus lock')
             [CompletionResult]::new('report', 'report', [CompletionResultType]::ParameterValue, 'Render a compatibility matrix (JSON + HTML) from a lab run')
             [CompletionResult]::new('eval', 'eval', [CompletionResultType]::ParameterValue, 'Score Doctor predictions against lab ground truth (precision/recall)')
+            [CompletionResult]::new('materialize', 'materialize', [CompletionResultType]::ParameterValue, 'Materialize a locked corpus through the content-addressed Lab store')
+            [CompletionResult]::new('campaign', 'campaign', [CompletionResultType]::ParameterValue, 'Execute or resume a reproducible real-pack campaign')
+            [CompletionResult]::new('capture', 'capture', [CompletionResultType]::ParameterValue, 'Convert a launcher/server log into a bounded smoke artifact')
             break
         }
         'intermed;help;lab;discover' {
+            break
+        }
+        'intermed;help;lab;discover-mrpack' {
             break
         }
         'intermed;help;lab;run' {
@@ -1038,6 +1117,15 @@ Register-ArgumentCompleter -Native -CommandName 'intermed' -ScriptBlock {
             break
         }
         'intermed;help;lab;eval' {
+            break
+        }
+        'intermed;help;lab;materialize' {
+            break
+        }
+        'intermed;help;lab;campaign' {
+            break
+        }
+        'intermed;help;lab;capture' {
             break
         }
         'intermed;help;rules' {

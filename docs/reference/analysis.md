@@ -260,13 +260,16 @@ itself.
 
 ## Compatibility Lab
 
-**Reads:** a candidate list and captured smoke-test logs.
+**Reads:** candidate lists, `.mrpack` manifests, materialized real packs,
+captured logs, Doctor reports, and explicit sandboxed execution plans.
 
-**Concludes:** a content-addressed corpus lock, a classified ingestion of the
-captured logs, and a compatibility matrix as JSON and static HTML.
+**Concludes:** content-addressed corpus/materialization identity, structured
+runtime observations shared with Layer D, coverage-aware accuracy, semantic
+mismatch clusters, and resumable campaign reports.
 
-**Stops at:** the offline evidence path is complete. Fetching and launching
-candidates live is behind a trait and not built in this release.
+**Stops at:** acquisition and loader installation are explicit inputs. Arbitrary
+mod code is never launched without an explicit sandbox policy; a successful
+smoke run only refutes findings whose required runtime region was reached.
 
 See [the command reference](commands.md#lab).
 

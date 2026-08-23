@@ -9,8 +9,8 @@ part of the data, not an implied property of the executable version.
 additive evidence-graph, incident, shared-recommendation, semantic identity, and
 evidence-path fields. It already permits unknown optional fields, so these do
 not require a v3 schema name. The v1 reader remains supported,
-and `doctor --report-schema v1` provides a lossy compatibility writer through
-0.1.7. V1 cannot preserve assessment prerequisites, blockers, adjustments, or
+and `doctor --report-schema v1` remains a temporary lossy compatibility writer
+during the alpha series. V1 cannot preserve assessment prerequisites, blockers, adjustments, or
 target-capability coverage.
 
 An additive optional field is compatible within one schema. Removing a field,
@@ -46,6 +46,34 @@ invalidated and regenerated.
 
 Mapping-derived payload identity includes the mapping source, mapping-file hash,
 Minecraft version, source namespace, target namespace, and parser version.
+
+## Compatibility Lab
+
+0.1.8 introduces independently versioned Layer-K artifacts:
+
+- `intermed-lab-campaign-v1` — immutable campaign plan;
+- `intermed-lab-campaign-state-v1` — resumable case state;
+- `intermed-execution-observation-v1` — structured runtime evidence;
+- `intermed-lab-materialization-v1` — content-addressed instance manifest;
+- `intermed-lab-campaign-report-v1` — campaign metrics and triage summary;
+- `intermed-lab-triage-v1` — semantic mismatch clusters.
+
+Campaign identity includes its expected corpus digests, one common analyzer
+fingerprint, case-local Doctor fingerprint expectations, and execution/static
+plans. The analyzer fingerprint covers the executable SHA-256, InterMed version,
+Git/build state, Cargo features, and rule-pack identity. A case-local expectation
+separately pins the effective configuration and target-manifest digests because
+those legitimately differ between pack instances. Changing any of these fields
+produces a different campaign digest; an existing state file refuses to resume
+against the changed plan. `analyzer_fingerprint = "auto"` is an explicit
+discovery mode: generated reports are still checked for internal consistency,
+but an attestation/replay campaign should replace it with the measured digest.
+Runtime observations are not silently migrated across incompatible schemas.
+
+`intermed-corpus-lock-v2` pins authoritative pack metadata and every materialized
+file by content hash, side applicability, and download coordinates. The v1 lock
+reader remains available for coordinate-based legacy corpora; v2 is required for
+full `.mrpack` target verification.
 
 ## Compatibility promise
 

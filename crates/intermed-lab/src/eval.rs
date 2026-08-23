@@ -26,12 +26,15 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use intermed_doctor_core::DoctorReport;
-use intermed_doctor_core::evidence::{Finding, Severity};
+use intermed_doctor_core::evidence::{
+    AssessmentDisposition, ConclusionKind, EntityRef, EvidenceRelation, Finding, Severity,
+};
 
 use crate::attribution::{
     FailureAttribution, SEVERITY_CALIBRATION_MIN_SUPPORT, subject_from_finding_id, subjects_match,
 };
 use crate::classify::FailureCategory;
+use crate::observation::{ExecutionObservation, RuntimeMilestone};
 use crate::run::{LabRun, read_run};
 use crate::{LabError, read_json, write_json_atomic};
 
@@ -45,9 +48,15 @@ pub const EVAL_MANIFEST_SCHEMA: &str = "intermed-eval-manifest-v1";
 pub struct Prediction {
     pub rule_id: String,
     pub finding_id: String,
+    pub semantic_id: String,
     pub subject: String,
     pub category: FailureCategory,
     pub severity: Severity,
+    pub disposition: AssessmentDisposition,
+    /// Canonical entity keys from the coherent evidence path. Legacy reports may
+    /// leave this empty and fall back to `subject` matching.
+    pub entity_keys: Vec<String>,
+    pub required_milestones: Vec<RuntimeMilestone>,
 }
 
 /// Map a finding (by its machine tags) to the load-failure category it predicts,
@@ -74,7 +83,7 @@ pub fn predictions_from_findings(findings: &[Finding]) -> Vec<Prediction> {
     findings
         .iter()
         .filter_map(|f| {
-            let category = predicted_category(&f.machine_tags)?;
+            let category = predicted_category_for_finding(f)?;
             let subject = f
                 .affected_components
                 .first()
@@ -83,12 +92,77 @@ pub fn predictions_from_findings(findings: &[Finding]) -> Vec<Prediction> {
             Some(Prediction {
                 rule_id: f.rule_id.clone(),
                 finding_id: f.id.clone(),
+                semantic_id: if f.semantic_id.is_empty() {
+                    f.id.clone()
+                } else {
+                    f.semantic_id.clone()
+                },
                 subject: subject.to_string(),
                 category,
                 severity: f.severity,
+                disposition: f.assessment.disposition,
+                entity_keys: finding_entity_keys(f),
+                required_milestones: required_milestones(f, category),
             })
         })
         .collect()
+}
+
+fn predicted_category_for_finding(finding: &Finding) -> Option<FailureCategory> {
+    match finding.conclusion_kind {
+        ConclusionKind::MissingDependency | ConclusionKind::WrongVersion => {
+            Some(FailureCategory::MissingDependency)
+        }
+        ConclusionKind::LoaderMismatch => Some(FailureCategory::ModLoadingFailure),
+        ConclusionKind::ClassAbsent | ConclusionKind::MethodAbsent => {
+            if finding.category == intermed_doctor_core::evidence::Category::Mixin {
+                Some(FailureCategory::MixinApplyError)
+            } else {
+                Some(FailureCategory::ClassNotFound)
+            }
+        }
+        ConclusionKind::RuntimeIncident => None,
+        _ => predicted_category(&finding.machine_tags),
+    }
+}
+
+fn finding_entity_keys(finding: &Finding) -> Vec<String> {
+    let mut keys = finding
+        .evidence_path
+        .iter()
+        .flat_map(|link| [&link.from, &link.to])
+        .filter_map(|entity| serde_json::to_string(entity).ok())
+        .collect::<Vec<_>>();
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+fn required_milestones(finding: &Finding, category: FailureCategory) -> Vec<RuntimeMilestone> {
+    match category {
+        FailureCategory::MissingDependency | FailureCategory::ModLoadingFailure => {
+            vec![RuntimeMilestone::LoaderResolution]
+        }
+        FailureCategory::MixinApplyError | FailureCategory::ClassNotFound => {
+            vec![
+                RuntimeMilestone::CommonSetup,
+                RuntimeMilestone::ServerStarted,
+                RuntimeMilestone::ClientInit,
+            ]
+        }
+        FailureCategory::DatapackValidationError | FailureCategory::RegistryFreezeError => {
+            vec![
+                RuntimeMilestone::DatapackLoad,
+                RuntimeMilestone::WorldLoaded,
+            ]
+        }
+        FailureCategory::PerformanceRegression => vec![RuntimeMilestone::SteadyStateTicks],
+        _ if finding.conclusion_kind == ConclusionKind::RuntimeIncident => Vec::new(),
+        _ => vec![
+            RuntimeMilestone::ServerStarted,
+            RuntimeMilestone::ClientInit,
+        ],
+    }
 }
 
 /// Reduce a Doctor report to the predictions it carries.
@@ -215,6 +289,9 @@ pub struct EvalCase {
     pub attributions: Vec<FailureAttribution>,
     /// Frame-to-jar blames the Doctor made for this case (calibrated separately).
     pub blame_predictions: Vec<BlamePrediction>,
+    pub reached_milestones: BTreeSet<RuntimeMilestone>,
+    pub observation_coverage_available: bool,
+    pub observed_entity_keys: BTreeMap<FailureCategory, BTreeSet<String>>,
 }
 
 /// Per-category co-occurrence accuracy (one tp/fp/fn per case).
@@ -224,6 +301,8 @@ pub struct CategoryAccuracy {
     pub true_positive: usize,
     pub false_positive: usize,
     pub false_negative: usize,
+    #[serde(default)]
+    pub inconclusive_coverage: usize,
     pub precision: f64,
     pub recall: f64,
     pub f1: f64,
@@ -233,19 +312,27 @@ pub struct CategoryAccuracy {
 }
 
 /// Outcome for one Doctor finding against lab attributions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FindingMatchOutcome {
     TruePositive,
     FalsePositive,
     /// Finding below `min_severity` — excluded from scoring.
     BelowThreshold,
+    /// The rule abstained under the typed trust contract; it is measured
+    /// separately and never counted as a false positive.
+    Abstained,
+    /// The smoke run did not reach the runtime region needed to refute this
+    /// prediction.
+    InconclusiveCoverage,
 }
 
 /// Per-finding attributed accuracy row (finest eval granularity).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FindingAccuracy {
     pub finding_id: String,
+    #[serde(default)]
+    pub semantic_id: String,
     pub rule_id: String,
     pub subject: String,
     pub category: String,
@@ -264,6 +351,8 @@ pub struct RuleAccuracy {
     pub true_positive: usize,
     pub false_positive: usize,
     pub false_negative: usize,
+    #[serde(default)]
+    pub inconclusive_coverage: usize,
     pub precision: f64,
     pub recall: f64,
     pub f1: f64,
@@ -276,11 +365,17 @@ pub struct RuleAccuracy {
 pub struct FindingLevelAccuracy {
     /// Whether any case in the dataset carried lab attributions.
     pub attributed: bool,
+    #[serde(default)]
+    pub coverage_aware: bool,
     pub predictions: usize,
     pub attributions: usize,
     pub true_positive: usize,
     pub false_positive: usize,
     pub false_negative: usize,
+    #[serde(default)]
+    pub abstained: usize,
+    #[serde(default)]
+    pub inconclusive_coverage: usize,
     pub precision: f64,
     pub recall: f64,
     pub f1: f64,
@@ -345,7 +440,27 @@ fn f1(precision: f64, recall: f64) -> f64 {
 }
 
 fn qualifies(p: &Prediction, min_severity: Severity) -> bool {
-    p.severity >= min_severity
+    p.severity >= min_severity && p.disposition != AssessmentDisposition::Abstained
+}
+
+fn coverage_satisfies(case: &EvalCase, prediction: &Prediction) -> bool {
+    if !case.observation_coverage_available {
+        return false;
+    }
+    prediction.required_milestones.is_empty()
+        || prediction
+            .required_milestones
+            .iter()
+            .any(|milestone| case.reached_milestones.contains(milestone))
+}
+
+fn entity_match(case: &EvalCase, prediction: &Prediction) -> bool {
+    !prediction.entity_keys.is_empty()
+        && prediction.entity_keys.iter().any(|key| {
+            case.observed_entity_keys
+                .get(&prediction.category)
+                .is_some_and(|observed| observed.contains(key))
+        })
 }
 
 /// Category co-occurrence evaluation (legacy first-order mode).
@@ -362,16 +477,25 @@ fn evaluate_by_category(cases: &[EvalCase], min_severity: Severity) -> Vec<Categ
 
     let mut by_category = Vec::new();
     for cat in &universe {
-        let (mut tp, mut fp, mut fn_) = (0usize, 0usize, 0usize);
+        let (mut tp, mut fp, mut fn_, mut inconclusive) = (0usize, 0usize, 0usize, 0usize);
         for case in cases {
-            let predicted = case
+            let predictions = case
                 .predictions
                 .iter()
-                .any(|p| p.category == *cat && qualifies(p, min_severity));
+                .filter(|p| p.category == *cat && qualifies(p, min_severity))
+                .collect::<Vec<_>>();
+            let predicted = !predictions.is_empty();
             let observed = case.observed.contains(cat);
             match (predicted, observed) {
                 (true, true) => tp += 1,
-                (true, false) => fp += 1,
+                (true, false)
+                    if predictions
+                        .iter()
+                        .any(|prediction| coverage_satisfies(case, prediction)) =>
+                {
+                    fp += 1;
+                }
+                (true, false) => inconclusive += 1,
                 (false, true) => fn_ += 1,
                 (false, false) => {}
             }
@@ -383,6 +507,7 @@ fn evaluate_by_category(cases: &[EvalCase], min_severity: Severity) -> Vec<Categ
             true_positive: tp,
             false_positive: fp,
             false_negative: fn_,
+            inconclusive_coverage: inconclusive,
             precision,
             recall,
             f1: f1(precision, recall),
@@ -398,6 +523,7 @@ struct RuleCounts {
     fp: usize,
     fn_: usize,
     predictions: usize,
+    inconclusive: usize,
 }
 
 /// Collect rule ids that ever predicted each category (dataset-wide).
@@ -427,18 +553,23 @@ fn evaluate_by_rule(
     Vec<FindingAccuracy>,
     FindingLevelAccuracy,
 ) {
-    let has_attributions = cases.iter().any(|c| !c.attributions.is_empty());
-    if !has_attributions {
+    let has_measurable_evidence = cases
+        .iter()
+        .any(|case| !case.attributions.is_empty() || case.observation_coverage_available);
+    if !has_measurable_evidence {
         return (
             Vec::new(),
             Vec::new(),
             FindingLevelAccuracy {
                 attributed: false,
+                coverage_aware: false,
                 predictions: 0,
                 attributions: 0,
                 true_positive: 0,
                 false_positive: 0,
                 false_negative: 0,
+                abstained: 0,
+                inconclusive_coverage: 0,
                 precision: 0.0,
                 recall: 0.0,
                 f1: 0.0,
@@ -455,6 +586,8 @@ fn evaluate_by_rule(
     let mut total_fn = 0usize;
     let mut total_predictions = 0usize;
     let mut total_attributions = 0usize;
+    let mut total_abstained = 0usize;
+    let mut total_inconclusive = 0usize;
 
     for case in cases {
         let attrs: Vec<&FailureAttribution> = case.attributions.iter().collect();
@@ -473,6 +606,7 @@ fn evaluate_by_rule(
                 fp: 0,
                 fn_: 0,
                 predictions: 0,
+                inconclusive: 0,
             });
             entry.predictions += 1;
 
@@ -484,6 +618,7 @@ fn evaluate_by_rule(
                 total_tp += 1;
                 by_finding.push(FindingAccuracy {
                     finding_id: pred.finding_id.clone(),
+                    semantic_id: pred.semantic_id.clone(),
                     rule_id: pred.rule_id.clone(),
                     subject: pred.subject.clone(),
                     category: pred.category.as_str().to_string(),
@@ -491,11 +626,28 @@ fn evaluate_by_rule(
                     outcome: FindingMatchOutcome::TruePositive,
                     matched_subject: Some(attr.subject.clone()),
                 });
-            } else {
+            } else if entity_match(case, pred) {
+                entry.tp += 1;
+                total_tp += 1;
+                by_finding.push(FindingAccuracy {
+                    finding_id: pred.finding_id.clone(),
+                    semantic_id: pred.semantic_id.clone(),
+                    rule_id: pred.rule_id.clone(),
+                    subject: pred.subject.clone(),
+                    category: pred.category.as_str().to_string(),
+                    severity: pred.severity.as_str().to_string(),
+                    outcome: FindingMatchOutcome::TruePositive,
+                    matched_subject: Some("canonical-entity".to_string()),
+                });
+            } else if coverage_satisfies(case, pred)
+                && !(case.observed.contains(&pred.category)
+                    && !attrs.iter().any(|attr| attr.category == pred.category))
+            {
                 entry.fp += 1;
                 total_fp += 1;
                 by_finding.push(FindingAccuracy {
                     finding_id: pred.finding_id.clone(),
+                    semantic_id: pred.semantic_id.clone(),
                     rule_id: pred.rule_id.clone(),
                     subject: pred.subject.clone(),
                     category: pred.category.as_str().to_string(),
@@ -503,21 +655,50 @@ fn evaluate_by_rule(
                     outcome: FindingMatchOutcome::FalsePositive,
                     matched_subject: None,
                 });
+            } else {
+                entry.inconclusive += 1;
+                total_inconclusive += 1;
+                by_finding.push(FindingAccuracy {
+                    finding_id: pred.finding_id.clone(),
+                    semantic_id: pred.semantic_id.clone(),
+                    rule_id: pred.rule_id.clone(),
+                    subject: pred.subject.clone(),
+                    category: pred.category.as_str().to_string(),
+                    severity: pred.severity.as_str().to_string(),
+                    outcome: FindingMatchOutcome::InconclusiveCoverage,
+                    matched_subject: None,
+                });
             }
         }
 
-        for pred in case
-            .predictions
-            .iter()
-            .filter(|p| !qualifies(p, min_severity))
-        {
+        for pred in case.predictions.iter().filter(|p| {
+            p.disposition != AssessmentDisposition::Abstained && !qualifies(p, min_severity)
+        }) {
             by_finding.push(FindingAccuracy {
                 finding_id: pred.finding_id.clone(),
+                semantic_id: pred.semantic_id.clone(),
                 rule_id: pred.rule_id.clone(),
                 subject: pred.subject.clone(),
                 category: pred.category.as_str().to_string(),
                 severity: pred.severity.as_str().to_string(),
                 outcome: FindingMatchOutcome::BelowThreshold,
+                matched_subject: None,
+            });
+        }
+        for pred in case
+            .predictions
+            .iter()
+            .filter(|p| p.disposition == AssessmentDisposition::Abstained)
+        {
+            total_abstained += 1;
+            by_finding.push(FindingAccuracy {
+                finding_id: pred.finding_id.clone(),
+                semantic_id: pred.semantic_id.clone(),
+                rule_id: pred.rule_id.clone(),
+                subject: pred.subject.clone(),
+                category: pred.category.as_str().to_string(),
+                severity: pred.severity.as_str().to_string(),
+                outcome: FindingMatchOutcome::Abstained,
                 matched_subject: None,
             });
         }
@@ -528,7 +709,8 @@ fn evaluate_by_rule(
             };
 
             let any_rule_matched = flagged.iter().any(|pred| {
-                pred.category == attr.category && subjects_match(&pred.subject, &attr.subject)
+                pred.category == attr.category
+                    && (subjects_match(&pred.subject, &attr.subject) || entity_match(case, pred))
             });
             if !any_rule_matched {
                 total_fn += 1;
@@ -539,7 +721,7 @@ fn evaluate_by_rule(
                     p.rule_id == *rule_id
                         && qualifies(p, min_severity)
                         && p.category == attr.category
-                        && subjects_match(&p.subject, &attr.subject)
+                        && (subjects_match(&p.subject, &attr.subject) || entity_match(case, p))
                 });
                 if !rule_matched {
                     let entry = per_rule.entry(rule_id.clone()).or_insert(RuleCounts {
@@ -547,6 +729,7 @@ fn evaluate_by_rule(
                         fp: 0,
                         fn_: 0,
                         predictions: 0,
+                        inconclusive: 0,
                     });
                     entry.fn_ += 1;
                 }
@@ -564,6 +747,7 @@ fn evaluate_by_rule(
             true_positive: counts.tp,
             false_positive: counts.fp,
             false_negative: counts.fn_,
+            inconclusive_coverage: counts.inconclusive,
             precision,
             recall,
             f1: f1(precision, recall),
@@ -575,12 +759,15 @@ fn evaluate_by_rule(
     let fl_precision = ratio(total_tp, total_tp + total_fp);
     let fl_recall = ratio(total_tp, total_tp + total_fn);
     let finding_level = FindingLevelAccuracy {
-        attributed: true,
+        attributed: cases.iter().any(|case| !case.attributions.is_empty()),
+        coverage_aware: cases.iter().any(|case| case.observation_coverage_available),
         predictions: total_predictions,
         attributions: total_attributions,
         true_positive: total_tp,
         false_positive: total_fp,
         false_negative: total_fn,
+        abstained: total_abstained,
+        inconclusive_coverage: total_inconclusive,
         precision: fl_precision,
         recall: fl_recall,
         f1: f1(fl_precision, fl_recall),
@@ -656,12 +843,177 @@ fn resolve(base: &Path, p: &Path) -> PathBuf {
 pub fn case_from_files(report_path: &Path, run_path: &Path) -> Result<EvalCase, LabError> {
     let report: DoctorReport = read_json(report_path)?;
     let run = read_run(run_path)?;
+    let mut reached_milestones = BTreeSet::new();
+    let mut observation_coverage_available = false;
+    for observation in run
+        .results
+        .iter()
+        .filter_map(|result| result.observation.as_ref())
+    {
+        observation_coverage_available = true;
+        reached_milestones.extend(observation.coverage.reached.iter().copied());
+    }
+    let observations = run
+        .results
+        .iter()
+        .filter_map(|result| result.observation.as_ref())
+        .collect::<Vec<_>>();
+    let mut observed_entity_keys = observed_entity_keys(&report, observations.into_iter());
+    // Legacy lab-run captures can carry exact failure attributions without the
+    // newer structured observation block. Resolve class/method subjects through
+    // the same canonical graph so finding-level scoring does not regress to a
+    // brittle comparison between a mod-pair label and a target class name.
+    let mut attributed_classes = BTreeMap::<FailureCategory, BTreeSet<String>>::new();
+    for attribution in attributions_from_run(&run) {
+        if matches!(
+            attribution.category,
+            FailureCategory::MixinApplyError | FailureCategory::ClassNotFound
+        ) {
+            attributed_classes
+                .entry(attribution.category)
+                .or_default()
+                .insert(normalize_runtime_class(&attribution.subject));
+        }
+    }
+    for (category, classes) in attributed_classes {
+        observed_entity_keys
+            .entry(category)
+            .or_default()
+            .extend(entity_keys_for_classes(&report, &classes));
+    }
     Ok(EvalCase {
         predictions: predictions_from_report(&report),
         observed: observed_from_run(&run),
         attributions: attributions_from_run(&run),
         blame_predictions: blame_predictions_from_findings(&report.findings),
+        reached_milestones,
+        observation_coverage_available,
+        observed_entity_keys,
     })
+}
+
+/// Build a coverage-aware case directly from one campaign observation.
+pub fn case_from_observation_files(
+    report_path: &Path,
+    observation_path: &Path,
+) -> Result<EvalCase, LabError> {
+    let report: DoctorReport = read_json(report_path)?;
+    let observation: ExecutionObservation = read_json(observation_path)?;
+    if observation.schema != crate::observation::OBSERVATION_SCHEMA {
+        return Err(LabError::schema(
+            observation_path,
+            crate::observation::OBSERVATION_SCHEMA,
+            &observation.schema,
+        ));
+    }
+    let mut observed = BTreeSet::new();
+    let mut attributions = Vec::new();
+    for incident in &observation.incidents {
+        let Some(category) = incident.category else {
+            continue;
+        };
+        observed.insert(category);
+        for subject in &incident.attributed_subjects {
+            attributions.push(FailureAttribution {
+                category,
+                subject: subject.clone(),
+                line_excerpt: incident.message.clone(),
+            });
+        }
+    }
+    attributions.sort();
+    attributions.dedup();
+    let observed_entity_keys = observed_entity_keys(&report, std::iter::once(&observation));
+    Ok(EvalCase {
+        predictions: predictions_from_report(&report),
+        observed,
+        attributions,
+        blame_predictions: blame_predictions_from_findings(&report.findings),
+        reached_milestones: observation.coverage.reached.iter().copied().collect(),
+        observation_coverage_available: true,
+        observed_entity_keys,
+    })
+}
+
+fn observed_entity_keys<'a>(
+    report: &DoctorReport,
+    observations: impl Iterator<Item = &'a ExecutionObservation>,
+) -> BTreeMap<FailureCategory, BTreeSet<String>> {
+    let mut classes_by_category = BTreeMap::<FailureCategory, BTreeSet<String>>::new();
+    for incident in observations.flat_map(|observation| observation.incidents.iter()) {
+        let Some(category) = incident.category else {
+            continue;
+        };
+        classes_by_category.entry(category).or_default().extend(
+            incident
+                .frame_classes
+                .iter()
+                .map(|class| normalize_runtime_class(class)),
+        );
+    }
+    classes_by_category
+        .into_iter()
+        .map(|(category, classes)| (category, entity_keys_for_classes(report, &classes)))
+        .collect()
+}
+
+fn entity_keys_for_classes(report: &DoctorReport, classes: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut keys = report
+        .evidence_graph
+        .entities
+        .iter()
+        .filter(|entity| match entity {
+            EntityRef::Class(class) => classes.contains(&normalize_runtime_class(&class.name)),
+            EntityRef::Method(method) => {
+                classes.contains(&normalize_runtime_class(&method.owner.name))
+            }
+            _ => false,
+        })
+        .filter_map(|entity| serde_json::to_string(entity).ok())
+        .collect::<BTreeSet<_>>();
+    // Expand only exact ownership/containment relations. Dependency/reference
+    // edges would incorrectly turn one observed class into the whole pack.
+    loop {
+        let before = keys.len();
+        for link in &report.evidence_graph.links {
+            if !matches!(
+                link.relation,
+                EvidenceRelation::Owns | EvidenceRelation::Contains | EvidenceRelation::ObservedIn
+            ) {
+                continue;
+            }
+            let Ok(from) = serde_json::to_string(&link.from) else {
+                continue;
+            };
+            let Ok(to) = serde_json::to_string(&link.to) else {
+                continue;
+            };
+            if keys.contains(&from) || keys.contains(&to) {
+                keys.insert(from);
+                keys.insert(to);
+            }
+        }
+        if keys.len() == before {
+            break;
+        }
+    }
+    keys
+}
+
+fn normalize_runtime_class(value: &str) -> String {
+    value.trim().trim_end_matches(".class").replace('/', ".")
+}
+
+pub fn evaluate_observation_pair(
+    report_path: &Path,
+    observation_path: &Path,
+    min_severity: Severity,
+    out: &Path,
+) -> Result<RuleAccuracyReport, LabError> {
+    let case = case_from_observation_files(report_path, observation_path)?;
+    let report = evaluate(&[case], min_severity);
+    write_json_atomic(out, &report)?;
+    Ok(report)
 }
 
 /// `lab eval` over a single report/run pair.
@@ -730,6 +1082,16 @@ mod tests {
             observed: observed.iter().copied().collect(),
             attributions: attrs,
             blame_predictions: Vec::new(),
+            reached_milestones: [
+                RuntimeMilestone::LoaderResolution,
+                RuntimeMilestone::CommonSetup,
+                RuntimeMilestone::ServerStarted,
+                RuntimeMilestone::SteadyStateTicks,
+            ]
+            .into_iter()
+            .collect(),
+            observation_coverage_available: true,
+            observed_entity_keys: BTreeMap::new(),
         }
     }
 
@@ -739,6 +1101,9 @@ mod tests {
             observed: BTreeSet::new(),
             attributions: attrs,
             blame_predictions: blames,
+            reached_milestones: BTreeSet::new(),
+            observation_coverage_available: true,
+            observed_entity_keys: BTreeMap::new(),
         }
     }
 
@@ -760,9 +1125,13 @@ mod tests {
         Prediction {
             rule_id: rule.to_string(),
             finding_id: id.to_string(),
+            semantic_id: id.to_string(),
             subject: subject.to_string(),
             category: cat,
             severity: sev,
+            disposition: AssessmentDisposition::Asserted,
+            entity_keys: Vec::new(),
+            required_milestones: vec![RuntimeMilestone::LoaderResolution],
         }
     }
 
@@ -994,5 +1363,113 @@ mod tests {
         assert_eq!(suggest_severity(4, 6), Severity::Error);
         assert_eq!(suggest_severity(1, 99), Severity::Note);
         assert_eq!(suggest_severity(0, 0), Severity::Note);
+    }
+
+    #[test]
+    fn incomplete_runtime_region_does_not_create_false_positive() {
+        let mut prediction = pred(
+            "mixin-apply",
+            "mixin:Foo",
+            "Foo",
+            FailureCategory::MixinApplyError,
+            Severity::Error,
+        );
+        prediction.required_milestones = vec![RuntimeMilestone::CommonSetup];
+        let case = EvalCase {
+            predictions: vec![prediction],
+            observed: BTreeSet::new(),
+            attributions: Vec::new(),
+            blame_predictions: Vec::new(),
+            reached_milestones: [RuntimeMilestone::LoaderResolution].into_iter().collect(),
+            observation_coverage_available: true,
+            observed_entity_keys: BTreeMap::new(),
+        };
+        let report = evaluate(&[case], Severity::Warn);
+        assert_eq!(report.finding_level.false_positive, 0);
+        assert_eq!(report.finding_level.inconclusive_coverage, 1);
+        assert_eq!(report.by_category[0].false_positive, 0);
+        assert_eq!(report.by_category[0].inconclusive_coverage, 1);
+        assert_eq!(
+            report.by_finding[0].outcome,
+            FindingMatchOutcome::InconclusiveCoverage
+        );
+    }
+
+    #[test]
+    fn reached_runtime_region_can_refute_asserted_prediction() {
+        let mut prediction = pred(
+            "missing-dependency",
+            "missing:foo",
+            "foo",
+            FailureCategory::MissingDependency,
+            Severity::Error,
+        );
+        prediction.required_milestones = vec![RuntimeMilestone::LoaderResolution];
+        let case = EvalCase {
+            predictions: vec![prediction],
+            observed: BTreeSet::new(),
+            attributions: Vec::new(),
+            blame_predictions: Vec::new(),
+            reached_milestones: [RuntimeMilestone::LoaderResolution].into_iter().collect(),
+            observation_coverage_available: true,
+            observed_entity_keys: BTreeMap::new(),
+        };
+        let report = evaluate(&[case], Severity::Warn);
+        assert_eq!(report.finding_level.false_positive, 1);
+        assert_eq!(report.finding_level.inconclusive_coverage, 0);
+    }
+
+    #[test]
+    fn trust_contract_abstention_is_never_a_false_positive() {
+        let mut prediction = pred(
+            "missing-dependency",
+            "missing:foo",
+            "foo",
+            FailureCategory::MissingDependency,
+            Severity::Warn,
+        );
+        prediction.disposition = AssessmentDisposition::Abstained;
+        let case = EvalCase {
+            predictions: vec![prediction],
+            observed: BTreeSet::new(),
+            attributions: Vec::new(),
+            blame_predictions: Vec::new(),
+            reached_milestones: [RuntimeMilestone::LoaderResolution].into_iter().collect(),
+            observation_coverage_available: true,
+            observed_entity_keys: BTreeMap::new(),
+        };
+        let report = evaluate(&[case], Severity::Warn);
+        assert_eq!(report.finding_level.false_positive, 0);
+        assert_eq!(report.finding_level.abstained, 1);
+        assert_eq!(report.by_finding[0].outcome, FindingMatchOutcome::Abstained);
+    }
+
+    #[test]
+    fn canonical_entity_match_is_scoped_to_failure_category() {
+        let mut prediction = pred(
+            "missing-dependency",
+            "missing:foo",
+            "foo",
+            FailureCategory::MissingDependency,
+            Severity::Error,
+        );
+        prediction.entity_keys = vec!["artifact:foo".into()];
+        let case = EvalCase {
+            predictions: vec![prediction],
+            observed: [FailureCategory::OutOfMemory].into_iter().collect(),
+            attributions: Vec::new(),
+            blame_predictions: Vec::new(),
+            reached_milestones: [RuntimeMilestone::LoaderResolution].into_iter().collect(),
+            observation_coverage_available: true,
+            observed_entity_keys: [(
+                FailureCategory::OutOfMemory,
+                ["artifact:foo".to_string()].into_iter().collect(),
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let report = evaluate(&[case], Severity::Warn);
+        assert_eq!(report.finding_level.true_positive, 0);
+        assert_eq!(report.finding_level.false_positive, 1);
     }
 }

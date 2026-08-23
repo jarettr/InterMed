@@ -223,7 +223,6 @@ impl SecuritySignal {
         matches!(
             self,
             SecuritySignal::ProcessSpawn
-                | SecuritySignal::Unsafe
                 | SecuritySignal::DynamicClassDefinition
                 | SecuritySignal::ScriptEngine
         )
@@ -866,7 +865,7 @@ mod tests {
     #[test]
     fn severity_warn_only_for_high_risk() {
         assert_eq!(SecuritySignal::ProcessSpawn.severity(), Severity::Warn);
-        assert_eq!(SecuritySignal::Unsafe.severity(), Severity::Warn);
+        assert_eq!(SecuritySignal::Unsafe.severity(), Severity::Note);
         assert_eq!(SecuritySignal::ScriptEngine.severity(), Severity::Warn);
         assert_eq!(SecuritySignal::Socket.severity(), Severity::Note);
         assert_eq!(

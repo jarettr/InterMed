@@ -118,6 +118,16 @@ pub fn detect_from_zip(archive: &mut ZipArchive<File>) -> ArtifactIdentity {
     {
         return resolve_identity_version(archive, id);
     }
+    if let Some(text) = read_zip_text(archive, "mcmod.info")
+        && let Ok(mods) = intermed_doctor_core::legacy_forge::parse_mcmod_info(&text)
+        && let Some(first) = mods.first()
+    {
+        return ArtifactIdentity {
+            mod_id: Some(first.mod_id.clone()),
+            version: first.version.clone(),
+            loader: Some("forge".to_string()),
+        };
+    }
     if let Some(text) = read_zip_text(archive, "plugin.yml")
         && let Some(id) = yaml_plugin_identity(&text, "bukkit")
     {
@@ -225,6 +235,18 @@ mod tests {
         let id = detect_from_zip(&mut z);
         assert_eq!(id.mod_id.as_deref(), Some("jei"));
         assert_eq!(id.loader.as_deref(), Some("neoforge"));
+    }
+
+    #[test]
+    fn reads_legacy_forge_mcmod_info() {
+        let mut z = jar_with(&[(
+            "mcmod.info",
+            r#"[{"modid":"creativecore","version":"1.10.71"}]"#,
+        )]);
+        let id = detect_from_zip(&mut z);
+        assert_eq!(id.mod_id.as_deref(), Some("creativecore"));
+        assert_eq!(id.loader.as_deref(), Some("forge"));
+        assert_eq!(id.version.as_deref(), Some("1.10.71"));
     }
 
     #[test]

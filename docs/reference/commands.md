@@ -214,16 +214,33 @@ intermed rules explain [PACK]    # static EXPLAIN of the rules; --rule <ID>, --f
 
 ## lab
 
-The Compatibility Lab: reproducible compatibility evidence from captured runs.
+The Compatibility Lab: reproducible, coverage-aware real-pack measurement.
 
 ```
 intermed lab discover <CANDIDATES> --out <LOCK>     # content-addressed corpus lock
+intermed lab discover-mrpack <PACK.mrpack> --out <LOCK>
+intermed lab materialize <LOCK> --source <DIR> --store <CAS> --out <INSTANCE>
+intermed lab capture <LOG> --environment <NAME> --exit-code <N> --out <SMOKE.json>
 intermed lab run      <LOCK> --logs <LOGS> --out <RUN>  # ingest captured smoke-test logs
 intermed lab report   <RUN> --out <SITE>            # JSON + static HTML matrix
+intermed lab campaign <CAMPAIGN.json> --out <DIR> --max-parallel 2
+intermed lab eval --report <REPORT.json> --run <LAB-RUN.json> --out <ACCURACY.json>
 ```
 
-The offline evidence path is complete. A live server runner (fetching and
-launching candidates) is behind a trait and not built in this release.
+Campaign state is committed after every case and resumes after interruption.
+An in-flight attempt with no committed outcome is retried and does not consume
+`--max-attempts`; completed cases are not repeated. Each case pins a corpus
+digest and records its static Doctor baseline before runtime execution.
+`captured_smoke` imports an existing run; `execution` invokes an explicit command
+plan. Execution fails closed when a sandbox is required but not configured.
+Static-only cases omit both and measure large-pack analyzer stability without
+manufacturing a runtime verdict.
+
+Campaign output includes `campaign-state.json`, per-case observations and
+accuracy reports, `campaign-report.json`, `campaign-report.html`, and semantic
+triage clusters. Infrastructure/harness failures are separate from pack
+failures, and insufficient runtime reachability is counted as inconclusive—not
+as a false positive.
 
 ---
 

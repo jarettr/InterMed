@@ -1,7 +1,7 @@
 {
   "schema": "intermed-rule-pack-v2",
   "id": "intermed-core",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "publisher": "intermed",
   "rules": [
     {
@@ -52,8 +52,8 @@
         "severity": "error",
         "category": "loader",
         "title": "'{m.subject}' is a {m.loader} mod on a {e.loader} instance",
-        "explanation": "{m.subject} is built for {m.loader}, but this instance runs {e.loader}. It will not load.",
-        "fix": "Use the {e.loader} build of this mod, or remove it.",
+        "explanation": "{m.subject} is built for {m.loader}, but this instance runs {e.loader}. Without a compatible runtime bridge, the artifact cannot load.",
+        "fix": "If no compatible runtime bridge is present, use the {e.loader} build of this mod or remove it.",
         "tags": ["loader", "mismatch"]
       }
     },
@@ -398,7 +398,7 @@
         "severity": "warn",
         "category": "resource",
         "title": "Mod replaces a platform/common tag: {subject}",
-        "explanation": "{attr:writer} sets \"replace\": true on a platform/convention tag ({subject}), which wipes entries other mods add to that broad tag. This can silently break cross-mod compatibility (e.g. ore/ingot conventions).",
+        "explanation": "{attr:writer} sets \"replace\": true on a platform/convention tag ({subject}), which discards values accumulated from lower-priority writers. This can make the effective tag depend on resource-pack order and silently break cross-mod integrations.",
         "fix": "Use additive tag entries (replace=false) unless wiping the tag is intended.",
         "tags": ["resource", "tag", "replace", "semantic-override"]
       }
@@ -487,10 +487,10 @@
       "input_kinds": ["unknown_source"],
       "finding": {
         "id": "unknown-source:{subject}",
-        "severity": "warn",
-        "category": "security",
+        "severity": "note",
+        "category": "metadata",
         "title": "Artifact identity could not be established: {subject}",
-        "explanation": "This jar has no recognizable Fabric/Quilt/Forge manifest. Its mod identity and distribution provenance could not be established; this is not by itself evidence that the artifact is unsafe.",
+        "explanation": "This jar has no recognizable modern or legacy loader descriptor. Its mod identity could not be established from packaging metadata; this is a packaging/provenance limitation, not evidence that the artifact is unsafe.",
         "fix": "Prefer mods from Modrinth or CurseForge with verifiable metadata.",
         "tags": ["sbom", "provenance"]
       }

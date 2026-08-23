@@ -65,11 +65,10 @@ impl Rule for MixedLoaderPackRule {
         }
 
         let mut loaders = BTreeSet::new();
-        for f in ctx
-            .store
-            .by_kind(kind::MOD)
-            .filter(|fact| fact.attr("identity_certainty") != Some("undecidable"))
-        {
+        for f in ctx.store.by_kind(kind::MOD).filter(|fact| {
+            fact.attr("identity_certainty")
+                .is_none_or(|certainty| certainty == "confirmed")
+        }) {
             if let Some(loader) = f.attr("loader")
                 && is_mod_loader(loader)
             {

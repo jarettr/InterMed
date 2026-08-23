@@ -154,6 +154,8 @@ pub struct InputFingerprint {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnalyzerFingerprint {
+    /// SHA-256 of the exact InterMed executable that produced the report.
+    pub executable_sha256: Option<String>,
     pub git_commit: Option<String>,
     pub git_dirty: Option<bool>,
     pub cargo_features: Vec<String>,
@@ -445,7 +447,10 @@ fn infer_loader_from_mods(store: &FactStore) -> Option<Loader> {
     for f in store
         .by_kind(kind::MOD)
         .chain(store.by_kind(kind::PLUGIN))
-        .filter(|fact| fact.attr("identity_certainty") != Some("undecidable"))
+        .filter(|fact| {
+            fact.attr("identity_certainty")
+                .is_none_or(|certainty| certainty == "confirmed")
+        })
     {
         if let Some(l) = f.attr("loader")
             && Loader::parse(l).is_some()
@@ -470,11 +475,16 @@ fn infer_minecraft_version(store: &FactStore) -> Option<String> {
         BTreeMap::new();
     let mod_files: BTreeMap<&str, &str> = store
         .by_kind(kind::MOD)
-        .filter(|fact| fact.attr("identity_certainty") != Some("undecidable"))
+        .filter(|fact| {
+            fact.attr("identity_certainty")
+                .is_none_or(|certainty| certainty == "confirmed")
+        })
         .filter_map(|fact| fact.attr("file").map(|file| (fact.subject.as_str(), file)))
         .collect();
     for f in store.by_kind(kind::DEPENDENCY) {
-        if f.attr("identity_certainty") == Some("undecidable") {
+        if f.attr("identity_certainty")
+            .is_some_and(|certainty| certainty != "confirmed")
+        {
             continue;
         }
         if f.attr("dep") != Some("minecraft") {
@@ -502,10 +512,10 @@ fn infer_minecraft_version(store: &FactStore) -> Option<String> {
     // Filenames are secondary corroboration, not authority. They are useful for
     // old Forge packs whose descriptors omit Minecraft entirely. If one mod's
     // filename and descriptor disagree, that mod casts no vote.
-    for f in store
-        .by_kind(kind::MOD)
-        .filter(|fact| fact.attr("identity_certainty") != Some("undecidable"))
-    {
+    for f in store.by_kind(kind::MOD).filter(|fact| {
+        fact.attr("identity_certainty")
+            .is_none_or(|certainty| certainty == "confirmed")
+    }) {
         let Some(file) = f.attr("file") else {
             continue;
         };
@@ -1163,6 +1173,92 @@ fn cluster_resource_conflicts(findings: &mut Vec<Finding>, store: &FactStore) {
         clustered.push(builder.build());
     }
     findings.extend(clustered);
+
+    // Generic JSON conflicts often arrive in batches from one compatibility/addon
+    // writer overriding a base mod. Keep the per-path evidence, but make the
+    // default surface one decision per writer pair instead of dozens of cards.
+    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (index, finding) in findings.iter().enumerate() {
+        if !finding
+            .id
+            .starts_with("resource-conflict:json-merge-candidate:")
+            || finding.visibility != FindingVisibility::Default
+        {
+            continue;
+        }
+        let writers = finding.evidence.iter().find_map(|edge| {
+            store
+                .get(edge.fact)
+                .and_then(|fact| fact.attr("writers"))
+                .map(|writers| {
+                    let mut writers = split_csv(writers);
+                    writers.sort();
+                    writers.join(" <-> ")
+                })
+        });
+        if let Some(writers) = writers.filter(|writers| !writers.is_empty()) {
+            groups.entry(writers).or_default().push(index);
+        }
+    }
+
+    let mut clustered = Vec::new();
+    for (writers, indexes) in groups.into_iter().filter(|(_, indexes)| indexes.len() >= 3) {
+        let paths = indexes
+            .iter()
+            .filter_map(|index| findings[*index].affected_components.first().cloned())
+            .collect::<Vec<_>>();
+        let sample = paths
+            .iter()
+            .take(12)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut identity = Sha256::new();
+        identity.update(b"intermed-json-conflict-writer-pair-v1\0");
+        identity.update((writers.len() as u64).to_be_bytes());
+        identity.update(writers.as_bytes());
+        let identity = format!("{:x}", identity.finalize());
+        let mut builder = Finding::builder(
+            "resource-conflict-cluster",
+            format!("resource-conflict-cluster:json-merge-candidate:{}", &identity[..16]),
+        )
+        .family("resource-conflict")
+        .severity(Severity::Warn)
+        .category(intermed_evidence::Category::Resource)
+        .title(format!(
+            "{} order-dependent JSON overrides between {writers}",
+            indexes.len()
+        ))
+        .explanation(format!(
+            "The same writer pair changes {} single-document JSON resources. Review them as one load-order/compatibility decision. Resources: {}{}",
+            indexes.len(),
+            sample,
+            if paths.len() > 12 {
+                format!(" … and {} more", paths.len() - 12)
+            } else {
+                String::new()
+            }
+        ))
+        .tag("resource")
+        .tag("json-override")
+        .tag("cluster")
+        .confidence(0.85)
+        .affects(writers.clone())
+        .fix(FixCandidate::advice(
+            "Choose the intended writer for this mod pair or install a compatibility data pack; inspect the grouped paths before changing load order.",
+        ));
+        for index in &indexes {
+            findings[*index].visibility = FindingVisibility::ExplainOnly;
+            findings[*index]
+                .machine_tags
+                .push("clustered-detail".to_string());
+            for evidence in &findings[*index].evidence {
+                builder = builder.evidence(evidence.clone());
+            }
+        }
+        clustered.push(builder.build());
+    }
+    findings.extend(clustered);
 }
 
 /// Assemble a report with default analysis settings.
@@ -1499,6 +1595,49 @@ mod tests {
             findings
                 .iter()
                 .filter(|finding| finding.id.starts_with("recipe-output-override:data/"))
+                .all(|finding| finding.visibility == FindingVisibility::ExplainOnly)
+        );
+    }
+
+    #[test]
+    fn repeated_json_conflicts_cluster_by_writer_pair() {
+        let mut store = FactStore::new();
+        let mut findings = Vec::new();
+        for index in 0..5 {
+            let path = format!("data/base/spells/{index}.json");
+            let fact = store
+                .fact("vfs", kind::RESOURCE_SEMANTIC_DIFF)
+                .subject(path.clone())
+                .attr("writers", "addon,base")
+                .emit();
+            findings.push(
+                Finding::builder(
+                    "resource",
+                    format!("resource-conflict:json-merge-candidate:{path}"),
+                )
+                .severity(Severity::Warn)
+                .category(intermed_evidence::Category::Resource)
+                .evidence(intermed_evidence::EvidenceEdge::subject(fact))
+                .affects(path)
+                .build(),
+            );
+        }
+        cluster_resource_conflicts(&mut findings, &store);
+        assert_eq!(
+            findings
+                .iter()
+                .filter(|finding| finding
+                    .id
+                    .starts_with("resource-conflict-cluster:json-merge-candidate:"))
+                .count(),
+            1
+        );
+        assert!(
+            findings
+                .iter()
+                .filter(|finding| finding
+                    .id
+                    .starts_with("resource-conflict:json-merge-candidate:"))
                 .all(|finding| finding.visibility == FindingVisibility::ExplainOnly)
         );
     }

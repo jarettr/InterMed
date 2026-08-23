@@ -43,7 +43,7 @@ duckdb\:"In-process DuckDB SQL rule backend (requires \`--features duckdb\`). Sa
 '--jobs=[Cap the worker thread count for parallel jar/log scanning. Unset or \`0\` uses all available cores; lower it on weak machines or shared CI runners]:N:_default' \
 '--threads=[Cap the worker thread count for parallel jar/log scanning. Unset or \`0\` uses all available cores; lower it on weak machines or shared CI runners]:N:_default' \
 '--json=[Emit the full report as canonical \`intermed-doctor-report-v2\` JSON]::FILE:_files' \
-'--report-schema=[JSON report schema. \`v1\` is a temporary lossy compatibility writer retained through 0.1.7; v2 is canonical]:REPORT_SCHEMA:(v1 v2)' \
+'--report-schema=[JSON report schema. \`v1\` is a temporary lossy compatibility writer retained temporarily during alpha; v2 is canonical]:REPORT_SCHEMA:(v1 v2)' \
 '--sarif=[Emit SARIF 2.1.0 (for IDE / CI code-scanning)]::FILE:_files' \
 '--html=[Write a self-contained HTML report (\`index.html\` style)]:FILE:_files' \
 '--profile=[Write wall-clock phase profile JSON (\`intermed-doctor-profile-v1\`)]:FILE:_files' \
@@ -504,6 +504,19 @@ _arguments "${_arguments_options[@]}" : \
 ':candidates -- Candidate pool JSON (`intermed-corpus-candidates-v1`):_files' \
 && ret=0
 ;;
+(discover-mrpack)
+_arguments "${_arguments_options[@]}" : \
+'--out=[]:OUT:_files' \
+'--config=[Config file (\`intermed-config-v1\` TOML). Overrides discovery; see docs/reference/configuration.md]:FILE:_files' \
+'--dump-config[Print the fully merged config (defaults, files, environment, and doctor CLI overrides) as TOML and exit. A subcommand is optional]' \
+'(-v --verbose)--quiet[Suppress informational progress messages on stderr (errors still print)]' \
+'*-v[Increase informational detail (repeatable\: \`-v\`, \`-vv\`)]' \
+'*--verbose[Increase informational detail (repeatable\: \`-v\`, \`-vv\`)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':manifest -- `.mrpack` archive or extracted `modrinth.index.json`:_files' \
+&& ret=0
+;;
 (run)
 _arguments "${_arguments_options[@]}" : \
 '--logs=[Directory of captured smoke outputs (\`intermed-smoke-output-v1\` JSON)]:LOGS:_files' \
@@ -548,6 +561,53 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(materialize)
+_arguments "${_arguments_options[@]}" : \
+'--source=[Directory containing the locked artifacts]:SOURCE:_files' \
+'--store=[Content-addressed store root]:STORE:_files' \
+'--out=[Immutable materialized instance directory]:OUT:_files' \
+'--config=[Config file (\`intermed-config-v1\` TOML). Overrides discovery; see docs/reference/configuration.md]:FILE:_files' \
+'--dump-config[Print the fully merged config (defaults, files, environment, and doctor CLI overrides) as TOML and exit. A subcommand is optional]' \
+'(-v --verbose)--quiet[Suppress informational progress messages on stderr (errors still print)]' \
+'*-v[Increase informational detail (repeatable\: \`-v\`, \`-vv\`)]' \
+'*--verbose[Increase informational detail (repeatable\: \`-v\`, \`-vv\`)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':lock -- Corpus lock produced by `lab discover`:_files' \
+&& ret=0
+;;
+(campaign)
+_arguments "${_arguments_options[@]}" : \
+'--out=[Persistent state and per-case observations]:OUT:_files' \
+'--max-attempts=[Retry budget for infrastructure failures]:MAX_ATTEMPTS:_default' \
+'--max-parallel=[Maximum concurrent cases. Use 1 for very large packs]:MAX_PARALLEL:_default' \
+'--config=[Config file (\`intermed-config-v1\` TOML). Overrides discovery; see docs/reference/configuration.md]:FILE:_files' \
+'--dump-config[Print the fully merged config (defaults, files, environment, and doctor CLI overrides) as TOML and exit. A subcommand is optional]' \
+'(-v --verbose)--quiet[Suppress informational progress messages on stderr (errors still print)]' \
+'*-v[Increase informational detail (repeatable\: \`-v\`, \`-vv\`)]' \
+'*--verbose[Increase informational detail (repeatable\: \`-v\`, \`-vv\`)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':campaign -- Campaign manifest (`intermed-lab-campaign-v1`):_files' \
+&& ret=0
+;;
+(capture)
+_arguments "${_arguments_options[@]}" : \
+'--environment=[]:ENVIRONMENT:_default' \
+'--exit-code=[Observed process exit code. Omit when unavailable]:EXIT_CODE:_default' \
+'--max-bytes=[]:MAX_BYTES:_default' \
+'--out=[]:OUT:_files' \
+'--config=[Config file (\`intermed-config-v1\` TOML). Overrides discovery; see docs/reference/configuration.md]:FILE:_files' \
+'--timed-out[]' \
+'--dump-config[Print the fully merged config (defaults, files, environment, and doctor CLI overrides) as TOML and exit. A subcommand is optional]' \
+'(-v --verbose)--quiet[Suppress informational progress messages on stderr (errors still print)]' \
+'*-v[Increase informational detail (repeatable\: \`-v\`, \`-vv\`)]' \
+'*--verbose[Increase informational detail (repeatable\: \`-v\`, \`-vv\`)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':log:_files' \
+&& ret=0
+;;
 (help)
 _arguments "${_arguments_options[@]}" : \
 ":: :_intermed__subcmd__lab__subcmd__help_commands" \
@@ -564,6 +624,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(discover-mrpack)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (run)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -573,6 +637,18 @@ _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (eval)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(materialize)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(campaign)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(capture)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -1379,6 +1455,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(discover-mrpack)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (run)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -1388,6 +1468,18 @@ _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (eval)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(materialize)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(campaign)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(capture)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -2007,21 +2099,45 @@ _intermed__subcmd__help__subcmd__impact__subcmd__update_commands() {
 _intermed__subcmd__help__subcmd__lab_commands() {
     local commands; commands=(
 'discover:Build a reproducible corpus lock from a candidate pool' \
+'discover-mrpack:Build an authoritative lock from \`modrinth.index.json\`' \
 'run:Classify captured smoke-test outputs against a corpus lock' \
 'report:Render a compatibility matrix (JSON + HTML) from a lab run' \
 'eval:Score Doctor predictions against lab ground truth (precision/recall)' \
+'materialize:Materialize a locked corpus through the content-addressed Lab store' \
+'campaign:Execute or resume a reproducible real-pack campaign' \
+'capture:Convert a launcher/server log into a bounded smoke artifact' \
     )
     _describe -t commands 'intermed help lab commands' commands "$@"
+}
+(( $+functions[_intermed__subcmd__help__subcmd__lab__subcmd__campaign_commands] )) ||
+_intermed__subcmd__help__subcmd__lab__subcmd__campaign_commands() {
+    local commands; commands=()
+    _describe -t commands 'intermed help lab campaign commands' commands "$@"
+}
+(( $+functions[_intermed__subcmd__help__subcmd__lab__subcmd__capture_commands] )) ||
+_intermed__subcmd__help__subcmd__lab__subcmd__capture_commands() {
+    local commands; commands=()
+    _describe -t commands 'intermed help lab capture commands' commands "$@"
 }
 (( $+functions[_intermed__subcmd__help__subcmd__lab__subcmd__discover_commands] )) ||
 _intermed__subcmd__help__subcmd__lab__subcmd__discover_commands() {
     local commands; commands=()
     _describe -t commands 'intermed help lab discover commands' commands "$@"
 }
+(( $+functions[_intermed__subcmd__help__subcmd__lab__subcmd__discover-mrpack_commands] )) ||
+_intermed__subcmd__help__subcmd__lab__subcmd__discover-mrpack_commands() {
+    local commands; commands=()
+    _describe -t commands 'intermed help lab discover-mrpack commands' commands "$@"
+}
 (( $+functions[_intermed__subcmd__help__subcmd__lab__subcmd__eval_commands] )) ||
 _intermed__subcmd__help__subcmd__lab__subcmd__eval_commands() {
     local commands; commands=()
     _describe -t commands 'intermed help lab eval commands' commands "$@"
+}
+(( $+functions[_intermed__subcmd__help__subcmd__lab__subcmd__materialize_commands] )) ||
+_intermed__subcmd__help__subcmd__lab__subcmd__materialize_commands() {
+    local commands; commands=()
+    _describe -t commands 'intermed help lab materialize commands' commands "$@"
 }
 (( $+functions[_intermed__subcmd__help__subcmd__lab__subcmd__report_commands] )) ||
 _intermed__subcmd__help__subcmd__lab__subcmd__report_commands() {
@@ -2265,17 +2381,36 @@ _intermed__subcmd__impact__subcmd__update_commands() {
 _intermed__subcmd__lab_commands() {
     local commands; commands=(
 'discover:Build a reproducible corpus lock from a candidate pool' \
+'discover-mrpack:Build an authoritative lock from \`modrinth.index.json\`' \
 'run:Classify captured smoke-test outputs against a corpus lock' \
 'report:Render a compatibility matrix (JSON + HTML) from a lab run' \
 'eval:Score Doctor predictions against lab ground truth (precision/recall)' \
+'materialize:Materialize a locked corpus through the content-addressed Lab store' \
+'campaign:Execute or resume a reproducible real-pack campaign' \
+'capture:Convert a launcher/server log into a bounded smoke artifact' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'intermed lab commands' commands "$@"
+}
+(( $+functions[_intermed__subcmd__lab__subcmd__campaign_commands] )) ||
+_intermed__subcmd__lab__subcmd__campaign_commands() {
+    local commands; commands=()
+    _describe -t commands 'intermed lab campaign commands' commands "$@"
+}
+(( $+functions[_intermed__subcmd__lab__subcmd__capture_commands] )) ||
+_intermed__subcmd__lab__subcmd__capture_commands() {
+    local commands; commands=()
+    _describe -t commands 'intermed lab capture commands' commands "$@"
 }
 (( $+functions[_intermed__subcmd__lab__subcmd__discover_commands] )) ||
 _intermed__subcmd__lab__subcmd__discover_commands() {
     local commands; commands=()
     _describe -t commands 'intermed lab discover commands' commands "$@"
+}
+(( $+functions[_intermed__subcmd__lab__subcmd__discover-mrpack_commands] )) ||
+_intermed__subcmd__lab__subcmd__discover-mrpack_commands() {
+    local commands; commands=()
+    _describe -t commands 'intermed lab discover-mrpack commands' commands "$@"
 }
 (( $+functions[_intermed__subcmd__lab__subcmd__eval_commands] )) ||
 _intermed__subcmd__lab__subcmd__eval_commands() {
@@ -2286,17 +2421,36 @@ _intermed__subcmd__lab__subcmd__eval_commands() {
 _intermed__subcmd__lab__subcmd__help_commands() {
     local commands; commands=(
 'discover:Build a reproducible corpus lock from a candidate pool' \
+'discover-mrpack:Build an authoritative lock from \`modrinth.index.json\`' \
 'run:Classify captured smoke-test outputs against a corpus lock' \
 'report:Render a compatibility matrix (JSON + HTML) from a lab run' \
 'eval:Score Doctor predictions against lab ground truth (precision/recall)' \
+'materialize:Materialize a locked corpus through the content-addressed Lab store' \
+'campaign:Execute or resume a reproducible real-pack campaign' \
+'capture:Convert a launcher/server log into a bounded smoke artifact' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'intermed lab help commands' commands "$@"
+}
+(( $+functions[_intermed__subcmd__lab__subcmd__help__subcmd__campaign_commands] )) ||
+_intermed__subcmd__lab__subcmd__help__subcmd__campaign_commands() {
+    local commands; commands=()
+    _describe -t commands 'intermed lab help campaign commands' commands "$@"
+}
+(( $+functions[_intermed__subcmd__lab__subcmd__help__subcmd__capture_commands] )) ||
+_intermed__subcmd__lab__subcmd__help__subcmd__capture_commands() {
+    local commands; commands=()
+    _describe -t commands 'intermed lab help capture commands' commands "$@"
 }
 (( $+functions[_intermed__subcmd__lab__subcmd__help__subcmd__discover_commands] )) ||
 _intermed__subcmd__lab__subcmd__help__subcmd__discover_commands() {
     local commands; commands=()
     _describe -t commands 'intermed lab help discover commands' commands "$@"
+}
+(( $+functions[_intermed__subcmd__lab__subcmd__help__subcmd__discover-mrpack_commands] )) ||
+_intermed__subcmd__lab__subcmd__help__subcmd__discover-mrpack_commands() {
+    local commands; commands=()
+    _describe -t commands 'intermed lab help discover-mrpack commands' commands "$@"
 }
 (( $+functions[_intermed__subcmd__lab__subcmd__help__subcmd__eval_commands] )) ||
 _intermed__subcmd__lab__subcmd__help__subcmd__eval_commands() {
@@ -2308,6 +2462,11 @@ _intermed__subcmd__lab__subcmd__help__subcmd__help_commands() {
     local commands; commands=()
     _describe -t commands 'intermed lab help help commands' commands "$@"
 }
+(( $+functions[_intermed__subcmd__lab__subcmd__help__subcmd__materialize_commands] )) ||
+_intermed__subcmd__lab__subcmd__help__subcmd__materialize_commands() {
+    local commands; commands=()
+    _describe -t commands 'intermed lab help materialize commands' commands "$@"
+}
 (( $+functions[_intermed__subcmd__lab__subcmd__help__subcmd__report_commands] )) ||
 _intermed__subcmd__lab__subcmd__help__subcmd__report_commands() {
     local commands; commands=()
@@ -2317,6 +2476,11 @@ _intermed__subcmd__lab__subcmd__help__subcmd__report_commands() {
 _intermed__subcmd__lab__subcmd__help__subcmd__run_commands() {
     local commands; commands=()
     _describe -t commands 'intermed lab help run commands' commands "$@"
+}
+(( $+functions[_intermed__subcmd__lab__subcmd__materialize_commands] )) ||
+_intermed__subcmd__lab__subcmd__materialize_commands() {
+    local commands; commands=()
+    _describe -t commands 'intermed lab materialize commands' commands "$@"
 }
 (( $+functions[_intermed__subcmd__lab__subcmd__report_commands] )) ||
 _intermed__subcmd__lab__subcmd__report_commands() {

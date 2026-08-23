@@ -25,7 +25,7 @@ use crate::refmap::{MappingContext, Namespace, Refmap, TinyMappings, dotted_name
 
 const EXTRACTOR: &str = "mixin-analyzer";
 /// Bump trailing revision when parse / analysis logic changes within a release.
-const CACHE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-r31");
+const CACHE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-r34");
 
 /// Stable collector / fact extractor id (`mixin-analyzer`).
 pub fn extractor_id() -> &'static str {
@@ -673,30 +673,51 @@ fn discover_tiny_mappings(archive: &mut zip::ZipArchive<std::fs::File>) -> Optio
 
 /// Discover a jar's mixin config files across every loader in one pass:
 /// Fabric `fabric.mod.json:mixins`, Quilt `quilt_loader.mixins`, Forge/NeoForge
-/// `MANIFEST.MF` `MixinConfigs` *and* `mods.toml` `[[mixins]] config`. If a jar
-/// declares none but still ships `*.mixins.json` files, fall back to globbing them
-/// (some coremod-era / shaded jars wire mixins without a manifest entry).
+/// `MANIFEST.MF` `MixinConfigs` *and* `mods.toml` `[[mixins]] config`. Globbing is
+/// only a fallback for descriptor-less legacy/coremod jars: when authoritative
+/// loader metadata exists and declares no configs, a leftover `*.mixins.json` is
+/// inactive and must not create facts or incomplete-scan warnings.
 fn discover_mixin_configs(archive: &mut zip::ZipArchive<std::fs::File>) -> Vec<String> {
     let mut out = std::collections::BTreeSet::new();
-    if let Some(text) = read_zip_text(archive, "fabric.mod.json") {
+    let fabric = read_zip_text(archive, "fabric.mod.json");
+    let quilt = read_zip_text(archive, "quilt.mod.json");
+    let manifest = read_zip_text(archive, "META-INF/MANIFEST.MF");
+    let forge = read_zip_text(archive, "META-INF/mods.toml");
+    let neoforge = read_zip_text(archive, "META-INF/neoforge.mods.toml");
+    let fabric_is_concrete = fabric.as_deref().is_some_and(json_descriptor_is_concrete);
+    let quilt_is_concrete = quilt.as_deref().is_some_and(json_descriptor_is_concrete);
+    let forge_is_concrete = forge.as_deref().is_some_and(toml_descriptor_is_concrete);
+    let neoforge_is_concrete = neoforge.as_deref().is_some_and(toml_descriptor_is_concrete);
+    let has_loader_descriptor =
+        fabric_is_concrete || quilt_is_concrete || forge_is_concrete || neoforge_is_concrete;
+    if fabric_is_concrete && let Some(text) = fabric {
         out.extend(mixin_paths_from_json(&text, &["mixins"]));
     }
-    if let Some(text) = read_zip_text(archive, "quilt.mod.json") {
+    if quilt_is_concrete && let Some(text) = quilt {
         out.extend(mixin_paths_from_json(&text, &["quilt_loader", "mixins"]));
         out.extend(mixin_paths_from_json(&text, &["mixins"]));
     }
-    if let Some(text) = read_zip_text(archive, "META-INF/MANIFEST.MF") {
+    if let Some(text) = manifest {
         out.extend(mixin_paths_from_manifest(&text));
     }
-    for toml in ["META-INF/mods.toml", "META-INF/neoforge.mods.toml"] {
-        if let Some(text) = read_zip_text(archive, toml) {
-            out.extend(mixin_paths_from_mods_toml(&text));
-        }
+    if forge_is_concrete && let Some(text) = forge {
+        out.extend(mixin_paths_from_mods_toml(&text));
     }
-    if out.is_empty() {
+    if neoforge_is_concrete && let Some(text) = neoforge {
+        out.extend(mixin_paths_from_mods_toml(&text));
+    }
+    if out.is_empty() && !has_loader_descriptor {
         out.extend(glob_mixin_configs(archive));
     }
-    out.into_iter().collect()
+    // Manifest `MixinConfigs` values are classpath-level declarations. Shaded
+    // build metadata commonly retains a dependency's config name even though
+    // that resource lives in another artifact (or the dependency was later
+    // unshaded). Treating every non-local declaration as a failed local parse
+    // produces false incomplete-scan warnings. Local configs are analyzed here;
+    // provider artifacts are scanned independently.
+    out.into_iter()
+        .filter(|path| archive.by_name(path).is_ok())
+        .collect()
 }
 
 /// The class namespace this jar's loader presents to mixins **at runtime**,
@@ -710,16 +731,61 @@ fn discover_mixin_configs(archive: &mut zip::ZipArchive<std::fs::File>) -> Vec<S
 /// (its runtime depends on the instance it is installed into), so it is reported
 /// `Unknown` and the namespace-mismatch checks stay silent rather than guess.
 fn detect_runtime_namespace(archive: &mut zip::ZipArchive<std::fs::File>) -> Namespace {
-    let forge = read_zip_text(archive, "META-INF/mods.toml").is_some()
-        || read_zip_text(archive, "META-INF/neoforge.mods.toml").is_some();
-    let fabric = read_zip_text(archive, "fabric.mod.json").is_some()
-        || read_zip_text(archive, "quilt.mod.json").is_some();
+    let forge = read_zip_text(archive, "META-INF/mods.toml")
+        .as_deref()
+        .is_some_and(toml_descriptor_is_concrete)
+        || read_zip_text(archive, "META-INF/neoforge.mods.toml")
+            .as_deref()
+            .is_some_and(toml_descriptor_is_concrete);
+    let fabric = read_zip_text(archive, "fabric.mod.json")
+        .as_deref()
+        .is_some_and(json_descriptor_is_concrete)
+        || read_zip_text(archive, "quilt.mod.json")
+            .as_deref()
+            .is_some_and(json_descriptor_is_concrete);
     match (forge, fabric) {
         (true, false) => Namespace::Named,
         (false, true) => Namespace::Intermediary,
         // Neither manifest, or an ambiguous multi-loader jar with both.
         _ => Namespace::Unknown,
     }
+}
+
+fn concrete_declared_id(value: &str) -> bool {
+    !value.trim().is_empty() && !value.contains("${") && !value.contains('@')
+}
+
+fn json_descriptor_is_concrete(text: &str) -> bool {
+    let Ok(value) = intermed_doctor_core::fabric_json::parse_value(text) else {
+        return false;
+    };
+    value
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            value
+                .pointer("/quilt_loader/id")
+                .and_then(serde_json::Value::as_str)
+        })
+        .is_some_and(concrete_declared_id)
+}
+
+fn toml_descriptor_is_concrete(text: &str) -> bool {
+    let Ok(value) = toml::from_str::<toml::Value>(text) else {
+        return false;
+    };
+    value
+        .get("mods")
+        .and_then(toml::Value::as_array)
+        .is_some_and(|mods| {
+            mods.iter().any(|entry| {
+                entry
+                    .get("modId")
+                    .or_else(|| entry.get("mod_id"))
+                    .and_then(toml::Value::as_str)
+                    .is_some_and(concrete_declared_id)
+            })
+        })
 }
 
 /// Extract `config = "x.mixins.json"` entries from a Forge/NeoForge `mods.toml`,
@@ -790,7 +856,7 @@ fn glob_mixin_configs(archive: &mut zip::ZipArchive<std::fs::File>) -> Vec<Strin
 }
 
 fn mixin_paths_from_json(text: &str, path: &[&str]) -> Vec<String> {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+    let Ok(v) = intermed_doctor_core::fabric_json::parse_value(text) else {
         return Vec::new();
     };
     let mut cur = &v;
@@ -888,7 +954,8 @@ fn parse_config(
     mod_id: &str,
     text: &str,
 ) -> Result<MixinConfigRecord, serde_json::Error> {
-    let raw: RawMixinConfig = serde_json::from_str(text)?;
+    let raw: RawMixinConfig =
+        serde_json::from_value(intermed_doctor_core::fabric_json::parse_value(text)?)?;
     let mut mixins = std::collections::BTreeSet::new();
     // Per-mixin side, keyed by short name. The array a mixin appears in sets the
     // default side (`mixins` ⇒ both, `client`/`server` ⇒ that side); an object-form
@@ -1020,13 +1087,13 @@ fn is_safe_path(path: &str) -> bool {
 fn detect_mod_id(archive: &mut zip::ZipArchive<std::fs::File>) -> Option<String> {
     read_zip_text(archive, "fabric.mod.json")
         .and_then(|text| {
-            serde_json::from_str::<serde_json::Value>(&text)
+            intermed_doctor_core::fabric_json::parse_value(&text)
                 .ok()
                 .and_then(|v| v.get("id").and_then(|x| x.as_str()).map(str::to_string))
         })
         .or_else(|| {
             read_zip_text(archive, "quilt.mod.json").and_then(|text| {
-                serde_json::from_str::<serde_json::Value>(&text)
+                intermed_doctor_core::fabric_json::parse_value(&text)
                     .ok()
                     .and_then(|v| {
                         v.get("quilt_loader")
@@ -1055,6 +1122,129 @@ fn read_zip_bytes(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> O
 #[cfg(test)]
 mod discovery_tests {
     use super::*;
+
+    fn discovery_jar(entries: &[(&str, &[u8])]) -> std::path::PathBuf {
+        use std::io::Write;
+
+        let path = std::env::temp_dir().join(format!(
+            "intermed-mixin-discovery-{}-{}.jar",
+            std::process::id(),
+            rand_suffix(entries)
+        ));
+        let file = std::fs::File::create(&path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        for (name, bytes) in entries {
+            writer
+                .start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer.finish().unwrap();
+        path
+    }
+
+    fn rand_suffix(entries: &[(&str, &[u8])]) -> u128 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            ^ entries.len() as u128
+    }
+
+    #[test]
+    fn authoritative_empty_fabric_mixin_list_disables_leftover_config() {
+        let path = discovery_jar(&[
+            ("fabric.mod.json", br#"{"id":"reacharound","mixins":[]}"#),
+            (
+                "reacharound.mixins.json",
+                br#"{"package":"example.mixin","client":["MissingMixin"]}"#,
+            ),
+        ]);
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(discover_mixin_configs(&mut archive).is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn descriptorless_legacy_jar_still_uses_config_glob_fallback() {
+        let path = discovery_jar(&[(
+            "legacy.mixins.json",
+            br#"{"package":"example.mixin","mixins":[]}"#,
+        )]);
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert_eq!(
+            discover_mixin_configs(&mut archive),
+            vec!["legacy.mixins.json"]
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn inactive_templated_neoforge_descriptor_does_not_pollute_fabric_mixins() {
+        let path = discovery_jar(&[
+            (
+                "fabric.mod.json",
+                br#"{"id":"configurable","mixins":["configurable.mixins.json"]}"#,
+            ),
+            (
+                "META-INF/neoforge.mods.toml",
+                br#"modLoader="javafml"
+[[mods]]
+modId="${mod_id}"
+version="${version}"
+[[mixins]]
+config="${mod_id}.mixins.json"
+"#,
+            ),
+            (
+                "configurable.mixins.json",
+                br#"{"package":"example.mixin","mixins":[]}"#,
+            ),
+        ]);
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert_eq!(
+            discover_mixin_configs(&mut archive),
+            vec!["configurable.mixins.json"]
+        );
+        assert_eq!(
+            detect_runtime_namespace(&mut archive),
+            Namespace::Intermediary
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn classpath_manifest_reference_missing_from_jar_is_not_a_parse_failure() {
+        let path = discovery_jar(&[
+            (
+                "META-INF/MANIFEST.MF",
+                b"Manifest-Version: 1.0\r\nMixinConfigs: dependency.mixins.json,local.mixins.json\r\n",
+            ),
+            (
+                "META-INF/mods.toml",
+                br#"modLoader="javafml"
+[[mods]]
+modId="example"
+version="1"
+"#,
+            ),
+            (
+                "local.mixins.json",
+                br#"{"package":"example.mixin","mixins":[]}"#,
+            ),
+        ]);
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert_eq!(
+            discover_mixin_configs(&mut archive),
+            vec!["local.mixins.json"]
+        );
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn rejected_official_jar_preserves_observed_namespace_without_coverage() {

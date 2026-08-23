@@ -4,7 +4,7 @@
 //! mod identity, JAR signing status, and trust heuristics. No bytecode execution.
 
 use std::collections::BTreeSet;
-use std::io::Read;
+use std::io::{Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Condvar, Mutex, OnceLock};
@@ -31,7 +31,7 @@ const EXTRACTOR: &str = "sbom-generator";
 /// Cache key version for this collector's payload. The crate version invalidates
 /// the cache automatically on every release; bump the trailing revision when the
 /// scan logic changes within a single release.
-const CACHE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-r7");
+const CACHE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-r11");
 const CORPUS_LOCK_SCHEMA: &str = "intermed-corpus-lock-v1";
 
 /// Implementation status for help text.
@@ -461,15 +461,16 @@ impl Rule for SbomProvenanceRule {
             let archive = f.subject.as_str();
             out.push(
                 Finding::builder(self.id(), format!("unknown-source:{archive}"))
-                    .severity(Severity::Warn)
-                    .category(Category::Security)
+                    .severity(Severity::Note)
+                    .category(Category::Metadata)
                     .title(format!(
                         "Artifact identity could not be established: {archive}"
                     ))
                     .explanation(
-                        "This jar has no recognizable Fabric/Quilt/Forge manifest. \
-                         Its mod identity and distribution provenance could not be established; \
-                         this is not by itself evidence that the artifact is unsafe.",
+                        "This jar has no recognizable modern or legacy loader descriptor. \
+                         Its mod identity could not be established from packaging metadata; \
+                         this is a packaging/provenance limitation, not evidence that the \
+                         artifact is unsafe.",
                     )
                     .evidence(EvidenceEdge::subject(f.id))
                     .affects(archive)
@@ -864,6 +865,48 @@ impl IdentityDetection {
             detail: None,
         }
     }
+
+    fn parsed_nested(identity: JarIdentity, path: String) -> Self {
+        Self {
+            identity,
+            status: IdentityStatus::Parsed,
+            detail: Some(format!(
+                "identity established by authoritative descriptor in nested artifact {path}"
+            )),
+        }
+    }
+
+    fn parsed_nested_container(nested: &[(String, JarIdentity)]) -> Self {
+        let mut members = nested
+            .iter()
+            .filter_map(|(path, identity)| {
+                identity
+                    .mod_id
+                    .as_deref()
+                    .map(|id| format!("{id} at {path}"))
+            })
+            .collect::<Vec<_>>();
+        members.sort();
+        Self {
+            identity: JarIdentity {
+                loader: Some("jarjar".to_string()),
+                ..JarIdentity::default()
+            },
+            status: IdentityStatus::Parsed,
+            detail: Some(format!(
+                "descriptorless container has multiple authoritative nested identities: {}",
+                members.join(", ")
+            )),
+        }
+    }
+
+    fn parsed_service_container(identity: JarIdentity, detail: String) -> Self {
+        Self {
+            identity,
+            status: IdentityStatus::Parsed,
+            detail: Some(detail),
+        }
+    }
 }
 
 /// Extract the primary mod identity from Forge/NeoForge `mods.toml` (`[[mods]]`).
@@ -885,6 +928,13 @@ fn forge_identity_from_toml(v: &toml::Value, loader: &str) -> Option<JarIdentity
 }
 
 fn detect_identity(archive: &mut zip::ZipArchive<std::fs::File>) -> IdentityDetection {
+    detect_identity_bounded(archive, 2)
+}
+
+fn detect_identity_bounded<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    nested_depth: u8,
+) -> IdentityDetection {
     let mut parse_failure = None;
     if let Some(text) = read_zip_text(archive, "fabric.mod.json") {
         match intermed_doctor_core::fabric_json::parse_value(&text) {
@@ -908,6 +958,26 @@ fn detect_identity(archive: &mut zip::ZipArchive<std::fs::File>) -> IdentityDete
             }
         } else if let Err(error) = toml::from_str::<toml::Value>(&text) {
             parse_failure.get_or_insert_with(|| format!("META-INF/mods.toml: {error}"));
+        }
+    }
+    if let Some(text) = read_zip_text(archive, "mcmod.info") {
+        match intermed_doctor_core::legacy_forge::parse_mcmod_info(&text) {
+            Ok(mods) if !mods.is_empty() => {
+                let first = &mods[0];
+                return IdentityDetection::parsed(JarIdentity {
+                    mod_id: Some(first.mod_id.clone()),
+                    version: first.version.clone(),
+                    loader: Some("forge".to_string()),
+                    platform: None,
+                    has_contact: false,
+                });
+            }
+            Ok(_) => {
+                parse_failure.get_or_insert_with(|| "mcmod.info: no mod entries".to_string());
+            }
+            Err(error) => {
+                parse_failure.get_or_insert_with(|| format!("mcmod.info: {error}"));
+            }
         }
     }
     if let Some(text) = read_zip_text(archive, "plugin.yml") {
@@ -952,6 +1022,82 @@ fn detect_identity(archive: &mut zip::ZipArchive<std::fs::File>) -> IdentityDete
             parse_failure.get_or_insert_with(|| format!("META-INF/neoforge.mods.toml: {error}"));
         }
     }
+    if let Some(bridge) = intermed_doctor_core::bootstrap_bridge::detect_connector(archive)
+        .or_else(|| intermed_doctor_core::bootstrap_bridge::detect_essential_loader(archive))
+    {
+        return IdentityDetection::parsed(JarIdentity {
+            mod_id: Some(bridge.id),
+            version: bridge.version,
+            loader: Some(bridge.loader_family),
+            platform: None,
+            has_contact: false,
+        });
+    }
+    if jar_meta::manifest_attribute(archive, "FMLModType").as_deref() == Some("LANGPROVIDER")
+        && (archive
+            .by_name("META-INF/services/net.minecraftforge.forgespi.language.IModLanguageProvider")
+            .is_ok()
+            || archive
+                .by_name("META-INF/services/net.neoforged.neoforgespi.language.IModLanguageLoader")
+                .is_ok())
+    {
+        let title = jar_meta::manifest_attribute(archive, "Implementation-Title")
+            .or_else(|| jar_meta::manifest_attribute(archive, "Specification-Title"));
+        let version = jar_meta::manifest_attribute(archive, "Implementation-Version")
+            .or_else(|| jar_meta::manifest_attribute(archive, "Specification-Version"));
+        return IdentityDetection::parsed_service_container(
+            JarIdentity {
+                version,
+                loader: Some("forge-language-provider".to_string()),
+                has_contact: jar_meta::manifest_attribute(archive, "Implementation-URL").is_some(),
+                ..JarIdentity::default()
+            },
+            format!(
+                "Forge language-provider service{}",
+                title
+                    .as_deref()
+                    .map(|title| format!(" declared as {title}"))
+                    .unwrap_or_default()
+            ),
+        );
+    }
+    if nested_depth > 0 {
+        let names = (0..archive.len())
+            .filter_map(|index| {
+                let name = archive.by_index(index).ok()?.name().to_string();
+                ((name.starts_with("META-INF/jarjar/") || name.starts_with("META-INF/jars/"))
+                    && name.ends_with(".jar"))
+                .then_some(name)
+            })
+            .collect::<Vec<_>>();
+        let mut nested_identities = Vec::new();
+        for name in names {
+            let Ok(Some(bytes)) = intermed_doctor_core::bounded_zip::read_zip_bytes_bounded(
+                archive,
+                &name,
+                intermed_doctor_core::bounded_zip::MAX_NESTED_JAR_BYTES,
+            ) else {
+                continue;
+            };
+            let Ok(mut nested) = zip::ZipArchive::new(Cursor::new(bytes)) else {
+                continue;
+            };
+            let detected = detect_identity_bounded(&mut nested, nested_depth - 1);
+            if detected.status == IdentityStatus::Parsed && detected.identity.mod_id.is_some() {
+                nested_identities.push((name, detected.identity));
+            }
+        }
+        // A single authoritative nested mod describes a descriptorless JarJar
+        // container (KotlinForForge is the common real-world case). Multiple
+        // nested mods cannot be collapsed into SBOM's singular identity field;
+        // leave those containers explicit rather than choosing arbitrarily.
+        if nested_identities.len() == 1 {
+            let (path, identity) = nested_identities.pop().expect("length checked");
+            return IdentityDetection::parsed_nested(identity, path);
+        } else if !nested_identities.is_empty() {
+            return IdentityDetection::parsed_nested_container(&nested_identities);
+        }
+    }
     IdentityDetection {
         identity: JarIdentity::default(),
         status: if parse_failure.is_some() {
@@ -966,8 +1112,8 @@ fn detect_identity(archive: &mut zip::ZipArchive<std::fs::File>) -> IdentityDete
 /// Resolve Forge's `${file.jarVersion}` placeholder on a parsed identity, using
 /// the shared [`jar_meta`] helper so the substitution matches the metadata and
 /// identity scanners. Without it the SBOM/PURL carries the raw template.
-fn resolve_jar_version_placeholder(
-    archive: &mut zip::ZipArchive<std::fs::File>,
+fn resolve_jar_version_placeholder<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
     identity: &mut JarIdentity,
 ) {
     if let Some(version) = identity.version.as_ref() {
@@ -1271,7 +1417,7 @@ fn sha256_file(path: &Path) -> Result<String, SbomScanError> {
 /// the manifest cap applies; an oversized or crafted entry yields `None` instead
 /// of driving unbounded decompression. Per-jar truncation is already surfaced by
 /// the metadata layer (which scans the same jars).
-fn read_zip_text(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Option<String> {
+fn read_zip_text<R: Read + Seek>(archive: &mut zip::ZipArchive<R>, name: &str) -> Option<String> {
     intermed_doctor_core::bounded_zip::read_zip_text_opt(
         archive,
         name,

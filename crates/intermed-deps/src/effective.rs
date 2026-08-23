@@ -273,32 +273,31 @@ fn undisclosed_and_conditional(model: &EffectiveModel, rule_id: &str) -> Vec<Fin
         }
 
         if imp.required {
-            // The flagship finding: a real, unconditioned cross-mod requirement the
-            // manifest never declares. Removing the provider or changing load order
-            // can silently break the consumer's content.
-            let severity = if imp.hard {
-                Severity::Warn
-            } else {
-                Severity::Note
-            };
+            // The provider is present, so this is not a current compatibility
+            // failure. An unconditional custom serializer is strong evidence of
+            // integration, but it cannot distinguish a core requirement from
+            // optional add-on data shipped for packs that contain the provider.
+            // Keep it as maintenance context; the missing-provider path is where
+            // the same structural edge becomes actionable.
+            let severity = Severity::Note;
             out.push(
                 Finding::builder(
                     rule_id,
                     format!("implicit-dependency-undisclosed:{}->{}", imp.from, provider),
                 )
                 .severity(severity)
-                .confidence(if imp.hard { 0.8 } else { 0.55 })
+                .confidence(if imp.hard { 0.7 } else { 0.55 })
                 .category(Category::Dependency)
                 .title(format!(
-                    "{} has an undisclosed dependency on {}",
+                    "{} has an undeclared integration with {}",
                     imp.from, provider
                 ))
                 .explanation(format!(
                     "{from}'s resources reference {provider} as a {via} (e.g. {path}), but \
                      {from} does not declare a dependency on it. {provider} is installed now, so \
-                     the pack works — but if {provider} is removed, disabled, or the load order \
-                     changes, {from}'s affected content can silently fail to load. This is \
-                     inferred from resources, not the manifest.",
+                     the pack currently resolves it. If {provider} is removed or disabled, \
+                     {from}'s affected integration content may fail to load. The resource alone \
+                     does not prove that {provider} is a mandatory dependency.",
                     from = imp.from,
                     via = imp.via,
                     path = imp.sample_path,
@@ -307,8 +306,8 @@ fn undisclosed_and_conditional(model: &EffectiveModel, rule_id: &str) -> Vec<Fin
                 .affects(imp.from.clone())
                 .affects(provider.to_string())
                 .fix(FixCandidate::advice(format!(
-                    "Declare {provider} as a dependency of {from} (e.g. add it to \
-                     `depends`/`recommends` in the mod manifest) so the requirement is explicit.",
+                    "Document {provider} in {from}'s manifest as `depends`, `recommends`, or \
+                     `suggests`, matching whether this integration is mandatory or optional.",
                     from = imp.from,
                 )))
                 .tag("dependency")
@@ -641,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn undisclosed_present_undeclared_serializer_is_warned() {
+    fn present_undeclared_serializer_is_an_integration_note() {
         let mut store = FactStore::new();
         mod_fact(&mut store, "addon", "1.0.0");
         mod_fact(&mut store, "thermal", "10.0.0");
@@ -652,7 +651,7 @@ mod tests {
             .filter(|x| x.id.starts_with("implicit-dependency-undisclosed:"))
             .collect();
         assert_eq!(undisclosed.len(), 1);
-        assert_eq!(undisclosed[0].severity, Severity::Warn);
+        assert_eq!(undisclosed[0].severity, Severity::Note);
         assert_eq!(
             undisclosed[0].id,
             "implicit-dependency-undisclosed:addon->thermal"
