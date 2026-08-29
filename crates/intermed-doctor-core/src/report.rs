@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use intermed_evidence::{
-    ArtifactId, AssessmentDisposition, CertaintyTier, DescriptorKind, EntityRef,
+    ArtifactId, AssessmentDisposition, CertaintyTier, DescriptorKind, EntityRef, EvidenceEdge,
     EvidenceSummaryItem, Finding, FindingVisibility, FixCandidate, ModInstanceId, Recommendation,
     RecommendationAction, RecommendationId, RecommendationSafety, Severity,
 };
@@ -69,7 +69,9 @@ pub struct Summary {
     /// Raw detail retained outside the default report surface.
     #[serde(default)]
     pub hidden_details: usize,
-    /// Highest severity present, if any.
+    /// Highest severity on the default report surface, if any. The raw
+    /// histogram above still includes verbose, explain-only, and overlay-only
+    /// detail for compatibility and forensic accounting.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worst: Option<Severity>,
 }
@@ -85,11 +87,11 @@ impl Summary {
                 Severity::Note => s.note += 1,
                 Severity::Info => s.info += 1,
             }
-            s.worst = Some(s.worst.map_or(f.severity, |w| w.max(f.severity)));
             if f.visibility != FindingVisibility::Default {
                 s.hidden_details += 1;
                 continue;
             }
+            s.worst = Some(s.worst.map_or(f.severity, |w| w.max(f.severity)));
             let incomplete = !f.assessment.blockers.is_empty()
                 || f.assessment
                     .coverage
@@ -112,9 +114,9 @@ impl Summary {
         s
     }
 
-    /// True when nothing at `Error` or above was found.
+    /// True when the default surface contains no confirmed hard problem.
     pub fn is_healthy(&self) -> bool {
-        self.fatal == 0 && self.error == 0
+        self.confirmed_problems == 0
     }
 }
 
@@ -299,11 +301,12 @@ pub struct DoctorReport {
 }
 
 impl DoctorReport {
-    /// Process exit code convention: 0 healthy, 1 warnings only, 2 errors+.
+    /// Process exit code convention for the default report surface: 0 healthy,
+    /// 1 review/incomplete results, 2 confirmed errors or operational failures.
     pub fn exit_code(&self) -> i32 {
         if !self.operational_errors.is_empty() || !self.summary.is_healthy() {
             2
-        } else if self.summary.warn > 0 {
+        } else if self.summary.needs_review > 0 || self.summary.incomplete_analysis > 0 {
             1
         } else {
             0
@@ -1061,6 +1064,16 @@ fn apply_visibility_policy(findings: &mut [Finding]) {
             // of thousands of informational rows must not bury errors/warnings
             // in human reports. The records remain in JSON and explain views.
             f.visibility = FindingVisibility::Verbose;
+        } else if f.assessment.disposition == intermed_evidence::AssessmentDisposition::Abstained
+            && has_tag("apply-failure")
+            && has_tag("mixin")
+        {
+            // Absence/apply hypotheses without the declared classpath, mapping,
+            // or activation prerequisites are structured abstentions, not 20+
+            // independent user actions. The coverage passport explains the
+            // missing prerequisite once; per-site hypotheses remain available
+            // in JSON and `--explain`.
+            f.visibility = FindingVisibility::ExplainOnly;
         }
     }
 }
@@ -1083,11 +1096,11 @@ fn populate_evidence_summaries(findings: &mut [Finding], store: &FactStore) {
 }
 
 fn cluster_resource_conflicts(findings: &mut Vec<Finding>, store: &FactStore) {
-    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut groups: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
     for (index, finding) in findings.iter().enumerate() {
-        if !finding.id.starts_with("recipe-output-override:") {
+        let Some(family) = recipe_override_family(finding) else {
             continue;
-        }
+        };
         let writers = finding.evidence.iter().find_map(|edge| {
             store
                 .get(edge.fact)
@@ -1099,12 +1112,16 @@ fn cluster_resource_conflicts(findings: &mut Vec<Finding>, store: &FactStore) {
                 })
         });
         if let Some(writers) = writers.filter(|writers| !writers.is_empty()) {
-            groups.entry(writers).or_default().push(index);
+            groups
+                .entry((family.to_string(), writers))
+                .or_default()
+                .push(index);
         }
     }
 
     let mut clustered = Vec::new();
-    for (writers, indexes) in groups.into_iter().filter(|(_, indexes)| indexes.len() >= 3) {
+    for ((family, writers), indexes) in groups.into_iter().filter(|(_, indexes)| indexes.len() >= 3)
+    {
         let severity = indexes
             .iter()
             .map(|index| findings[*index].severity)
@@ -1126,24 +1143,31 @@ fn cluster_resource_conflicts(findings: &mut Vec<Finding>, store: &FactStore) {
             .collect::<String>();
         let mut pair_identity = Sha256::new();
         pair_identity.update(b"intermed-resource-writer-pair-v1\0");
+        if family != "recipe-output-override" {
+            pair_identity.update((family.len() as u64).to_be_bytes());
+            pair_identity.update(family.as_bytes());
+        }
         pair_identity.update((writers.len() as u64).to_be_bytes());
         pair_identity.update(writers.as_bytes());
         let pair_identity = format!("{:x}", pair_identity.finalize());
+        let cluster_prefix = format!("{family}-cluster");
+        let subject = recipe_override_subject(&family);
         let mut builder = Finding::builder(
             "resource-semantics",
-            format!(
-                "recipe-output-override-cluster:{id_pair}:{}",
-                &pair_identity[..16]
-            ),
+            format!("{cluster_prefix}:{id_pair}:{}", &pair_identity[..16]),
         )
+        .family(family.clone())
+        .conclusion_kind(intermed_evidence::ConclusionKind::StaticResourceState)
+        .coverage_requirement(intermed_evidence::CoverageRequirement::RelevantResources)
+        .coverage_requirement(intermed_evidence::CoverageRequirement::KnownRuntimeMutators)
+        .proof_kind(intermed_evidence::ProofKind::DeterministicDerivation)
+        .impact(intermed_evidence::Impact::PackHealth)
+        .evidence_origin(intermed_evidence::EvidenceOrigin::StaticExact)
         .severity(severity)
         .category(intermed_evidence::Category::Resource)
-        .title(format!(
-            "{} recipe output overrides between {writers}",
-            indexes.len()
-        ))
+        .title(format!("{} {subject} between {writers}", indexes.len()))
         .explanation(format!(
-            "The same writer pair overrides {} recipe outputs. Review this as one load-order \
+            "The same writer pair has {} {subject}. Review this as one load-order \
              decision. Resources: {}{}",
             indexes.len(),
             sample,
@@ -1174,14 +1198,181 @@ fn cluster_resource_conflicts(findings: &mut Vec<Finding>, store: &FactStore) {
     }
     findings.extend(clustered);
 
-    // Generic JSON conflicts often arrive in batches from one compatibility/addon
-    // writer overriding a base mod. Keep the per-path evidence, but make the
-    // default surface one decision per writer pair instead of dozens of cards.
+    cluster_json_conflicts(
+        findings,
+        store,
+        "resource-conflict:json-merge-candidate:",
+        "json-merge-candidate",
+    );
+    cluster_json_conflicts(
+        findings,
+        store,
+        "resource-conflict:json-override:",
+        "json-override",
+    );
+}
+
+fn recipe_override_family(finding: &Finding) -> Option<&'static str> {
+    [
+        "recipe-output-override",
+        "recipe-type-override",
+        "recipe-ingredient-override",
+        "recipe-condition-override",
+        "recipe-opaque-override",
+    ]
+    .into_iter()
+    .find(|family| {
+        finding
+            .id
+            .strip_prefix(*family)
+            .is_some_and(|rest| rest.starts_with(':'))
+    })
+}
+
+fn recipe_override_subject(family: &str) -> &'static str {
+    match family {
+        "recipe-output-override" => "recipe output overrides",
+        "recipe-type-override" => "recipe serializer overrides",
+        "recipe-ingredient-override" => "recipe ingredient overrides",
+        "recipe-condition-override" => "recipe condition overrides",
+        "recipe-opaque-override" => "opaque recipe overrides",
+        _ => "recipe overrides",
+    }
+}
+
+/// Cross-loader candidates commonly arrive as a batch when a compatibility
+/// bridge is present or a hybrid archive exposes inactive secondary metadata.
+/// Keep each artifact hypothesis for Explain, but make the default surface one
+/// directional compatibility decision instead of dozens of identical cards.
+fn cluster_loader_mismatches(findings: &mut Vec<Finding>, store: &FactStore) {
+    let mut groups: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+    for (index, finding) in findings.iter().enumerate() {
+        if finding.conclusion_kind != intermed_evidence::ConclusionKind::LoaderMismatch
+            || finding.visibility != FindingVisibility::Default
+            || finding.assessment.disposition != AssessmentDisposition::Abstained
+        {
+            continue;
+        }
+        let mut artifact_loader = None;
+        let mut target_loader = None;
+        for fact in finding
+            .evidence
+            .iter()
+            .filter_map(|edge| store.get(edge.fact))
+        {
+            if fact.kind == kind::MOD {
+                artifact_loader = fact.attr("loader").map(str::to_string);
+            } else if fact.kind == kind::ENVIRONMENT {
+                target_loader = fact.attr("loader").map(str::to_string);
+            }
+        }
+        if let (Some(artifact_loader), Some(target_loader)) = (artifact_loader, target_loader) {
+            groups
+                .entry((artifact_loader, target_loader))
+                .or_default()
+                .push(index);
+        }
+    }
+
+    let mut clusters = Vec::new();
+    for ((artifact_loader, target_loader), indexes) in
+        groups.into_iter().filter(|(_, indexes)| indexes.len() >= 3)
+    {
+        let bridge = store.by_kind(kind::COMPATIBILITY_BRIDGE).find(|fact| {
+            fact.attr("from_loader") == Some(artifact_loader.as_str())
+                && fact.attr("to_loader") == Some(target_loader.as_str())
+                && fact.attr("scope") == Some("mod-runtime")
+        });
+        let mods = indexes
+            .iter()
+            .filter_map(|index| findings[*index].affected_components.first().cloned())
+            .collect::<Vec<_>>();
+        let sample = mods.iter().take(12).cloned().collect::<Vec<_>>().join(", ");
+        let mut identity = Sha256::new();
+        identity.update(b"intermed-loader-mismatch-cluster-v1\0");
+        for value in [&artifact_loader, &target_loader] {
+            identity.update((value.len() as u64).to_be_bytes());
+            identity.update(value.as_bytes());
+        }
+        let identity = format!("{:x}", identity.finalize());
+        let mut builder = Finding::builder(
+            "loader-mismatch",
+            format!("loader-mismatch-cluster:{}", &identity[..24]),
+        )
+        .family("loader-mismatch")
+        .severity(Severity::Warn)
+        .category(intermed_evidence::Category::Loader)
+        .conclusion_kind(intermed_evidence::ConclusionKind::LoaderMismatch)
+        .proof_kind(intermed_evidence::ProofKind::DeterministicDerivation)
+        .impact(intermed_evidence::Impact::CompatibilityRisk)
+        .coverage_requirement(intermed_evidence::CoverageRequirement::AuthoritativeLoader)
+        .coverage_requirement(intermed_evidence::CoverageRequirement::ActiveDescriptor)
+        .coverage_requirement(intermed_evidence::CoverageRequirement::KnownBridgeSemantics)
+        .title(format!(
+            "{} {} artifact(s) need {} compatibility review",
+            indexes.len(),
+            artifact_loader,
+            target_loader
+        ))
+        .explanation(if let Some(bridge) = bridge {
+            format!(
+                "Runtime bridge `{}` was detected, but its coverage does not prove that every candidate artifact is supported. Review this directional group once; artifact hypotheses remain in Explain. Artifacts: {}{}",
+                bridge.subject,
+                sample,
+                if mods.len() > 12 {
+                    format!(" … and {} more", mods.len() - 12)
+                } else {
+                    String::new()
+                }
+            )
+        } else {
+            format!(
+                "These artifacts expose {artifact_loader} metadata in a {target_loader} target, but active descriptor identity is not conclusive. Review the group once; artifact hypotheses remain in Explain. Artifacts: {}{}",
+                sample,
+                if mods.len() > 12 {
+                    format!(" … and {} more", mods.len() - 12)
+                } else {
+                    String::new()
+                }
+            )
+        })
+        .confidence(0.65)
+        .affects(format!("{artifact_loader}->{target_loader}"))
+        .tag("loader")
+        .tag("mismatch")
+        .tag("cluster")
+        .fix(FixCandidate::advice(
+            "Verify bridge support for the grouped artifacts or install builds matching the target loader; do not remove artifacts solely from this abstained static hypothesis.",
+        ));
+        for index in indexes {
+            findings[index].visibility = FindingVisibility::ExplainOnly;
+            findings[index]
+                .machine_tags
+                .push("clustered-detail".to_string());
+            for evidence in &findings[index].evidence {
+                builder = builder.evidence(evidence.clone());
+            }
+        }
+        if let Some(bridge) = bridge {
+            builder = builder.evidence(EvidenceEdge::supports(bridge.id));
+        }
+        clusters.push(builder.build());
+    }
+    findings.extend(clusters);
+}
+
+/// Generic JSON conflicts often arrive in batches from one compatibility/addon
+/// writer overriding a base mod. Keep the per-path evidence, but make the
+/// default surface one decision per writer pair instead of dozens of cards.
+fn cluster_json_conflicts(
+    findings: &mut Vec<Finding>,
+    store: &FactStore,
+    finding_prefix: &str,
+    cluster_kind: &str,
+) {
     let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (index, finding) in findings.iter().enumerate() {
-        if !finding
-            .id
-            .starts_with("resource-conflict:json-merge-candidate:")
+        if !finding.id.starts_with(finding_prefix)
             || finding.visibility != FindingVisibility::Default
         {
             continue;
@@ -1215,12 +1406,19 @@ fn cluster_resource_conflicts(findings: &mut Vec<Finding>, store: &FactStore) {
             .join(", ");
         let mut identity = Sha256::new();
         identity.update(b"intermed-json-conflict-writer-pair-v1\0");
+        // Preserve the 0.1.8 semantic IDs for the original merge-candidate
+        // clusters. New conflict families add a typed discriminator so two
+        // independent clusters for the same writer pair cannot collide.
+        if cluster_kind != "json-merge-candidate" {
+            identity.update((cluster_kind.len() as u64).to_be_bytes());
+            identity.update(cluster_kind.as_bytes());
+        }
         identity.update((writers.len() as u64).to_be_bytes());
         identity.update(writers.as_bytes());
         let identity = format!("{:x}", identity.finalize());
         let mut builder = Finding::builder(
             "resource-conflict-cluster",
-            format!("resource-conflict-cluster:json-merge-candidate:{}", &identity[..16]),
+            format!("resource-conflict-cluster:{cluster_kind}:{}", &identity[..16]),
         )
         .family("resource-conflict")
         .severity(Severity::Warn)
@@ -1340,6 +1538,7 @@ pub fn assemble_with_settings_and_capabilities(
     // 2c. Turn repetitive writer-pair recipe overrides into one actionable card;
     // raw per-resource findings remain in JSON/ExplainOnly.
     cluster_resource_conflicts(&mut findings, store);
+    cluster_loader_mismatches(&mut findings, store);
     // Report-generated aggregate findings pass through the same trust contract
     // as rule output. Re-assessment is idempotent and preserves explicit
     // contradiction adjustments made by the cross-layer engine.
@@ -1591,10 +1790,111 @@ mod tests {
                 .count(),
             1
         );
+        let cluster = findings
+            .iter()
+            .find(|finding| finding.id.starts_with("recipe-output-override-cluster:"))
+            .unwrap();
+        assert_eq!(
+            cluster.conclusion_kind,
+            intermed_evidence::ConclusionKind::StaticResourceState
+        );
+        assert!(
+            cluster
+                .coverage_requirements
+                .contains(&intermed_evidence::CoverageRequirement::KnownRuntimeMutators)
+        );
         assert!(
             findings
                 .iter()
                 .filter(|finding| finding.id.starts_with("recipe-output-override:data/"))
+                .all(|finding| finding.visibility == FindingVisibility::ExplainOnly)
+        );
+    }
+
+    #[test]
+    fn recipe_serializer_overrides_share_one_typed_cluster() {
+        let mut store = FactStore::new();
+        let mut findings = Vec::new();
+        for index in 0..5 {
+            let path = format!("data/example/recipe/{index}.json");
+            let fact = store
+                .fact("resource", kind::RESOURCE_SEMANTIC_DIFF)
+                .subject(path.clone())
+                .attr("writers", "addon,base")
+                .emit();
+            findings.push(
+                Finding::builder("resource", format!("recipe-type-override:{path}"))
+                    .severity(Severity::Warn)
+                    .category(intermed_evidence::Category::Resource)
+                    .evidence(intermed_evidence::EvidenceEdge::subject(fact))
+                    .affects(path)
+                    .build(),
+            );
+        }
+
+        cluster_resource_conflicts(&mut findings, &store);
+        let clusters = findings
+            .iter()
+            .filter(|finding| finding.id.starts_with("recipe-type-override-cluster:"))
+            .collect::<Vec<_>>();
+        assert_eq!(clusters.len(), 1);
+        assert!(clusters[0].title.contains("5 recipe serializer overrides"));
+        assert!(
+            findings
+                .iter()
+                .filter(|finding| finding.id.starts_with("recipe-type-override:data/"))
+                .all(|finding| finding.visibility == FindingVisibility::ExplainOnly)
+        );
+    }
+
+    #[test]
+    fn abstained_loader_candidates_are_one_directional_review_card() {
+        let mut store = FactStore::new();
+        let environment = store
+            .fact("env", kind::ENVIRONMENT)
+            .subject("instance")
+            .attr("loader", "forge")
+            .emit();
+        let bridge = store
+            .fact("metadata", kind::COMPATIBILITY_BRIDGE)
+            .subject("connector")
+            .attr("from_loader", "fabric")
+            .attr("to_loader", "forge")
+            .attr("scope", "mod-runtime")
+            .attr("capabilities", "metadata,classloading")
+            .attr("coverage", "partial")
+            .emit();
+        let mut findings = Vec::new();
+        for mod_id in ["alpha", "beta", "gamma"] {
+            let artifact = store
+                .fact("metadata", kind::MOD)
+                .subject(mod_id)
+                .attr("loader", "fabric")
+                .attr("identity_certainty", "cross-loader-unresolved")
+                .emit();
+            let mut finding = Finding::builder("loader-mismatch", format!("loader:{mod_id}"))
+                .severity(Severity::Warn)
+                .category(intermed_evidence::Category::Loader)
+                .conclusion_kind(intermed_evidence::ConclusionKind::LoaderMismatch)
+                .evidence(EvidenceEdge::subject(artifact))
+                .evidence(EvidenceEdge::supports(environment))
+                .affects(mod_id)
+                .build();
+            finding.assessment.disposition = AssessmentDisposition::Abstained;
+            findings.push(finding);
+        }
+
+        cluster_loader_mismatches(&mut findings, &store);
+        let cluster = findings
+            .iter()
+            .find(|finding| finding.id.starts_with("loader-mismatch-cluster:"))
+            .expect("one grouped loader review");
+        assert!(cluster.explanation.contains("connector"));
+        assert!(cluster.evidence.iter().any(|edge| edge.fact == bridge));
+        assert!(
+            findings
+                .iter()
+                .filter(|finding| finding.id.starts_with("loader:"))
                 .all(|finding| finding.visibility == FindingVisibility::ExplainOnly)
         );
     }
@@ -1638,6 +1938,48 @@ mod tests {
                 .filter(|finding| finding
                     .id
                     .starts_with("resource-conflict:json-merge-candidate:"))
+                .all(|finding| finding.visibility == FindingVisibility::ExplainOnly)
+        );
+    }
+
+    #[test]
+    fn repeated_single_document_overrides_are_clustered_without_losing_detail() {
+        let mut store = FactStore::new();
+        let mut findings = Vec::new();
+        for variant in ["base", "fan", "frost", "heat"] {
+            let path = format!("assets/example/models/rotom_{variant}.geo.json");
+            let fact = store
+                .fact("vfs", kind::RESOURCE_SEMANTIC_DIFF)
+                .subject(path.clone())
+                .attr("writers", "addon,base")
+                .emit();
+            findings.push(
+                Finding::builder(
+                    "resource",
+                    format!("resource-conflict:json-override:{path}"),
+                )
+                .severity(Severity::Warn)
+                .category(intermed_evidence::Category::Resource)
+                .evidence(intermed_evidence::EvidenceEdge::subject(fact))
+                .affects(path)
+                .build(),
+            );
+        }
+
+        cluster_resource_conflicts(&mut findings, &store);
+        assert_eq!(
+            findings
+                .iter()
+                .filter(|finding| finding
+                    .id
+                    .starts_with("resource-conflict-cluster:json-override:"))
+                .count(),
+            1
+        );
+        assert!(
+            findings
+                .iter()
+                .filter(|finding| finding.id.starts_with("resource-conflict:json-override:"))
                 .all(|finding| finding.visibility == FindingVisibility::ExplainOnly)
         );
     }
@@ -1904,6 +2246,49 @@ mod tests {
         apply_visibility_policy(&mut findings);
         assert_eq!(findings[0].visibility, FindingVisibility::Verbose);
         assert_eq!(findings[1].visibility, FindingVisibility::Default);
+    }
+
+    #[test]
+    fn abstained_mixin_apply_hypotheses_are_explain_only() {
+        let mut abstained = Finding::builder("mixin-risk", "mixin-apply:missing:one")
+            .severity(Severity::Warn)
+            .tag("mixin")
+            .tag("apply-failure")
+            .build();
+        abstained.assessment.disposition = intermed_evidence::AssessmentDisposition::Abstained;
+        let mut asserted = abstained.clone();
+        asserted.id = "mixin-apply:missing:two".to_string();
+        asserted.assessment.disposition = intermed_evidence::AssessmentDisposition::Asserted;
+        let mut findings = vec![abstained, asserted];
+
+        apply_visibility_policy(&mut findings);
+        assert_eq!(findings[0].visibility, FindingVisibility::ExplainOnly);
+        assert_eq!(findings[1].visibility, FindingVisibility::Default);
+    }
+
+    #[test]
+    fn hidden_abstentions_do_not_change_surface_verdict() {
+        let mut hidden = Finding::builder("mixin-risk", "hidden")
+            .severity(Severity::Error)
+            .build();
+        hidden.visibility = FindingVisibility::ExplainOnly;
+        hidden.assessment.disposition = AssessmentDisposition::Abstained;
+
+        let summary = Summary::tally(&[hidden]);
+        assert_eq!(summary.error, 1, "raw histogram retains hidden detail");
+        assert_eq!(summary.hidden_details, 1);
+        assert_eq!(summary.worst, None);
+        assert!(summary.is_healthy());
+    }
+
+    #[test]
+    fn default_review_controls_surface_worst() {
+        let finding = Finding::builder("review", "visible")
+            .severity(Severity::Warn)
+            .build();
+        let summary = Summary::tally(&[finding]);
+        assert_eq!(summary.worst, Some(Severity::Warn));
+        assert_eq!(summary.needs_review, 1);
     }
 
     #[test]

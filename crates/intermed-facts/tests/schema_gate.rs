@@ -20,12 +20,14 @@ use intermed_facts::schema;
 use intermed_facts::schema_contract::{self, AttrType};
 
 /// The source of the `kind` module, parsed to recover the declared constants.
-const LIB_SRC: &str = include_str!("../src/lib.rs");
+/// Keep this pointed at the module that owns the registry so reorganizing the
+/// crate facade cannot silently disable the schema-hygiene gate.
+const KIND_SRC: &str = include_str!("../src/kind.rs");
 
 /// Extract the predicate string of every `pub const X: &str = "y";` line.
 fn declared_kind_values() -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    for line in LIB_SRC.lines() {
+    for line in KIND_SRC.lines() {
         let line = line.trim();
         let Some(rest) = line.strip_prefix("pub const ") else {
             continue;
@@ -44,7 +46,7 @@ fn declared_kind_values() -> BTreeSet<String> {
 
 fn declared_kind_const_map() -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
-    for line in LIB_SRC.lines() {
+    for line in KIND_SRC.lines() {
         let line = line.trim();
         let Some(rest) = line.strip_prefix("pub const ") else {
             continue;

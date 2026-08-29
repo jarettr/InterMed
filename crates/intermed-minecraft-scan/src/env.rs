@@ -25,7 +25,11 @@ impl Collector for EnvironmentCollector {
     }
     fn scope(&self) -> CollectorScope {
         CollectorScope::new(CompletenessModel::AllOrNothing)
-            .produces([kind::ENVIRONMENT, kind::JAVA_RUNTIME])
+            .produces([
+                kind::ENVIRONMENT,
+                kind::JAVA_RUNTIME,
+                kind::PROVIDED_DEPENDENCY,
+            ])
             .regions([TargetRegion::Manifest])
     }
     fn applies(&self, target: &Target) -> bool {
@@ -66,7 +70,6 @@ impl Collector for EnvironmentCollector {
         let mut b = ctx
             .store
             .fact(self.id(), kind::ENVIRONMENT)
-            .attr("os", std::env::consts::OS)
             .source(intermed_doctor_core::facts::SourceRef::file(
                 surface.display().to_string(),
             ))
@@ -108,6 +111,8 @@ impl Collector for EnvironmentCollector {
         b.emit();
         emitted += 1;
 
+        emitted += emit_loader_provided_capabilities(ctx, &loader_info, surface);
+
         if let Some(java) = runtime_evidence.as_ref().and_then(|e| e.java.clone()) {
             ctx.store
                 .fact(self.id(), kind::JAVA_RUNTIME)
@@ -137,6 +142,62 @@ impl Collector for EnvironmentCollector {
         emitted += 1;
 
         CollectorOutcome::active(emitted, "environment detected")
+    }
+}
+
+fn emit_loader_provided_capabilities(
+    ctx: &mut CollectCtx<'_>,
+    loader: &LoaderInfo,
+    source: &Path,
+) -> usize {
+    let Some(family) = loader.loader else {
+        return 0;
+    };
+    let Some(version) = loader.version.as_deref() else {
+        return 0;
+    };
+    let (provider, bundled_version) = match family {
+        Loader::Fabric if numeric_version_at_least(version, &[0, 17, 0]) => {
+            ("fabricloader", Some("0.5.0"))
+        }
+        Loader::Fabric if numeric_version_at_least(version, &[0, 15, 0]) => ("fabricloader", None),
+        Loader::NeoForge if numeric_version_at_least(version, &[20, 2, 84]) => ("neoforge", None),
+        _ => return 0,
+    };
+    let mut fact = ctx
+        .store
+        .fact("environment-detector", kind::PROVIDED_DEPENDENCY)
+        .subject(provider)
+        .attr("provides", "mixinextras")
+        .attr("scope", "loader-runtime")
+        .attr("bundled", true)
+        .attr("identity_certainty", "confirmed")
+        .source(intermed_doctor_core::facts::SourceRef::file(
+            source.display().to_string(),
+        ))
+        .confidence(0.98);
+    if let Some(version) = bundled_version {
+        fact = fact.attr("version", version);
+    }
+    fact.emit();
+    1
+}
+
+fn numeric_version_at_least(raw: &str, minimum: &[u32]) -> bool {
+    let release = raw.split_once('+').map_or(raw, |(release, _)| release);
+    let (core, is_prerelease) = release
+        .split_once('-')
+        .map_or((release, false), |(core, _)| (core, true));
+    let mut parsed = core
+        .split('.')
+        .take(minimum.len())
+        .map(|part| part.parse::<u32>().unwrap_or(0))
+        .collect::<Vec<_>>();
+    parsed.resize(minimum.len(), 0);
+    match parsed.as_slice().cmp(minimum) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Equal => !is_prerelease,
+        std::cmp::Ordering::Less => false,
     }
 }
 
@@ -536,30 +597,31 @@ fn version_from_loader_id(id: &str) -> Option<String> {
 fn detect_host_launcher(surface: &Path, layout: Option<LayoutKind>) -> Option<String> {
     let has = |rel: &str| surface.join(rel).exists();
     if let Some(kind) = layout {
-        return Some(
-            match kind {
-                LayoutKind::PrismInstance => "prism",
-                LayoutKind::MultiMcInstance => "multimc",
-                LayoutKind::CurseForgePack => "curseforge",
-                LayoutKind::ModrinthPack => "modrinth",
-                LayoutKind::DotMinecraft => "vanilla",
-                LayoutKind::DedicatedServer => "dedicated",
-                LayoutKind::BareModsDir | LayoutKind::Unknown => return None,
+        let launcher = match kind {
+            LayoutKind::PrismInstance => "prism",
+            LayoutKind::MultiMcInstance => "multimc",
+            // A `.minecraft`-shaped directory is shared by nearly every
+            // launcher and by materialized pack targets. Only the vanilla
+            // launcher's own account/profile files identify it as the host.
+            LayoutKind::DotMinecraft
+                if has("launcher_profiles.json") || has("launcher_accounts.json") =>
+            {
+                "vanilla"
             }
-            .to_string(),
-        );
+            LayoutKind::DotMinecraft
+            | LayoutKind::CurseForgePack
+            | LayoutKind::ModrinthPack
+            | LayoutKind::DedicatedServer
+            | LayoutKind::BareModsDir
+            | LayoutKind::Unknown => return None,
+        };
+        return Some(launcher.to_string());
     }
     if has("instance.cfg") && has("mmc-pack.json") {
         return Some("prism".to_string());
     }
     if has("mmc-pack.json") {
         return Some("multimc".to_string());
-    }
-    if has("manifest.json") && has("modlist.html") {
-        return Some("curseforge".to_string());
-    }
-    if has("modrinth.index.json") {
-        return Some("modrinth".to_string());
     }
     if has("launcher_profiles.json") || has("launcher_accounts.json") {
         return Some("vanilla".to_string());
@@ -823,6 +885,51 @@ mod tests {
     }
 
     #[test]
+    fn loader_capability_threshold_does_not_promote_equal_prerelease() {
+        assert!(numeric_version_at_least("0.17.0", &[0, 17, 0]));
+        assert!(numeric_version_at_least("0.17.0+build.1", &[0, 17, 0]));
+        assert!(!numeric_version_at_least("0.17.0-beta.1", &[0, 17, 0]));
+        assert!(numeric_version_at_least("0.18.0-beta.1", &[0, 17, 0]));
+    }
+
+    #[test]
+    fn analyzer_host_os_is_not_reported_as_target_os() {
+        let root = temp("host-os-separation");
+        let target = Target {
+            path: root.clone(),
+            kind: TargetKind::Instance,
+            mods_dir: None,
+            game_root: Some(root.clone()),
+            layout: None,
+            instance_type: None,
+            spark_report: None,
+        };
+        let mut store = intermed_doctor_core::facts::FactStore::new();
+        let settings = intermed_doctor_core::DiagnosisSettings::default();
+        let mut ctx = intermed_doctor_core::CollectCtx {
+            target: &target,
+            store: &mut store,
+            jar_cache: None,
+            settings: &settings,
+        };
+        EnvironmentCollector.collect(&mut ctx);
+
+        assert_eq!(
+            store.by_kind(kind::ENVIRONMENT).next().unwrap().attr("os"),
+            None
+        );
+        assert_eq!(
+            store
+                .by_kind(kind::ANALYSIS_ENVIRONMENT)
+                .next()
+                .unwrap()
+                .attr("os"),
+            Some(std::env::consts::OS)
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn paper_with_spigot_compat_files_detects_as_paper() {
         // A Paper server ships spigot.yml/bukkit.yml too; the more specific fork
         // must win over the base platform.
@@ -989,6 +1096,59 @@ mod tests {
     }
 
     #[test]
+    fn modern_fabric_loader_declares_its_bundled_mixinextras_provider() {
+        use std::io::Write as _;
+
+        let root = temp("fabric-loader-provider");
+        let archive_path = root.join("pack.mrpack");
+        let file = std::fs::File::create(&archive_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file(
+                "modrinth.index.json",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        archive
+            .write_all(
+                br#"{"formatVersion":1,"dependencies":{"minecraft":"1.21.1","fabric-loader":"0.19.3"}}"#,
+            )
+            .unwrap();
+        archive.finish().unwrap();
+
+        let target = Target {
+            path: root.clone(),
+            kind: TargetKind::Instance,
+            mods_dir: None,
+            game_root: Some(root.clone()),
+            layout: None,
+            instance_type: None,
+            spark_report: None,
+        };
+        let mut store = intermed_doctor_core::facts::FactStore::new();
+        let settings = intermed_doctor_core::DiagnosisSettings {
+            pack_manifest: Some(archive_path),
+            ..intermed_doctor_core::DiagnosisSettings::default()
+        };
+        let mut ctx = intermed_doctor_core::CollectCtx {
+            target: &target,
+            store: &mut store,
+            jar_cache: None,
+            settings: &settings,
+        };
+        EnvironmentCollector.collect(&mut ctx);
+
+        let provider = store
+            .by_kind(kind::PROVIDED_DEPENDENCY)
+            .find(|fact| fact.attr("provides") == Some("mixinextras"))
+            .expect("loader-provided MixinExtras");
+        assert_eq!(provider.subject, "fabricloader");
+        assert_eq!(provider.attr("version"), Some("0.5.0"));
+        assert_eq!(provider.attr("scope"), Some("loader-runtime"));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn host_launcher_prism() {
         let root = temp("host");
         touch(&root.join("instance.cfg"), b"");
@@ -996,6 +1156,33 @@ mod tests {
         assert_eq!(
             detect_host_launcher(&root, Some(LayoutKind::PrismInstance)).as_deref(),
             Some("prism")
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn dot_minecraft_shape_alone_does_not_claim_vanilla_launcher() {
+        let root = temp("dot-minecraft-host");
+        touch(&root.join("options.txt"), b"fov:0.0");
+        assert_eq!(
+            detect_host_launcher(&root, Some(LayoutKind::DotMinecraft)),
+            None
+        );
+        touch(&root.join("launcher_profiles.json"), b"{}");
+        assert_eq!(
+            detect_host_launcher(&root, Some(LayoutKind::DotMinecraft)).as_deref(),
+            Some("vanilla")
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn pack_format_is_not_reported_as_the_runtime_host_launcher() {
+        let root = temp("pack-format-host");
+        touch(&root.join("modrinth.index.json"), b"{}");
+        assert_eq!(
+            detect_host_launcher(&root, Some(LayoutKind::ModrinthPack)),
+            None
         );
         fs::remove_dir_all(root).ok();
     }

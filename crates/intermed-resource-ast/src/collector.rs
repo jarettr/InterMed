@@ -160,13 +160,14 @@ fn scan_vanilla_records(
             reasons: vec![gap],
         };
     }
-    let version = scan::cache_version(level);
+    let version = scan::cache_version(level, settings.max_json_bytes, settings.max_lang_json_bytes);
     let max_bytes = settings.max_json_bytes;
+    let max_lang_bytes = settings.max_lang_json_bytes;
     let result = match cache {
         Some(c) => c.get_or_scan(EXTRACTOR, &version, jar, || {
-            scan::scan_jar(jar, level, max_bytes)
+            scan::scan_jar(jar, level, max_bytes, max_lang_bytes)
         }),
-        None => scan::scan_jar(jar, level, max_bytes),
+        None => scan::scan_jar(jar, level, max_bytes, max_lang_bytes),
     };
     let archive = file_name_of(jar);
     match result {
@@ -343,8 +344,9 @@ pub fn scan_mods_dir_filtered(
     let jars = intermed_doctor_core::list_jar_archives(dir, scan)
         .map_err(|e| ScanError(format!("read {}: {e}", dir.display())))?;
 
-    let version = scan::cache_version(level);
+    let version = scan::cache_version(level, settings.max_json_bytes, settings.max_lang_json_bytes);
     let max_bytes = settings.max_json_bytes;
+    let max_lang_bytes = settings.max_lang_json_bytes;
 
     let scanned: Vec<(String, JarAstScan)> = jars
         .par_iter()
@@ -352,9 +354,9 @@ pub fn scan_mods_dir_filtered(
             let archive = file_name_of(jar);
             let result = match cache {
                 Some(c) => c.get_or_scan(EXTRACTOR, &version, jar, || {
-                    scan::scan_jar(jar, level, max_bytes)
+                    scan::scan_jar(jar, level, max_bytes, max_lang_bytes)
                 }),
-                None => scan::scan_jar(jar, level, max_bytes),
+                None => scan::scan_jar(jar, level, max_bytes, max_lang_bytes),
             };
             (archive, result)
         })

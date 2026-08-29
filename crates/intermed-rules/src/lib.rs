@@ -312,6 +312,62 @@ mod logic_tests {
     }
 
     #[test]
+    fn fabric_artifact_is_compatible_with_quilt_runtime() {
+        let mut store = FactStore::new();
+        store
+            .fact("env", kind::ENVIRONMENT)
+            .subject("instance")
+            .attr("loader", "quilt")
+            .emit();
+        store
+            .fact("meta", kind::MOD)
+            .subject("fabric-api")
+            .attr("loader", "fabric")
+            .attr("identity_certainty", "confirmed")
+            .emit();
+        let target = Target {
+            path: ".".into(),
+            kind: TargetKind::ModsDir,
+            mods_dir: None,
+            game_root: None,
+            layout: None,
+            instance_type: None,
+            spark_report: None,
+        };
+        let ctx = RuleCtx::for_test(&store, &target);
+        let findings = LoaderMismatchRule.evaluate(&ctx).unwrap();
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn quilt_artifact_is_not_assumed_compatible_with_fabric_runtime() {
+        let mut store = FactStore::new();
+        store
+            .fact("env", kind::ENVIRONMENT)
+            .subject("instance")
+            .attr("loader", "fabric")
+            .emit();
+        store
+            .fact("meta", kind::MOD)
+            .subject("quilt-only")
+            .attr("loader", "quilt")
+            .attr("identity_certainty", "confirmed")
+            .emit();
+        let target = Target {
+            path: ".".into(),
+            kind: TargetKind::ModsDir,
+            mods_dir: None,
+            game_root: None,
+            layout: None,
+            instance_type: None,
+            spark_report: None,
+        };
+        let ctx = RuleCtx::for_test(&store, &target);
+        let findings = LoaderMismatchRule.evaluate(&ctx).unwrap();
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
     fn validates_schema_and_rule_shape() {
         let pack = default_core_pack();
         validate_rule_pack(&pack).expect("v1 valid");

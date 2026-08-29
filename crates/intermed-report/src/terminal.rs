@@ -271,25 +271,22 @@ pub fn render_terminal_with_facts(report: &DoctorReport, color: bool, facts: &[F
 
     // Summary
     let s = &report.summary;
-    let verdict = if !report.operational_errors.is_empty() {
-        p.paint("1;41", "INCOMPLETE")
-    } else if s.is_healthy() && s.warn == 0 {
-        p.paint("1;32", "HEALTHY")
-    } else if s.is_healthy() {
-        p.paint("1;33", "WARNINGS")
-    } else {
-        p.paint("1;31", "PROBLEMS")
+    let verdict = match surface_verdict(s, !report.operational_errors.is_empty()) {
+        "INCOMPLETE" => p.paint("1;41", "INCOMPLETE"),
+        "PROBLEMS" => p.paint("1;31", "PROBLEMS"),
+        "WARNINGS" => p.paint("1;33", "WARNINGS"),
+        _ => p.paint("1;32", "HEALTHY"),
     };
-    // Lead with the signal/noise split — `actionable` (fatal+error+warn) is what
-    // needs attention; the rest is informational (safe merges, effect notes).
-    let actionable = s.fatal + s.error + s.warn;
-    let informational = s.note + s.info;
+    // The raw severity histogram includes retained verbose/explain-only detail.
+    // Only the trust surface counts are actionable for the default report.
+    let actionable = s.confirmed_problems + s.needs_review + s.incomplete_analysis;
     let _ = writeln!(
         out,
-        "{}  {} actionable, {} informational  ({} fatal, {} error, {} warn, {} note, {} info · {} facts)",
+        "{}  {} actionable, {} context, {} retained detail  (raw: {} fatal, {} error, {} warn, {} note, {} info · {} facts)",
         verdict,
         actionable,
-        informational,
+        s.context,
+        s.hidden_details,
         s.fatal,
         s.error,
         s.warn,
@@ -299,6 +296,21 @@ pub fn render_terminal_with_facts(report: &DoctorReport, color: bool, facts: &[F
     );
 
     out
+}
+
+fn surface_verdict(
+    s: &intermed_doctor_core::report::Summary,
+    operational_failure: bool,
+) -> &'static str {
+    if operational_failure || s.incomplete_analysis > 0 {
+        "INCOMPLETE"
+    } else if s.confirmed_problems > 0 {
+        "PROBLEMS"
+    } else if s.needs_review > 0 {
+        "WARNINGS"
+    } else {
+        "HEALTHY"
+    }
 }
 
 /// Render one finding as a full stanza (title, explanation, affects, fixes, id).
@@ -454,4 +466,29 @@ fn resource_semantics_section(facts: &[Fact], p: &Palette) -> Option<String> {
     }
     out.push('\n');
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hidden_raw_warnings_do_not_change_surface_verdict() {
+        let summary = intermed_doctor_core::report::Summary {
+            warn: 300,
+            hidden_details: 300,
+            ..Default::default()
+        };
+        assert_eq!(surface_verdict(&summary, false), "HEALTHY");
+    }
+
+    #[test]
+    fn incomplete_surface_outranks_review() {
+        let summary = intermed_doctor_core::report::Summary {
+            needs_review: 4,
+            incomplete_analysis: 1,
+            ..Default::default()
+        };
+        assert_eq!(surface_verdict(&summary, false), "INCOMPLETE");
+    }
 }

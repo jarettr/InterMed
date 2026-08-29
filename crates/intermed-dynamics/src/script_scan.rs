@@ -39,11 +39,7 @@ pub fn script_files(target: &Target) -> Vec<(PathBuf, &'static str)> {
 /// enumerated. This lets the collector report an incomplete discovery instead
 /// of being marked not-applicable.
 pub fn has_script_roots(target: &Target) -> bool {
-    let mut roots = target.candidate_roots();
-    if let Some(parent) = target.path.parent() {
-        roots.push(parent.to_path_buf());
-    }
-    roots
+    script_search_roots(target)
         .iter()
         .any(|root| root.join("kubejs").exists() || root.join("scripts").exists())
 }
@@ -57,14 +53,7 @@ pub struct ScriptDiscovery {
 }
 
 pub fn discover_script_files(target: &Target) -> ScriptDiscovery {
-    let mut roots: Vec<PathBuf> = target.candidate_roots();
-    // A mods-dir target points *at* `mods/`; scripts live beside it in the game
-    // root, so include the parent.
-    if let Some(parent) = target.path.parent() {
-        roots.push(parent.to_path_buf());
-    }
-    roots.sort();
-    roots.dedup();
+    let roots = script_search_roots(target);
 
     let mut out = Vec::new();
     let mut gaps = Vec::new();
@@ -103,6 +92,21 @@ pub fn discover_script_files(target: &Target) -> ScriptDiscovery {
     gaps.sort();
     gaps.dedup();
     ScriptDiscovery { files: out, gaps }
+}
+
+fn script_search_roots(target: &Target) -> Vec<PathBuf> {
+    let mut roots = target.candidate_roots();
+    // A mods-dir target points *at* `mods/`; scripts live beside it in the game
+    // root. Other target kinds already name their containment boundary, and
+    // scanning their parent could leak scripts from an adjacent instance.
+    if target.kind == intermed_doctor_core::TargetKind::ModsDir
+        && let Some(parent) = target.path.parent()
+    {
+        roots.push(parent.to_path_buf());
+    }
+    roots.sort();
+    roots.dedup();
+    roots
 }
 
 fn collect_files(
@@ -522,5 +526,30 @@ mod tests {
         "#;
         let hits = scan_text(text, crate::engine::KUBEJS);
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn instance_discovery_never_crosses_into_a_sibling_parent_root() {
+        let root = std::env::temp_dir().join(format!(
+            "intermed-script-containment-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let instance = root.join("instances").join("one");
+        let adjacent = root.join("instances").join("kubejs/server_scripts");
+        std::fs::create_dir_all(&instance).unwrap();
+        std::fs::create_dir_all(&adjacent).unwrap();
+        std::fs::write(
+            adjacent.join("leak.js"),
+            "event.remove({ id: 'minecraft:stone' })",
+        )
+        .unwrap();
+        let target = Target::with_kind(&instance, intermed_doctor_core::TargetKind::Instance);
+
+        assert!(discover_script_files(&target).files.is_empty());
+        std::fs::remove_dir_all(root).ok();
     }
 }

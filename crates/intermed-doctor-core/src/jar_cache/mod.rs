@@ -106,6 +106,8 @@ pub struct JarCache {
     /// means "not yet measured this session". Reset to stale after pruning.
     /// Updated incrementally on each `write_record` call.
     cached_bytes_on_disk: AtomicU64,
+    /// Serializes expensive write-time budget passes within this process.
+    budget_lock: Mutex<()>,
     /// Tier 1 — in-process memory cache: payload key → cache-record JSON text.
     /// Avoids re-reading and re-parsing disk when the same content SHA is looked
     /// up again within a run (identical bundled libs, duplicate jars across packs).
@@ -175,6 +177,7 @@ impl JarCache {
             write_locks: new_write_locks(),
             inflight: Mutex::new(HashMap::new()),
             cached_bytes_on_disk: AtomicU64::new(DISK_USAGE_STALE),
+            budget_lock: Mutex::new(()),
             memory: Mutex::new(HashMap::new()),
             remote: None,
             mem_hits: AtomicU64::new(0),
@@ -237,12 +240,17 @@ impl JarCache {
             write_locks: new_write_locks(),
             inflight: Mutex::new(HashMap::new()),
             cached_bytes_on_disk: AtomicU64::new(DISK_USAGE_STALE),
+            budget_lock: Mutex::new(()),
             memory: Mutex::new(HashMap::new()),
             remote: None,
             mem_hits: AtomicU64::new(0),
             remote_hits: AtomicU64::new(0),
         };
         let _ = cache.maybe_prune();
+        cache
+            .cached_bytes_on_disk
+            .store(disk_usage(&cache.root), Ordering::Relaxed);
+        cache.enforce_size_budget_after_write();
         Ok(cache)
     }
 
@@ -351,14 +359,14 @@ impl JarCache {
             if fingerprint_hint_matched {
                 self.fast_hits.fetch_add(1, Ordering::Relaxed);
             }
-            let _ = fp.save(
+            self.finish_fingerprint_write(fp.save(
                 collector_id,
                 jar,
                 mtime_secs,
                 mtime_nanos,
                 size_bytes,
                 &sha256,
-            );
+            ));
             return payload;
         }
 
@@ -369,14 +377,14 @@ impl JarCache {
 
         if let Some(payload) = self.read_cached(collector_id, cache_version, &sha256) {
             self.coalesced.fetch_add(1, Ordering::Relaxed);
-            let _ = fp.save(
+            self.finish_fingerprint_write(fp.save(
                 collector_id,
                 jar,
                 mtime_secs,
                 mtime_nanos,
                 size_bytes,
                 &sha256,
-            );
+            ));
             return payload;
         }
 
@@ -392,14 +400,14 @@ impl JarCache {
             size_bytes,
             &payload,
         );
-        let _ = fp.save(
+        self.finish_fingerprint_write(fp.save(
             collector_id,
             jar,
             mtime_secs,
             mtime_nanos,
             size_bytes,
             &sha256,
-        );
+        ));
         payload
     }
 
@@ -501,12 +509,16 @@ impl JarCache {
         let _guard = self.write_locks[shard_index(sha256)]
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        let old_size = fs::metadata(path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
         write_atomic(path, text.as_bytes())?;
-        // Disk size is lazily measured; a remote-populated write is reconciled on
-        // the next disk_usage() walk or prune, so the counter is left untouched.
+        self.account_disk_write(text.len() as u64, old_size);
+        drop(_guard);
+        self.enforce_size_budget_after_write();
         Ok(())
     }
 
@@ -574,18 +586,62 @@ impl JarCache {
         // Incrementally update the cached disk size so disk_usage() stays
         // accurate without a full walk after each write. Only update when
         // the cache has been measured (sentinel = stale means skip).
-        let written = text.len() as u64;
-        let prev = self.cached_bytes_on_disk.load(Ordering::Relaxed);
-        if prev != DISK_USAGE_STALE {
-            if written > old_size {
-                self.cached_bytes_on_disk
-                    .fetch_add(written - old_size, Ordering::Relaxed);
-            } else if old_size > written {
-                self.cached_bytes_on_disk
-                    .fetch_sub(old_size - written, Ordering::Relaxed);
-            }
-        }
+        self.account_disk_write(text.len() as u64, old_size);
+        drop(_guard);
+        self.enforce_size_budget_after_write();
         Ok(())
+    }
+
+    fn account_disk_write(&self, written: u64, old_size: u64) {
+        let prev = self.cached_bytes_on_disk.load(Ordering::Relaxed);
+        if prev == DISK_USAGE_STALE {
+            return;
+        }
+        if written > old_size {
+            self.cached_bytes_on_disk
+                .fetch_add(written - old_size, Ordering::Relaxed);
+        } else if old_size > written {
+            self.cached_bytes_on_disk
+                .fetch_sub(old_size - written, Ordering::Relaxed);
+        }
+    }
+
+    fn finish_fingerprint_write(&self, result: io::Result<(u64, u64)>) {
+        if let Ok((written, old_size)) = result {
+            self.account_disk_write(written, old_size);
+            self.enforce_size_budget_after_write();
+        }
+    }
+
+    /// Enforce the advertised total cache budget after growth. Automatic
+    /// pruning uses a 10% low-water mark so a cache near its cap does not walk
+    /// the whole directory and evict one record after every small write.
+    fn enforce_size_budget_after_write(&self) {
+        if !self.enabled || self.disk_usage() <= self.config.max_bytes {
+            return;
+        }
+        let _guard = self
+            .budget_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // Refresh under the lock: another thread/process may have pruned or
+        // added records since the incremental counter was last updated.
+        let measured = disk_usage(&self.root);
+        self.cached_bytes_on_disk.store(measured, Ordering::Relaxed);
+        if measured <= self.config.max_bytes {
+            return;
+        }
+        let mut trim_config = self.config;
+        trim_config.max_bytes = self
+            .config
+            .max_bytes
+            .saturating_mul(9)
+            .checked_div(10)
+            .unwrap_or(self.config.max_bytes)
+            .max(self.config.min_bytes);
+        let _ = prune::prune_stale_entries(&self.root, &trim_config);
+        self.cached_bytes_on_disk
+            .store(disk_usage(&self.root), Ordering::Relaxed);
     }
 
     fn maybe_prune(&self) -> io::Result<()> {
@@ -606,10 +662,8 @@ impl JarCache {
             return Ok(0);
         }
         let freed = prune::prune_stale_entries(&self.root, &self.config)?;
-        if freed > 0 {
-            self.cached_bytes_on_disk
-                .store(DISK_USAGE_STALE, Ordering::Relaxed);
-        }
+        self.cached_bytes_on_disk
+            .store(disk_usage(&self.root), Ordering::Relaxed);
         Ok(freed)
     }
 
@@ -1089,6 +1143,47 @@ mod tests {
         assert_eq!(tiny.config.max_bytes, DEFAULT_CACHE_MIN_BYTES);
         let sane = JarCache::new_with_limits(true, Some(root.join("b")), 64 * 1024 * 1024).unwrap();
         assert_eq!(sane.config.max_bytes, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn write_time_growth_enforces_total_cache_budget() {
+        let root = temp_root("write-budget");
+        fs::create_dir_all(&root).unwrap();
+        let cap = DEFAULT_CACHE_MIN_BYTES;
+        let cache = JarCache::new_with_limits(true, Some(root.clone()), cap).unwrap();
+        for index in 0..8 {
+            let jar = root.join(format!("mod-{index}.jar"));
+            fs::write(&jar, format!("content-{index}")).unwrap();
+            let payload = format!("{index}{}", "x".repeat(900 * 1024));
+            let _: String = cache.get_or_scan("large", "v1", &jar, || payload);
+        }
+        let actual = disk_usage(&cache.root);
+        assert!(
+            actual <= cap,
+            "automatic cache GC left {actual} bytes above {cap}"
+        );
+        assert_eq!(cache.stats_with_disk_usage().bytes_on_disk, actual);
+    }
+
+    #[test]
+    fn reopening_with_lower_cap_prunes_even_with_fresh_interval_marker() {
+        let root = temp_root("reopen-budget");
+        fs::create_dir_all(&root).unwrap();
+        {
+            let cache =
+                JarCache::new_with_limits(true, Some(root.clone()), 32 * 1024 * 1024).unwrap();
+            for index in 0..8 {
+                let jar = root.join(format!("mod-{index}.jar"));
+                fs::write(&jar, format!("content-{index}")).unwrap();
+                let payload = format!("{index}{}", "x".repeat(900 * 1024));
+                let _: String = cache.get_or_scan("large", "v1", &jar, || payload);
+            }
+            assert!(disk_usage(&cache.root) > DEFAULT_CACHE_MIN_BYTES);
+        }
+        // Construction wrote a fresh prune marker. The size contract must not
+        // wait a day when the next invocation supplies a lower limit.
+        let cache = JarCache::new_with_limits(true, Some(root), DEFAULT_CACHE_MIN_BYTES).unwrap();
+        assert!(cache.disk_usage() <= DEFAULT_CACHE_MIN_BYTES);
     }
 
     #[test]

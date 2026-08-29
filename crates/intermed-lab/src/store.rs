@@ -222,20 +222,7 @@ impl ArtifactStore {
             .parent()
             .unwrap_or_else(|| Path::new(""));
         create_safe_directory_tree(output_root, relative_parent)?;
-        reject_symlink(&destination, "materialized destination")?;
-        if destination.exists() {
-            let (current, _, _) = hashes(&destination)?;
-            if current != sha256 {
-                return Err(LabError::new(format!(
-                    "materialized destination contains different content: {}",
-                    destination.display()
-                )));
-            }
-        } else if std::fs::hard_link(&store_path, &destination).is_err() {
-            std::fs::copy(&store_path, &destination).map_err(|error| {
-                LabError::new(format!("materialize {}: {error}", destination.display()))
-            })?;
-        }
+        materialize_blob(&store_path, &destination, &sha256)?;
         Ok(MaterializedArtifact {
             project_id: locked.path.clone(),
             version_id: "manifest-pinned".to_string(),
@@ -265,20 +252,7 @@ impl ArtifactStore {
         let (sha256, store_path, bytes) = self.ingest(source)?;
         debug_assert_eq!(sha256, actual_sha256);
         let destination = mods_dir.join(&locked.file_name);
-        reject_symlink(&destination, "materialized destination")?;
-        if destination.exists() {
-            let (current, _, _) = hashes(&destination)?;
-            if current != sha256 {
-                return Err(LabError::new(format!(
-                    "materialized destination contains different content: {}",
-                    destination.display()
-                )));
-            }
-        } else if std::fs::hard_link(&store_path, &destination).is_err() {
-            std::fs::copy(&store_path, &destination).map_err(|error| {
-                LabError::new(format!("materialize {}: {error}", destination.display()))
-            })?;
-        }
+        materialize_blob(&store_path, &destination, &sha256)?;
         Ok(MaterializedArtifact {
             project_id: locked.project_id.clone(),
             version_id: locked.version_id.clone(),
@@ -295,6 +269,81 @@ impl ArtifactStore {
             .join("blobs/sha256")
             .join(&sha256[..2])
             .join(sha256)
+    }
+}
+
+/// Materialize a verified blob without ever opening an existing destination for
+/// writing. Two processes may race here; `AlreadyExists` means the winner must
+/// be verified, never overwritten. The fallback copy is staged next to the
+/// destination and published with another atomic no-clobber hard link.
+fn materialize_blob(
+    store_path: &Path,
+    destination: &Path,
+    expected_sha256: &str,
+) -> Result<(), LabError> {
+    reject_symlink(destination, "materialized destination")?;
+    match std::fs::hard_link(store_path, destination) {
+        Ok(()) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return verify_materialized_blob(destination, expected_sha256);
+        }
+        Err(_) => {}
+    }
+
+    static MATERIALIZE_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("artifact");
+    let temp = destination.with_file_name(format!(
+        ".{file_name}.intermed-tmp-{}-{}",
+        std::process::id(),
+        MATERIALIZE_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| {
+        let mut input = File::open(store_path)
+            .map_err(|error| LabError::new(format!("open {}: {error}", store_path.display())))?;
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(|error| LabError::new(format!("create {}: {error}", temp.display())))?;
+        std::io::copy(&mut input, &mut output).map_err(|error| {
+            LabError::new(format!(
+                "copy {} to {}: {error}",
+                store_path.display(),
+                temp.display()
+            ))
+        })?;
+        output
+            .sync_all()
+            .map_err(|error| LabError::new(format!("sync {}: {error}", temp.display())))?;
+        verify_materialized_blob(&temp, expected_sha256)?;
+        match std::fs::hard_link(&temp, destination) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                verify_materialized_blob(destination, expected_sha256)
+            }
+            Err(error) => Err(LabError::new(format!(
+                "publish materialized artifact {}: {error}",
+                destination.display()
+            ))),
+        }
+    })();
+    let _ = std::fs::remove_file(&temp);
+    result
+}
+
+fn verify_materialized_blob(path: &Path, expected_sha256: &str) -> Result<(), LabError> {
+    reject_symlink(path, "materialized destination")?;
+    let (current, _, _) = hashes(path)?;
+    if current == expected_sha256 {
+        Ok(())
+    } else {
+        Err(LabError::new(format!(
+            "materialized destination contains different content: {}",
+            path.display()
+        )))
     }
 }
 
@@ -574,6 +623,53 @@ mod tests {
         assert_eq!(record.artifacts.len(), 1);
         assert!(root.join("instance/mods/a.jar").is_file());
         assert!(record.artifacts[0].store_path.is_file());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn existing_materialization_is_verified_without_clobbering_store_blob() {
+        let root = temp("existing-destination");
+        let store_blob = root.join("store-blob");
+        let destination = root.join("destination");
+        std::fs::write(&store_blob, b"immutable content").unwrap();
+        std::fs::hard_link(&store_blob, &destination).unwrap();
+        let (expected, _, _) = hashes(&store_blob).unwrap();
+
+        materialize_blob(&store_blob, &destination, &expected).unwrap();
+
+        assert_eq!(std::fs::read(&store_blob).unwrap(), b"immutable content");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"immutable content");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn concurrent_materialization_never_clobbers_a_shared_blob() {
+        let root = temp("concurrent-destination");
+        let store_blob = root.join("store-blob");
+        let destination = root.join("destination");
+        std::fs::write(&store_blob, vec![0x5a; 256 * 1024]).unwrap();
+        let (expected, _, _) = hashes(&store_blob).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+
+        std::thread::scope(|scope| {
+            let mut workers = Vec::new();
+            for _ in 0..16 {
+                let barrier = barrier.clone();
+                let store_blob = &store_blob;
+                let destination = &destination;
+                let expected = &expected;
+                workers.push(scope.spawn(move || {
+                    barrier.wait();
+                    materialize_blob(store_blob, destination, expected)
+                }));
+            }
+            for worker in workers {
+                worker.join().unwrap().unwrap();
+            }
+        });
+
+        assert_eq!(hashes(&store_blob).unwrap().0, expected);
+        assert_eq!(hashes(&destination).unwrap().0, expected);
         std::fs::remove_dir_all(root).ok();
     }
 

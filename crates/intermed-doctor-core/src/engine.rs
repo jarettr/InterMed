@@ -361,6 +361,7 @@ mod partial_tests {
             mod_classpath: CoverageState::Complete,
             minecraft_classpath: CoverageState::Complete,
             loader_classpath: CoverageState::Complete,
+            bridge_semantics: CoverageState::Complete,
             mappings: CoverageState::Complete,
             logs: CoverageState::Complete,
             configs: CoverageState::Complete,

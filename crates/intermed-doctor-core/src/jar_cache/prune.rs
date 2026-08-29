@@ -20,6 +20,7 @@ pub(crate) fn prune_stale_entries(root: &Path, config: &JarCacheConfig) -> io::R
     // Surviving payload files — fed into the size-cap pass below.
     let mut payloads: Vec<(SystemTime, PathBuf, u64)> = Vec::new();
     let mut freed = 0u64;
+    let mut fingerprint_total = 0u64;
 
     walk_cache_files(root, &mut |path, modified, size| {
         if is_fingerprint_path(path) {
@@ -28,8 +29,11 @@ pub(crate) fn prune_stale_entries(root: &Path, config: &JarCacheConfig) -> io::R
             // can update independently on metadata-only writes.
             if should_prune_fingerprint(path, max_age_secs) && fs::remove_file(path).is_ok() {
                 freed = freed.saturating_add(size);
+            } else {
+                fingerprint_total = fingerprint_total.saturating_add(size);
             }
-            // Fingerprints are excluded from the payload size-cap pass.
+            // Fingerprints are not payload eviction candidates, but their
+            // surviving bytes still consume the advertised total cache budget.
             return;
         }
 
@@ -42,13 +46,15 @@ pub(crate) fn prune_stale_entries(root: &Path, config: &JarCacheConfig) -> io::R
         payloads.push((modified, path.to_path_buf(), size));
     })?;
 
-    // Size-cap: trim oldest payload files until we fit within max_bytes.
-    // Uses a separate counter so fingerprint bytes freed above don't
-    // incorrectly reduce the eviction budget.
+    // Size-cap: trim oldest payload files until payloads plus surviving
+    // fingerprint sidecars fit within max_bytes. Fingerprints are kept because
+    // deleting a sidecar while its payload survives only forces a re-hash; when
+    // they consume space, evict the corresponding oldest payload budget first.
     let payload_total: u64 = payloads.iter().map(|(_, _, s)| s).sum();
-    if payload_total > config.max_bytes {
+    let retained_total = payload_total.saturating_add(fingerprint_total);
+    if retained_total > config.max_bytes {
         payloads.sort_by_key(|(modified, _, _)| *modified);
-        let target = payload_total.saturating_sub(config.max_bytes);
+        let target = retained_total.saturating_sub(config.max_bytes);
         let mut evicted = 0u64;
         for (_, path, size) in payloads {
             if evicted >= target {

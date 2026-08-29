@@ -271,6 +271,33 @@ impl FileCampaignExecutor {
             self.base_dir.join(path)
         }
     }
+
+    fn doctor_command(
+        &self,
+        executable: &Path,
+        case: &CampaignCase,
+        target: &Path,
+        report: &Path,
+        profile: &Path,
+    ) -> std::process::Command {
+        let mut command = std::process::Command::new(executable);
+        command
+            .arg("doctor")
+            .arg(target)
+            .arg("--json")
+            .arg(report)
+            .arg("--exit-zero")
+            .arg("--profile")
+            .arg(profile);
+        if let Some(config) = &self.doctor_config {
+            command.arg("--config").arg(config);
+        }
+        if let Some(manifest) = &case.pack_manifest {
+            command.arg("--pack-manifest").arg(self.resolve(manifest));
+        }
+        command.args(&self.doctor_args);
+        command
+    }
 }
 
 impl CampaignExecutor for FileCampaignExecutor {
@@ -316,29 +343,17 @@ impl CampaignExecutor for FileCampaignExecutor {
             }
         }
         let stderr_path = case_dir.join("doctor-stderr.log");
-        let stdout = std::fs::File::create(&report).map_err(|error| {
-            LabError::new(format!(
-                "create static report {}: {error}",
-                report.display()
-            ))
-        })?;
+        // `--json` owns the report path. Pointing stdout at that same path used
+        // to create two independent writers: Doctor's atomic JSON rename and an
+        // already-open terminal-output descriptor. Besides being racy, that can
+        // make the rename fail on platforms that do not allow replacing an open
+        // file. Keep presentation output separate from machine output.
+        let stdout_path = case_dir.join("doctor-stdout.log");
+        let stdout = std::fs::File::create(&stdout_path)
+            .map_err(|error| LabError::new(format!("create {}: {error}", stdout_path.display())))?;
         let stderr = std::fs::File::create(&stderr_path)
             .map_err(|error| LabError::new(format!("create {}: {error}", stderr_path.display())))?;
-        let mut command = std::process::Command::new(executable);
-        command
-            .arg("doctor")
-            .arg(&target)
-            .arg("--json")
-            .arg("--exit-zero")
-            .arg("--profile")
-            .arg(&profile);
-        if let Some(config) = &self.doctor_config {
-            command.arg("--config").arg(config);
-        }
-        if let Some(manifest) = &case.pack_manifest {
-            command.arg("--pack-manifest").arg(self.resolve(manifest));
-        }
-        command.args(&self.doctor_args);
+        let mut command = self.doctor_command(&executable, case, &target, &report, &profile);
         let status = command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(stdout))
@@ -395,23 +410,24 @@ impl CampaignExecutor for FileCampaignExecutor {
 }
 
 fn campaign_executable() -> Result<PathBuf, LabError> {
-    let executable = std::env::current_exe()
-        .map_err(|error| LabError::new(format!("locate intermed executable: {error}")))?;
-    if executable.is_file() {
-        return Ok(executable);
-    }
-    // Cargo and package managers replace binaries atomically. On Linux an
-    // already-running coordinator then observes `<path> (deleted)`, while the
-    // executable image remains addressable through procfs. Use the
-    // process-specific link (not `/proc/self/exe`, whose meaning changes in the
-    // spawned child) so an in-flight development campaign can finish with the
-    // exact coordinator binary.
+    // A campaign must keep using the coordinator's exact executable image. The
+    // filesystem path returned by `current_exe` is not sufficient on Linux:
+    // Cargo/package managers can atomically replace that path while a campaign
+    // is running, causing later cases to use a different analyzer even though
+    // the original process is still alive. The process-specific procfs link
+    // remains pinned to the running image across such replacements.
     #[cfg(target_os = "linux")]
     {
         let proc_executable = PathBuf::from(format!("/proc/{}/exe", std::process::id()));
         if proc_executable.is_file() {
             return Ok(proc_executable);
         }
+    }
+
+    let executable = std::env::current_exe()
+        .map_err(|error| LabError::new(format!("locate intermed executable: {error}")))?;
+    if executable.is_file() {
+        return Ok(executable);
     }
     Err(LabError::new(format!(
         "InterMed executable is no longer available: {}",
@@ -946,6 +962,61 @@ mod tests {
     #[test]
     fn coordinator_executable_is_launchable() {
         assert!(campaign_executable().unwrap().is_file());
+    }
+
+    #[test]
+    fn generated_doctor_command_writes_the_report_it_later_reads() {
+        let executor = FileCampaignExecutor::new(
+            PathBuf::from("/campaign"),
+            vec!["--mixin-level".into(), "basic".into()],
+            None,
+            "auto".into(),
+        );
+        let case = CampaignCase {
+            id: "case".into(),
+            corpus_lock: "case.lock".into(),
+            corpus_digest: "a".repeat(64),
+            doctor_fingerprint: None,
+            target: "target".into(),
+            pack_manifest: Some("pack.mrpack".into()),
+            doctor_report: None,
+            captured_smoke: None,
+            execution: None,
+        };
+        let report = Path::new("/out/doctor-report.json");
+        let command = executor.doctor_command(
+            Path::new("/bin/intermed"),
+            &case,
+            Path::new("/target"),
+            report,
+            Path::new("/out/doctor-profile.json"),
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--json", report.to_str().unwrap()])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| { pair == ["--pack-manifest", "/campaign/pack.mrpack"] })
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--mixin-level", "basic"])
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn coordinator_executable_is_pinned_to_the_running_image() {
+        assert_eq!(
+            campaign_executable().unwrap(),
+            PathBuf::from(format!("/proc/{}/exe", std::process::id()))
+        );
     }
 
     #[test]

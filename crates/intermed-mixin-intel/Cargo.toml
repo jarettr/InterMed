@@ -9,6 +9,7 @@ description = "Layer F — mixin intelligence / preflight risk map."
 [dependencies]
 cafebabe = "0.9.0"
 intermed-doctor-core.workspace = true
+intermed-resource-identity.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true

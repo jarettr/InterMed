@@ -25,6 +25,9 @@ pub struct RuntimeEvent {
     pub thread: Option<String>,
     pub level: Option<String>,
     pub logger: Option<String>,
+    /// Mod explicitly named by a structured loader failure section, when one
+    /// exists independently of stack-frame ownership.
+    pub subject_mod: Option<String>,
     pub message: String,
     pub continuation_lines: Vec<String>,
     pub exception_chain: Vec<ThrowableNode>,
@@ -239,6 +242,9 @@ fn semantic_fingerprint(event: &RuntimeEvent) -> String {
             }
         }
     }
+    if let Some(mod_id) = &event.subject_mod {
+        hash_field(&mut digest, "subject-mod", mod_id.as_bytes());
+    }
     finish_digest(digest)
 }
 
@@ -276,6 +282,9 @@ fn fuzzy_fingerprint(event: &RuntimeEvent) -> String {
             "message",
             normalize_unstable_message(&event.message).as_bytes(),
         );
+    }
+    if let Some(mod_id) = &event.subject_mod {
+        hash_field(&mut digest, "subject-mod", mod_id.as_bytes());
     }
     finish_digest(digest)
 }
@@ -422,6 +431,7 @@ pub fn normalize_events(text: &str, source: &str) -> Vec<RuntimeEvent> {
                 thread: captures.name("thread").map(|m| m.as_str().to_string()),
                 level: captures.name("level").map(|m| m.as_str().to_string()),
                 logger: captures.name("logger").map(|m| m.as_str().to_string()),
+                subject_mod: None,
                 message: captures
                     .name("message")
                     .map(|m| m.as_str().to_string())
@@ -451,6 +461,7 @@ pub fn normalize_events(text: &str, source: &str) -> Vec<RuntimeEvent> {
                 thread: None,
                 level: None,
                 logger: None,
+                subject_mod: None,
                 message: line.text.trim().to_string(),
                 continuation_lines: Vec::new(),
                 exception_chain: Vec::new(),
@@ -462,7 +473,98 @@ pub fn normalize_events(text: &str, source: &str) -> Vec<RuntimeEvent> {
     }
     flush(&mut current, &mut events);
     classify_terminalities(&mut events);
+    let forge_failures = forge_mod_loading_events(text, source, events.len());
+    if !forge_failures.is_empty() {
+        // Forge's crash-report wrapper is context; the structured `-- MOD --`
+        // sections below contain the actual loader rejection(s).
+        for event in &mut events {
+            if event
+                .message
+                .eq_ignore_ascii_case("java.lang.Exception: Mod Loading has failed")
+                || event.message.eq_ignore_ascii_case("Mod Loading has failed")
+            {
+                event.terminality = EventTerminality::Unknown;
+            }
+        }
+        events.extend(forge_failures);
+    }
     events
+}
+
+fn forge_mod_loading_events(text: &str, source: &str, ordinal_base: usize) -> Vec<RuntimeEvent> {
+    let mut out = Vec::new();
+    let mut current_mod: Option<(String, u32)> = None;
+    let mut failure_lines = Vec::<String>::new();
+    let mut collecting_failure = false;
+
+    let flush = |current_mod: &mut Option<(String, u32)>,
+                 failure_lines: &mut Vec<String>,
+                 out: &mut Vec<RuntimeEvent>| {
+        let Some((mod_id, source_line)) = current_mod.take() else {
+            failure_lines.clear();
+            return;
+        };
+        if failure_lines.is_empty() {
+            return;
+        }
+        let message = failure_lines.join(" ");
+        failure_lines.clear();
+        let mut event = RuntimeEvent {
+            occurrence_id: String::new(),
+            semantic_fingerprint: String::new(),
+            fuzzy_fingerprint: String::new(),
+            timestamp: None,
+            thread: None,
+            level: Some("ERROR".to_string()),
+            logger: Some("forge-mod-loading".to_string()),
+            subject_mod: Some(mod_id),
+            message: message.clone(),
+            continuation_lines: Vec::new(),
+            exception_chain: vec![ThrowableNode {
+                throwable_type: "net.minecraftforge.fml.ModLoadingException".to_string(),
+                message: Some(message),
+                cause: None,
+                suppressed: false,
+                frames: Vec::new(),
+            }],
+            terminality: EventTerminality::LoaderAbort,
+            source_line,
+            source_fragment: 0,
+        };
+        event.semantic_fingerprint = semantic_fingerprint(&event);
+        event.fuzzy_fingerprint = fuzzy_fingerprint(&event);
+        event.occurrence_id = occurrence_id(&event, source, ordinal_base + out.len());
+        out.push(event);
+    };
+
+    for (index, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if let Some(mod_id) = trimmed
+            .strip_prefix("-- MOD ")
+            .and_then(|value| value.strip_suffix(" --"))
+        {
+            flush(&mut current_mod, &mut failure_lines, &mut out);
+            current_mod = Some((
+                mod_id.trim().to_string(),
+                u32::try_from(index + 1).unwrap_or(u32::MAX),
+            ));
+            collecting_failure = false;
+            continue;
+        }
+        if current_mod.is_none() {
+            continue;
+        }
+        if let Some(message) = trimmed.strip_prefix("Failure message:") {
+            failure_lines.push(message.trim().to_string());
+            collecting_failure = true;
+        } else if collecting_failure && line.starts_with("\t\t") && !trimmed.is_empty() {
+            failure_lines.push(trimmed.to_string());
+        } else if collecting_failure && !trimmed.is_empty() {
+            collecting_failure = false;
+        }
+    }
+    flush(&mut current_mod, &mut failure_lines, &mut out);
+    out
 }
 
 fn classify_terminalities(events: &mut [RuntimeEvent]) {
@@ -707,6 +809,48 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].level.as_deref(), Some("INFO"));
         assert!(events[0].exception_chain.is_empty());
+    }
+
+    #[test]
+    fn forge_mod_failure_sections_replace_the_generic_wrapper() {
+        let text = "---- Minecraft Crash Report ----\n\
+Description: Mod loading error has occurred\n\n\
+java.lang.Exception: Mod Loading has failed\n\
+\tat net.minecraftforge.logging.CrashReportExtender.dumpModLoadingCrashReport(CrashReportExtender.java:60)\n\n\
+-- MOD car --\n\
+Details:\n\
+\tMod File: /instance/mods/car.jar\n\
+\tFailure message: Mod car requires minecraft 1.18.2\n\
+\t\tCurrently, minecraft is 1.20.1\n\
+\tMod Version: 1.0.0\n\n\
+-- MOD framework --\n\
+Details:\n\
+\tFailure message: Mod framework requires minecraft below 1.19\n\
+\t\tCurrently, minecraft is 1.20.1\n";
+        let events = normalize_events(text, "crash-report.txt");
+        let wrapper = events
+            .iter()
+            .find(|event| event.message.contains("Mod Loading has failed"))
+            .unwrap();
+        assert_eq!(wrapper.terminality, EventTerminality::Unknown);
+        let failures = events
+            .iter()
+            .filter(|event| event.logger.as_deref() == Some("forge-mod-loading"))
+            .collect::<Vec<_>>();
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0].subject_mod.as_deref(), Some("car"));
+        assert_eq!(failures[0].source_line, 7);
+        assert_eq!(failures[0].terminality, EventTerminality::LoaderAbort);
+        assert_eq!(
+            failures[0].exception_chain[0].throwable_type,
+            "net.minecraftforge.fml.ModLoadingException"
+        );
+        assert!(
+            failures[0]
+                .message
+                .contains("Currently, minecraft is 1.20.1")
+        );
+        assert_ne!(failures[0].occurrence_id, failures[1].occurrence_id);
     }
 
     #[test]

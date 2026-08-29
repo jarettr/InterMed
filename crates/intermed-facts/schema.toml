@@ -147,6 +147,7 @@ attrs.capability = "string"
 attrs.reason = "string"
 attrs.subsystem = "string"
 attrs.source = "string"
+attrs.file = "string"
 
 [kind.nested_jar]
 subject = "nested jar"

@@ -116,6 +116,12 @@ pub struct TargetCapabilities {
     pub mod_classpath: CoverageState,
     pub minecraft_classpath: CoverageState,
     pub loader_classpath: CoverageState,
+    /// Completeness of the materialized compatibility-bridge inventory. This is
+    /// intentionally separate from loader implementation classes: a complete
+    /// mod directory can prove that no external bridge artifact is present even
+    /// when the loader JAR itself was not supplied to the analyzer.
+    #[serde(default)]
+    pub bridge_semantics: CoverageState,
     pub mappings: CoverageState,
     pub logs: CoverageState,
     pub configs: CoverageState,
@@ -276,14 +282,15 @@ impl TargetCapabilities {
                 "compatible mappings were not supplied",
             )
         };
-        let loader_classpath = if loader_identity.is_complete() && mod_classpath.is_complete() {
-            CoverageState::Complete
-        } else {
-            partial(
-                "loader-classpath-unverified",
-                "loader classes are not independently known to be complete",
-            )
-        };
+        // Loader identity/version from a manifest does not materialize the
+        // loader's own libraries. In particular it cannot prove which virtual
+        // modules the runtime bundles. Keep this honest until a loader artifact
+        // is explicitly indexed.
+        let loader_classpath = unavailable(
+            "loader-classpath-unavailable",
+            "loader implementation classes were not independently indexed",
+        );
+        let bridge_semantics = materialized_artifacts.clone();
         let scripts = coverage_for_region_or_collector(
             outcomes,
             scopes,
@@ -307,6 +314,7 @@ impl TargetCapabilities {
             mod_classpath,
             minecraft_classpath,
             loader_classpath,
+            bridge_semantics,
             mappings,
             logs: coverage_for_region_or_layer(
                 outcomes,
@@ -390,7 +398,7 @@ impl TargetCapabilities {
                 ("materialized-artifacts", &self.materialized_artifacts)
             }
             CoverageRequirement::KnownBridgeSemantics => {
-                ("loader-classpath", &self.loader_classpath)
+                ("bridge-semantics", &self.bridge_semantics)
             }
             CoverageRequirement::CompatibleMappings => ("mappings", &self.mappings),
             CoverageRequirement::ApplicableMixin => ("mod-classpath", &self.mod_classpath),

@@ -337,6 +337,12 @@ fn conflict_edge_summary_findings(ctx: &RuleCtx<'_>) -> Vec<Finding> {
         }
         let mut source = fact.attr("source_mod").unwrap_or("unknown").to_string();
         let mut target = fact.attr("target_mod").unwrap_or("unknown").to_string();
+        // Competing handlers owned by one mod are developer lint, not a pack
+        // compatibility conflict between independently removable components.
+        // The raw edge and verbose interaction summary remain available.
+        if source == target {
+            continue;
+        }
         if source > target {
             std::mem::swap(&mut source, &mut target);
         }
@@ -714,9 +720,11 @@ fn apply_failure_findings(ctx: &RuleCtx<'_>) -> Vec<Finding> {
             let member = f.attr("member").unwrap_or("");
             let detail = f.attr("detail").unwrap_or("mixin apply failure");
             let mixin = f.attr("mixin").unwrap_or(&f.subject);
+            let occurrence =
+                stable_apply_failure_occurrence(kind, &f.subject, mixin, target, member, detail);
             let mut builder = Finding::builder(
                 RULE_ID,
-                format!("mixin-apply:{kind}:{}:{target}:{member}", f.subject),
+                format!("mixin-apply:{kind}:{}:{occurrence}", f.subject),
             )
             .coverage_requirement(CoverageRequirement::CompleteClasspath)
             .coverage_requirement(CoverageRequirement::CompatibleMappings)
@@ -767,6 +775,23 @@ fn apply_failure_findings(ctx: &RuleCtx<'_>) -> Vec<Finding> {
         }
     }
     out
+}
+
+fn stable_apply_failure_occurrence(
+    kind: &str,
+    mod_id: &str,
+    mixin: &str,
+    target: &str,
+    member: &str,
+    detail: &str,
+) -> String {
+    let mut identity = Sha256::new();
+    identity.update(b"intermed-mixin-apply-occurrence-v1\0");
+    for value in [kind, mod_id, mixin, target, member, detail] {
+        identity.update((value.len() as u64).to_be_bytes());
+        identity.update(value.as_bytes());
+    }
+    format!("{:x}", identity.finalize())[..24].to_string()
 }
 
 /// Runtime-log confirmation (plan Phase 11). Parses `MixinApplyError` log lines into
@@ -2233,7 +2258,7 @@ mod confidence_tests {
 
 #[cfg(test)]
 mod triage_tests {
-    use super::MixinRiskRule;
+    use super::{MixinRiskRule, apply_failure_findings};
     use intermed_doctor_core::evidence::{FindingVisibility, Severity};
     use intermed_doctor_core::facts::{FactStore, kind};
     use intermed_doctor_core::{Rule, RuleCtx, Target, TargetKind};
@@ -2259,6 +2284,32 @@ mod triage_tests {
             .attr("mods", "a,b")
             .attr("unresolved_points", 0_i64)
             .emit();
+    }
+
+    #[test]
+    fn distinct_mixin_apply_sites_have_distinct_finding_ids() {
+        let mut store = FactStore::new();
+        for mixin in ["example.FirstMixin", "example.SecondMixin"] {
+            store
+                .fact("mixin", "mixin_apply_refmap_missing")
+                .subject("example-mod")
+                .attr("mixin", mixin)
+                .attr("target", "net.minecraft.client.Minecraft")
+                .attr("member", "")
+                .attr("detail", "named target has no refmap")
+                .attr("confirmed", false)
+                .attr("activation_applicable", true)
+                .emit();
+        }
+        let target = target();
+        let findings = apply_failure_findings(&RuleCtx::for_test(&store, &target));
+        assert_eq!(findings.len(), 2);
+        assert_ne!(findings[0].id, findings[1].id);
+        assert!(findings.iter().all(|finding| {
+            finding
+                .id
+                .starts_with("mixin-apply:mixin_apply_refmap_missing:example-mod:")
+        }));
     }
 
     #[test]
@@ -2383,5 +2434,28 @@ mod triage_tests {
                 "{edge_type} is evidence of interaction, not a proven conflict"
             );
         }
+    }
+
+    #[test]
+    fn same_mod_conflict_edge_is_not_presented_as_a_cross_mod_warning() {
+        let mut store = FactStore::new();
+        store
+            .fact("mixin", kind::MIXIN_CONFLICT_EDGE)
+            .subject("self-edge")
+            .attr("edge_type", "redirects-same-call")
+            .attr("source_mod", "alpha")
+            .attr("target_mod", "alpha")
+            .attr("target_class", "net.minecraft.Target")
+            .attr("site", "tick()V@INVOKE")
+            .emit();
+        let target = target();
+        let findings = MixinRiskRule
+            .evaluate(&RuleCtx::for_test(&store, &target))
+            .unwrap();
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.id != "mixin-conflict-pair:alpha<->alpha")
+        );
     }
 }

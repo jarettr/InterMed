@@ -13,6 +13,7 @@ toml.workspace = true
 serde_yaml.workspace = true
 zip.workspace = true
 rayon.workspace = true
+sha2.workspace = true
 intermed-doctor-core.workspace = true
 cafebabe.workspace = true
 

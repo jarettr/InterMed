@@ -27,19 +27,54 @@ pub fn detect_connector<R: Read + Seek>(
     if !title.eq_ignore_ascii_case("connector") {
         return None;
     }
-    let has_transformer = archive
-        .by_name("META-INF/services/cpw.mods.modlauncher.api.ITransformationService")
-        .is_ok();
+    let transformer = crate::bounded_zip::read_zip_text_opt(
+        archive,
+        "META-INF/services/cpw.mods.modlauncher.api.ITransformationService",
+        crate::bounded_zip::MAX_MANIFEST_BYTES,
+    )?;
+    let has_transformer = transformer.lines().map(str::trim).any(|provider| {
+        provider == "org.sinytra.connector.service.ConnectorLoaderService"
+            || provider.starts_with("org.sinytra.connector.")
+    });
     let has_candidate_locator = archive
         .by_name("META-INF/services/net.neoforged.neoforgespi.locating.IModFileCandidateLocator")
         .is_ok();
-    if !has_transformer || !has_candidate_locator {
+    // Connector 1.x on Forge 1.20.1 predates NeoForge's candidate-locator SPI.
+    // Its outer bootstrap JAR instead registers both Forge locator services.
+    // Require the exact Sinytra providers so a generic ModLauncher transformer
+    // is not promoted to a compatibility bridge merely because of its title.
+    let forge_mod_locator = crate::bounded_zip::read_zip_text_opt(
+        archive,
+        "META-INF/services/net.minecraftforge.forgespi.locating.IModLocator",
+        crate::bounded_zip::MAX_MANIFEST_BYTES,
+    );
+    let forge_dependency_locator = crate::bounded_zip::read_zip_text_opt(
+        archive,
+        "META-INF/services/net.minecraftforge.forgespi.locating.IDependencyLocator",
+        crate::bounded_zip::MAX_MANIFEST_BYTES,
+    );
+    let has_forge_locators = forge_mod_locator.is_some_and(|providers| {
+        providers
+            .lines()
+            .map(str::trim)
+            .any(|provider| provider == "org.sinytra.connector.locator.ConnectorEarlyLocator")
+    }) && forge_dependency_locator.is_some_and(|providers| {
+        providers
+            .lines()
+            .map(str::trim)
+            .any(|provider| provider == "org.sinytra.connector.locator.ConnectorLocator")
+    });
+    if !has_transformer || (!has_candidate_locator && !has_forge_locators) {
         return None;
     }
     Some(BootstrapBridgeIdentity {
         id: "connector".to_string(),
         version: manifest_attribute(&manifest, "Implementation-Version").map(str::to_string),
-        loader_family: "neoforge".to_string(),
+        loader_family: if has_candidate_locator {
+            "neoforge".to_string()
+        } else {
+            "forge".to_string()
+        },
     })
 }
 

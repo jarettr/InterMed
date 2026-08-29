@@ -3,7 +3,8 @@ use std::path::Path;
 
 use intermed_doctor_core::facts::{FactStore, kind};
 use intermed_doctor_core::{
-    CollectCtx, Collector, DiagnosisSettings, MetadataLevel, Target, TargetKind, default_settings,
+    CollectCtx, Collector, CollectorStatus, DiagnosisSettings, MetadataLevel, Target, TargetKind,
+    default_settings,
 };
 use intermed_minecraft_scan::MetadataCollector;
 use zip::write::SimpleFileOptions;
@@ -113,6 +114,126 @@ fn fabric_dep_space_and_range_emits_dependency_fact() {
         .expect("dependency fact");
     assert_eq!(dep.attr("range"), Some(">=0.11.6 <0.12.0"));
     assert_eq!(dep.attr("version_dialect"), Some("fabric-extended-semver"));
+}
+
+#[test]
+fn fabric_instance_dependency_override_removes_descriptor_break() {
+    let root = temp_dir("fabric-dependency-override");
+    let mods = root.join("mods");
+    let config = root.join("config");
+    std::fs::create_dir_all(&mods).unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    write_jar(
+        &mods.join("consumer.jar"),
+        &[(
+            "fabric.mod.json",
+            br#"{"schemaVersion":1,"id":"consumer","version":"1.0.0","breaks":{"provider":"<=1.0.0"}}"#,
+        )],
+    );
+    std::fs::write(
+        config.join("fabric_loader_dependencies.json"),
+        br#"{"version":1,"overrides":{"consumer":{"-breaks":{"provider":"*"}}}}"#,
+    )
+    .unwrap();
+
+    let target = Target {
+        path: root.clone(),
+        kind: TargetKind::Instance,
+        mods_dir: Some(mods),
+        game_root: Some(root.clone()),
+        layout: None,
+        instance_type: None,
+        spark_report: None,
+    };
+    let mut store = FactStore::new();
+    store
+        .fact("environment", kind::ENVIRONMENT)
+        .subject("")
+        .attr("loader", "fabric")
+        .emit();
+    let outcome = MetadataCollector.collect(&mut CollectCtx {
+        target: &target,
+        store: &mut store,
+        jar_cache: None,
+        settings: default_settings(),
+    });
+    assert_eq!(outcome.status, CollectorStatus::Active);
+    assert!(!store.by_kind(kind::DEPENDENCY).any(|fact| {
+        fact.subject == "consumer"
+            && fact.attr("dep") == Some("provider")
+            && fact.attr("relation") == Some("breaks")
+    }));
+    let capability = store
+        .by_kind(kind::MOD_CAPABILITY)
+        .find(|fact| {
+            fact.subject == "consumer"
+                && fact.attr("capability") == Some("fabric-dependency-override-applied")
+        })
+        .expect("override provenance fact");
+    assert!(
+        capability
+            .source
+            .locator
+            .ends_with("config/fabric_loader_dependencies.json")
+    );
+    let checksum = store
+        .by_kind(kind::CHECKSUM)
+        .find(|fact| fact.attr("input_kind") == Some("instance-config"))
+        .expect("override config input fingerprint");
+    assert_eq!(checksum.subject, "config/fabric_loader_dependencies.json");
+    assert_eq!(checksum.attr("algorithm"), Some("sha256"));
+    assert_eq!(checksum.attr("hex").map(str::len), Some(64));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn malformed_fabric_dependency_override_suppresses_descriptor_dependency_truth() {
+    let root = temp_dir("fabric-dependency-override-invalid");
+    let mods = root.join("mods");
+    let config = root.join("config");
+    std::fs::create_dir_all(&mods).unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    write_jar(
+        &mods.join("consumer.jar"),
+        &[(
+            "fabric.mod.json",
+            br#"{"schemaVersion":1,"id":"consumer","version":"1.0.0","depends":{"provider":"*"}}"#,
+        )],
+    );
+    std::fs::write(
+        config.join("fabric_loader_dependencies.json"),
+        br#"{"version":1,"overrides":{"consumer":{"depends":{"provider":3}}}}"#,
+    )
+    .unwrap();
+
+    let target = Target {
+        path: root.clone(),
+        kind: TargetKind::Instance,
+        mods_dir: Some(mods),
+        game_root: Some(root.clone()),
+        layout: None,
+        instance_type: None,
+        spark_report: None,
+    };
+    let mut store = FactStore::new();
+    store
+        .fact("environment", kind::ENVIRONMENT)
+        .subject("")
+        .attr("loader", "fabric")
+        .emit();
+    let outcome = MetadataCollector.collect(&mut CollectCtx {
+        target: &target,
+        store: &mut store,
+        jar_cache: None,
+        settings: default_settings(),
+    });
+    assert_eq!(outcome.status, CollectorStatus::Incomplete);
+    assert_eq!(store.by_kind(kind::DEPENDENCY).count(), 0);
+    assert!(store.by_kind(kind::INVALID_METADATA).any(|fact| {
+        fact.subject == "fabric_loader_dependencies.json"
+            && fact.attr_bool("active_for_instance") == Some(true)
+    }));
+    std::fs::remove_dir_all(root).ok();
 }
 
 #[test]

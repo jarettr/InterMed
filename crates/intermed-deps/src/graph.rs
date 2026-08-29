@@ -65,7 +65,11 @@ pub struct ModDependencyEdge {
 pub struct ProvidedAlias {
     pub alias_id: String,
     pub provider_mod: String,
-    pub provider_version: String,
+    /// `None` means the provider is observed but its runtime-supplied version is
+    /// not known. It must keep dependency resolution undecidable rather than be
+    /// fabricated as version zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_version: Option<String>,
     pub fact_id: FactId,
 }
 
@@ -234,16 +238,12 @@ pub fn build_graph(store: &FactStore) -> ModpackGraph {
             }
             // A bundled (Jar-in-Jar) module carries its own version on the fact;
             // a plain `provides` alias inherits the provider mod's version.
-            let provider_version = f
-                .attr("version")
-                .map(str::to_string)
-                .or_else(|| {
-                    packages
-                        .iter()
-                        .find(|p| p.id == f.subject)
-                        .map(|p| p.version.clone())
-                })
-                .unwrap_or_else(|| "0".to_string());
+            let provider_version = f.attr("version").map(str::to_string).or_else(|| {
+                packages
+                    .iter()
+                    .find(|p| p.id == f.subject)
+                    .map(|p| p.version.clone())
+            });
             provides.push(ProvidedAlias {
                 alias_id: alias.to_string(),
                 provider_mod: f.subject.clone(),

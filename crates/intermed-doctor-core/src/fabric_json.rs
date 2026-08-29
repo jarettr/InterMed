@@ -50,6 +50,10 @@ pub fn escape_string_controls(text: &str) -> String {
 }
 
 pub fn parse_value(text: &str) -> Result<serde_json::Value, serde_json::Error> {
+    // Gson's JsonReader consumes a leading Unicode BOM before tokenization.
+    // Keep compatibility narrowly scoped to the first decoded character; a
+    // BOM elsewhere remains ordinary invalid JSON.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let escaped = escape_string_controls(text);
     serde_json::from_str(&escaped).or_else(|_| {
         let uncommented = strip_lenient_comments(&escaped);
@@ -306,5 +310,13 @@ mod tests {
         .unwrap();
         assert_eq!(value["url"], "https://example.invalid/x#y");
         assert_eq!(value["mixins"], serde_json::json!(["A", "B"]));
+    }
+
+    #[test]
+    fn accepts_utf8_bom_used_by_fabric_descriptor_writer() {
+        let value = super::parse_value("\u{feff}{\"id\":\"macos_input_fixes_helper\"}")
+            .expect("Gson-compatible leading BOM");
+        assert_eq!(value["id"], "macos_input_fixes_helper");
+        assert!(super::parse_value("{\"id\":\u{feff}\"broken\"}").is_err());
     }
 }

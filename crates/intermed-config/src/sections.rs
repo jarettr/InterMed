@@ -37,6 +37,7 @@ pub const DEFAULT_MIXIN_LEVEL: &str = "standard";
 pub const DEFAULT_METADATA_LEVEL: &str = "enriched";
 pub const DEFAULT_RESOURCE_LEVEL: &str = "semantic";
 pub const DEFAULT_RESOURCE_MAX_JSON_BYTES: u64 = 1_048_576;
+pub const DEFAULT_RESOURCE_MAX_LANG_JSON_BYTES: u64 = 4 * 1_048_576;
 pub const DEFAULT_RESOURCE_MAX_AST_FACTS: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -194,6 +195,10 @@ pub struct ResourceSection {
     /// Per-resource JSON size cap in bytes; larger resources are skipped.
     #[serde(default = "default_resource_max_json_bytes")]
     pub max_json_bytes: u64,
+    /// Per-language-catalog size cap. Language maps are often larger than
+    /// ordinary recipes/models but remain bounded separately.
+    #[serde(default = "default_resource_max_lang_json_bytes")]
+    pub max_lang_json_bytes: u64,
     /// Cap on facts emitted per resource (reference fan-out is truncated past this).
     #[serde(default = "default_resource_max_ast_facts")]
     pub max_ast_facts_per_resource: usize,
@@ -204,6 +209,7 @@ impl Default for ResourceSection {
         Self {
             level: default_resource_level(),
             max_json_bytes: DEFAULT_RESOURCE_MAX_JSON_BYTES,
+            max_lang_json_bytes: DEFAULT_RESOURCE_MAX_LANG_JSON_BYTES,
             max_ast_facts_per_resource: DEFAULT_RESOURCE_MAX_AST_FACTS,
         }
     }
@@ -314,6 +320,9 @@ fn default_resource_level() -> String {
 }
 fn default_resource_max_json_bytes() -> u64 {
     DEFAULT_RESOURCE_MAX_JSON_BYTES
+}
+fn default_resource_max_lang_json_bytes() -> u64 {
+    DEFAULT_RESOURCE_MAX_LANG_JSON_BYTES
 }
 fn default_resource_max_ast_facts() -> usize {
     DEFAULT_RESOURCE_MAX_AST_FACTS

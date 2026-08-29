@@ -212,6 +212,7 @@ impl IntermedConfig {
         ResourceSettings {
             level: parse_resource_level(&self.resource.level),
             max_json_bytes: self.resource.max_json_bytes,
+            max_lang_json_bytes: self.resource.max_lang_json_bytes,
             max_ast_facts_per_resource: self.resource.max_ast_facts_per_resource,
         }
     }

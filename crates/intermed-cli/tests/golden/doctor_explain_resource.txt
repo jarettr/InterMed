@@ -1,7 +1,7 @@
 INFO Resource can be merged safely: data/minecraft/tags/items/test.json
 id: resource-conflict:safe-crdt-merge:data/minecraft/tags/items/test.json
-semantic id: finding:generic:a6ac736674d890763f9e007d
-occurrence id: finding-occurrence:6630d1a8cbf0e344a7b32f26e990f1979d3eea9902516fa7f5511ba5ad2d904b
+semantic id: finding:generic:db27dcdf7319c360386e2fea
+occurrence id: finding-occurrence:c971cca1892c61ae7fd61be30cf1add3c4b70625db1fc6f5c44d71f73818807c
 rule: resource-conflict
 
 2 writer(s) touch this path: alpha, beta. all writers append values without replace — a deterministic, order-independent set union

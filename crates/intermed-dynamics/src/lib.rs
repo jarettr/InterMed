@@ -370,13 +370,15 @@ impl Collector for StaticScriptCollector {
             kind::RUNTIME_REMOVED_ITEM,
             kind::RUNTIME_REMOVED_TAG,
             kind::RUNTIME_REMOVED_LOOT_TABLE,
+            kind::SCRIPT_DISCOVERY_COVERAGE,
         ])
         .regions([intermed_doctor_core::TargetRegion::Scripts])
     }
     fn applies(&self, target: &Target) -> bool {
-        script_scan::has_script_roots(target)
+        target.kind.has_mods() && target.path.is_dir()
     }
     fn collect(&self, ctx: &mut CollectCtx<'_>) -> CollectorOutcome {
+        let roots_present = script_scan::has_script_roots(ctx.target);
         let result = script_scan::emit(ctx.store, ctx.target);
         let mut emitted = result.emitted;
         for reason in &result.gaps {
@@ -396,7 +398,7 @@ impl Collector for StaticScriptCollector {
             .subject(ctx.target.path.display().to_string())
             .attr("files_discovered", result.files_discovered as i64)
             .attr("complete", result.gaps.is_empty())
-            .attr("roots_present", true)
+            .attr("roots_present", roots_present)
             .attr(
                 "reason",
                 if result.gaps.is_empty() {
@@ -685,6 +687,35 @@ mod tests {
             spark_report: None,
         };
         assert!(!collector().applies(&target));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn absent_script_roots_are_a_complete_negative_discovery() {
+        let dir =
+            std::env::temp_dir().join(format!("imd-dyn-no-static-scripts-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("mods")).unwrap();
+        let target = Target::with_kind(dir.clone(), TargetKind::Instance);
+        let run = DiagnosticEngine::builder()
+            .collector(static_script_collector())
+            .build()
+            .diagnose_with_facts(&target);
+
+        let outcome = run
+            .report
+            .collectors
+            .iter()
+            .find(|outcome| outcome.id == "static-script-scanner")
+            .unwrap();
+        assert_eq!(outcome.status, "active");
+        let coverage = run
+            .facts
+            .iter()
+            .find(|fact| fact.kind == kind::SCRIPT_DISCOVERY_COVERAGE)
+            .unwrap();
+        assert_eq!(coverage.attr_bool("complete"), Some(true));
+        assert_eq!(coverage.attr_bool("roots_present"), Some(false));
         std::fs::remove_dir_all(&dir).ok();
     }
 

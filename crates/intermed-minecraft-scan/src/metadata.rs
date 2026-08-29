@@ -7,10 +7,12 @@
 //! bytecode. Annotation-based (Forge `@Mod`) discovery is Tier-2 / Layer F and
 //! deliberately not done here.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
+use sha2::{Digest, Sha256};
 
 use intermed_doctor_core::bounded_zip;
 use intermed_doctor_core::facts::{SourceRef, kind};
@@ -27,8 +29,42 @@ use crate::forge_annotation;
 /// Cache key version for this collector's payload. The crate version invalidates
 /// the cache automatically on every release; bump the trailing revision when the
 /// scan/parse logic changes within a single release.
-const CACHE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-r25");
+const CACHE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-r27");
 const MAX_PACK_CALL_EDGES: usize = 20_000;
+const MAX_FABRIC_DEPENDENCY_OVERRIDES_BYTES: u64 = 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DependencyOverrideOperation {
+    Add,
+    Remove,
+    Replace,
+}
+
+#[derive(Clone, Debug)]
+struct DependencyOverrideEntry {
+    operation: DependencyOverrideOperation,
+    relation: &'static str,
+    deps: Vec<(String, String)>,
+}
+
+#[derive(Clone, Debug)]
+struct FabricDependencyOverrides {
+    source: PathBuf,
+    sha256: String,
+    by_mod: BTreeMap<String, Vec<DependencyOverrideEntry>>,
+}
+
+#[derive(Default)]
+struct AppliedDependencyOverride {
+    affected: bool,
+    added: BTreeSet<(String, String)>,
+}
+
+struct DependencyEmissionPolicy<'a> {
+    overrides: Option<&'a FabricDependencyOverrides>,
+    applied: &'a AppliedDependencyOverride,
+    authoritative: bool,
+}
 
 fn minecraft_uses_legacy_forge_descriptor(version: &str) -> bool {
     let mut parts = version.split(['.', '-']);
@@ -39,6 +75,188 @@ fn minecraft_uses_legacy_forge_descriptor(version: &str) -> bool {
         ),
         (Some(1), Some(0..=12))
     )
+}
+
+fn dependency_relation(key: &str) -> Option<(&'static str, bool)> {
+    match key {
+        "depends" => Some(("depends", true)),
+        "recommends" => Some(("recommends", false)),
+        "suggests" => Some(("suggests", false)),
+        "conflicts" => Some(("conflicts", false)),
+        "breaks" => Some(("breaks", false)),
+        _ => None,
+    }
+}
+
+fn fabric_dependency_override_path(target: &Target) -> Option<PathBuf> {
+    let mut roots = target.candidate_roots();
+    if let Some(mods_dir) = target.mods_dir()
+        && let Some(parent) = mods_dir.parent()
+    {
+        roots.push(parent.to_path_buf());
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+        .into_iter()
+        .map(|root| root.join("config/fabric_loader_dependencies.json"))
+        .find(|path| path.is_file())
+}
+
+fn load_fabric_dependency_overrides(
+    target: &Target,
+) -> Result<Option<FabricDependencyOverrides>, (PathBuf, String)> {
+    let Some(path) = fabric_dependency_override_path(target) else {
+        return Ok(None);
+    };
+    parse_fabric_dependency_overrides(&path)
+        .map(Some)
+        .map_err(|reason| (path, reason))
+}
+
+fn parse_fabric_dependency_overrides(path: &Path) -> Result<FabricDependencyOverrides, String> {
+    let file = std::fs::File::open(path)
+        .map_err(|error| format!("cannot open Fabric dependency overrides: {error}"))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_FABRIC_DEPENDENCY_OVERRIDES_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read Fabric dependency overrides: {error}"))?;
+    if bytes.len() as u64 > MAX_FABRIC_DEPENDENCY_OVERRIDES_BYTES {
+        return Err(format!(
+            "Fabric dependency overrides exceed the {} byte limit",
+            MAX_FABRIC_DEPENDENCY_OVERRIDES_BYTES
+        ));
+    }
+    let root: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("invalid Fabric dependency overrides JSON: {error}"))?;
+    let object = root
+        .as_object()
+        .ok_or_else(|| "Fabric dependency overrides root must be an object".to_string())?;
+    if object
+        .keys()
+        .any(|key| key != "version" && key != "overrides")
+    {
+        return Err("Fabric dependency overrides contain an unsupported root key".to_string());
+    }
+    if object.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+        return Err("Fabric dependency overrides version must be 1".to_string());
+    }
+    let overrides = object
+        .get("overrides")
+        .map_or_else(|| Ok(None), |value| value.as_object().map(Some).ok_or(()))
+        .map_err(|()| "Fabric dependency overrides must be an object".to_string())?;
+    let mut by_mod = BTreeMap::new();
+    if let Some(overrides) = overrides {
+        for (mod_id, raw_entries) in overrides {
+            let raw_entries = raw_entries.as_object().ok_or_else(|| {
+                format!("dependency override container for {mod_id} must be an object")
+            })?;
+            let mut entries = Vec::new();
+            for (raw_kind, raw_deps) in raw_entries {
+                let (operation, kind_name) = match raw_kind.as_bytes().first() {
+                    Some(b'+') => (DependencyOverrideOperation::Add, &raw_kind[1..]),
+                    Some(b'-') => (DependencyOverrideOperation::Remove, &raw_kind[1..]),
+                    _ => (DependencyOverrideOperation::Replace, raw_kind.as_str()),
+                };
+                let Some((relation, _)) = dependency_relation(kind_name) else {
+                    return Err(format!(
+                        "unsupported Fabric dependency override kind: {raw_kind}"
+                    ));
+                };
+                let dependency_map = raw_deps.as_object().ok_or_else(|| {
+                    format!("Fabric dependency override {raw_kind} must be an object")
+                })?;
+                let mut deps = Vec::new();
+                for (dep_id, raw_range) in dependency_map {
+                    let valid_range = raw_range.is_string()
+                        || raw_range
+                            .as_array()
+                            .is_some_and(|values| values.iter().all(serde_json::Value::is_string));
+                    if !valid_range {
+                        return Err(format!(
+                            "Fabric dependency override range for {mod_id}->{dep_id} must be a string or string array"
+                        ));
+                    }
+                    deps.push((dep_id.clone(), json_range(raw_range)));
+                }
+                entries.push(DependencyOverrideEntry {
+                    operation,
+                    relation,
+                    deps,
+                });
+            }
+            by_mod.insert(mod_id.clone(), entries);
+        }
+    }
+    Ok(FabricDependencyOverrides {
+        source: path.to_path_buf(),
+        sha256: format!("{:x}", Sha256::digest(&bytes)),
+        by_mod,
+    })
+}
+
+impl FabricDependencyOverrides {
+    fn apply(&self, artifact: &mut Artifact) -> AppliedDependencyOverride {
+        let Some(entries) = self.by_mod.get(&artifact.id) else {
+            return AppliedDependencyOverride::default();
+        };
+        let mut applied = AppliedDependencyOverride {
+            affected: true,
+            added: BTreeSet::new(),
+        };
+        for relation in ["depends", "recommends", "suggests", "conflicts", "breaks"] {
+            let relation_entries = entries
+                .iter()
+                .filter(|entry| entry.relation == relation)
+                .collect::<Vec<_>>();
+            if relation_entries.is_empty() {
+                continue;
+            }
+            let replace = relation_entries
+                .iter()
+                .find(|entry| entry.operation == DependencyOverrideOperation::Replace);
+            if let Some(replace) = replace {
+                artifact.deps.retain(|dep| dep.relation != relation);
+                add_override_dependencies(artifact, replace, &mut applied.added);
+                continue;
+            }
+            for entry in relation_entries
+                .iter()
+                .filter(|entry| entry.operation == DependencyOverrideOperation::Remove)
+            {
+                artifact.deps.retain(|dep| {
+                    dep.relation != relation || !entry.deps.iter().any(|(id, _)| id == &dep.id)
+                });
+            }
+            for entry in relation_entries
+                .iter()
+                .filter(|entry| entry.operation == DependencyOverrideOperation::Add)
+            {
+                add_override_dependencies(artifact, entry, &mut applied.added);
+            }
+        }
+        applied
+    }
+}
+
+fn add_override_dependencies(
+    artifact: &mut Artifact,
+    entry: &DependencyOverrideEntry,
+    added: &mut BTreeSet<(String, String)>,
+) {
+    let mandatory = dependency_relation(entry.relation)
+        .map(|(_, mandatory)| mandatory)
+        .unwrap_or(false);
+    for (id, range) in &entry.deps {
+        artifact.deps.push(Dep {
+            id: id.clone(),
+            range: range.clone(),
+            mandatory,
+            relation: entry.relation,
+            feature: None,
+        });
+        added.insert((entry.relation.to_string(), id.clone()));
+    }
 }
 
 pub struct MetadataCollector;
@@ -58,6 +276,7 @@ impl Collector for MetadataCollector {
                 kind::MOD_CAPABILITY,
                 kind::DEPENDENCY,
                 kind::PROVIDED_DEPENDENCY,
+                kind::CHECKSUM,
                 kind::UNPARSEABLE_ARCHIVE,
             ])
             .regions([TargetRegion::Artifacts, TargetRegion::Metadata])
@@ -92,6 +311,43 @@ impl Collector for MetadataCollector {
             .by_kind(kind::ENVIRONMENT)
             .find_map(|fact| fact.attr("mc_version"))
             .map(str::to_string);
+        let mut dependency_overrides_invalid = false;
+        let dependency_overrides = if expected_loader == Some(Loader::Fabric) {
+            match load_fabric_dependency_overrides(ctx.target) {
+                Ok(overrides) => overrides,
+                Err((path, reason)) => {
+                    dependency_overrides_invalid = true;
+                    incomplete = true;
+                    failed += 1;
+                    ctx.store
+                        .fact(self.id(), kind::INVALID_METADATA)
+                        .subject("fabric_loader_dependencies.json")
+                        .attr("reason", reason)
+                        .attr("manifest", "config/fabric_loader_dependencies.json")
+                        .attr("loader", "fabric")
+                        .attr("active_for_instance", true)
+                        .source(SourceRef::file(path.display().to_string()))
+                        .confidence(1.0)
+                        .emit();
+                    emitted += 1;
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(overrides) = &dependency_overrides {
+            ctx.store
+                .fact(self.id(), kind::CHECKSUM)
+                .subject("config/fabric_loader_dependencies.json")
+                .attr("algorithm", "sha256")
+                .attr("hex", overrides.sha256.clone())
+                .attr("input_kind", "instance-config")
+                .source(SourceRef::file(overrides.source.display().to_string()))
+                .confidence(1.0)
+                .emit();
+            emitted += 1;
+        }
         let prefer_legacy_forge = expected_loader == Some(Loader::Forge)
             && expected_minecraft
                 .as_deref()
@@ -133,7 +389,12 @@ impl Collector for MetadataCollector {
                     descriptor_candidates,
                 } => {
                     parsed += 1;
-                    for m in artifacts.into_iter().map(cached_to_artifact) {
+                    for mut m in artifacts.into_iter().map(cached_to_artifact) {
+                        let applied_override = dependency_overrides
+                            .as_ref()
+                            .map_or_else(AppliedDependencyOverride::default, |overrides| {
+                                overrides.apply(&mut m)
+                            });
                         emitted += emit_artifact(
                             ctx,
                             &m,
@@ -141,6 +402,12 @@ impl Collector for MetadataCollector {
                             &identity_certainty,
                             &descriptor_candidates,
                             &mut call_edges_remaining,
+                            DependencyEmissionPolicy {
+                                overrides: dependency_overrides.as_ref(),
+                                applied: &applied_override,
+                                authoritative: !(dependency_overrides_invalid
+                                    && m.loader == Loader::Fabric),
+                            },
                         );
                     }
                     for provider in detached_providers {
@@ -265,6 +532,7 @@ fn emit_artifact(
     identity_certainty: &str,
     descriptor_candidates: &[String],
     call_edges_remaining: &mut usize,
+    dependency_policy: DependencyEmissionPolicy<'_>,
 ) -> usize {
     let mut emitted = 0;
     let predicate = if m.is_plugin { kind::PLUGIN } else { kind::MOD };
@@ -299,6 +567,10 @@ fn emit_artifact(
         .attr("synthetic_id", id_missing)
         .attr("loader", m.loader.as_str())
         .attr("identity_certainty", identity_certainty)
+        .attr(
+            "active_for_instance",
+            identity_certainty == "confirmed" || identity_certainty == "self-loader-bootstrap",
+        )
         .attr("descriptor_candidates", descriptor_candidates.join(","))
         .attr("file", file)
         .source(SourceRef::inside(file, m.manifest_name));
@@ -310,6 +582,42 @@ fn emit_artifact(
     }
     builder.emit();
     emitted += 1;
+
+    if identity_certainty == "self-loader-bootstrap" {
+        ctx.store
+            .fact("metadata-scanner", kind::MOD_CAPABILITY)
+            .subject(m.id.clone())
+            .attr("capability", "target-loader-bootstrap")
+            .attr(
+                "reason",
+                "top-level target-loader service or core-plugin entry activates this artifact independently of its foreign descriptor",
+            )
+            .attr("file", file)
+            .source(SourceRef::file(file))
+            .confidence(0.95)
+            .emit();
+        emitted += 1;
+    }
+
+    if dependency_policy.applied.affected {
+        let source = dependency_policy
+            .overrides
+            .map(|overrides| overrides.source.display().to_string())
+            .unwrap_or_else(|| "config/fabric_loader_dependencies.json".to_string());
+        ctx.store
+            .fact("metadata-scanner", kind::MOD_CAPABILITY)
+            .subject(m.id.clone())
+            .attr("capability", "fabric-dependency-override-applied")
+            .attr(
+                "reason",
+                "effective dependencies were modified by Fabric Loader instance configuration",
+            )
+            .attr("file", source.clone())
+            .source(SourceRef::file(source))
+            .confidence(1.0)
+            .emit();
+        emitted += 1;
+    }
 
     if let Some((from_loader, to_loader, scope)) =
         compatibility_bridge(&m.id, file, m.name.as_deref(), &m.provides, m.loader)
@@ -488,7 +796,17 @@ fn emit_artifact(
         emitted += 1;
     }
 
-    for dep in &m.deps {
+    for dep in m.deps.iter().filter(|_| dependency_policy.authoritative) {
+        let override_source = dependency_policy
+            .applied
+            .added
+            .contains(&(dep.relation.to_string(), dep.id.clone()))
+            .then(|| {
+                dependency_policy
+                    .overrides
+                    .map(|overrides| overrides.source.display().to_string())
+                    .unwrap_or_else(|| "config/fabric_loader_dependencies.json".to_string())
+            });
         let mut builder = ctx
             .store
             .fact("metadata-scanner", kind::DEPENDENCY)
@@ -499,7 +817,11 @@ fn emit_artifact(
             .attr("relation", dep.relation)
             .attr("version_dialect", version_dialect_for_loader(m.loader))
             .attr("identity_certainty", identity_certainty)
-            .source(SourceRef::inside(file, m.manifest_name));
+            .source(
+                override_source
+                    .as_ref()
+                    .map_or_else(|| SourceRef::inside(file, m.manifest_name), SourceRef::file),
+            );
         if let Some(feature) = &dep.feature {
             builder = builder.attr("feature", feature.as_str());
         }
@@ -1678,6 +2000,19 @@ fn parse_jar_for_instance(
     let parsed_archive =
         parse_archive_for_instance(&mut archive, expected_loader, prefer_legacy_forge)?;
     let mut artifacts = parsed_archive.artifacts;
+    let mut identity_certainty = parsed_archive.identity_certainty;
+    let mut descriptor_candidates = parsed_archive.descriptor_candidates;
+    if identity_certainty == "cross-loader-unresolved"
+        && expected_loader.is_some_and(|loader| has_self_loader_bootstrap(&mut archive, loader))
+    {
+        // The foreign descriptor describes only one frontend of a universal
+        // bootstrap artifact. ModLauncher/Forge will activate the top-level
+        // service directly, so declaring that the whole JAR cannot load is
+        // unsound. Keep descriptor dependencies non-authoritative while
+        // recording the exact bootstrap path that made the artifact plausible.
+        identity_certainty = "self-loader-bootstrap";
+        descriptor_candidates.push("META-INF/services/<target-loader-bootstrap>".to_string());
+    }
     if artifacts.is_empty() {
         let (discovered, gaps) = forge_annotation::discover_mods_from_jar(&mut archive);
         artifacts = discovered;
@@ -1783,9 +2118,59 @@ fn parse_jar_for_instance(
         artifacts,
         detached_providers,
         truncations,
-        identity_certainty: parsed_archive.identity_certainty,
-        descriptor_candidates: parsed_archive.descriptor_candidates,
+        identity_certainty,
+        descriptor_candidates,
     })
+}
+
+fn has_self_loader_bootstrap<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    expected_loader: Loader,
+) -> bool {
+    let has = |archive: &mut zip::ZipArchive<R>, name: &str| archive.by_name(name).is_ok();
+    let transformation_service = has(
+        archive,
+        "META-INF/services/cpw.mods.modlauncher.api.ITransformationService",
+    );
+    match expected_loader {
+        Loader::Forge => {
+            transformation_service
+                || has(
+                    archive,
+                    "META-INF/services/net.minecraftforge.forgespi.locating.IModLocator",
+                )
+                || has(
+                    archive,
+                    "META-INF/services/net.minecraftforge.forgespi.locating.IDependencyLocator",
+                )
+                || bounded_zip::read_zip_text_opt(
+                    archive,
+                    "META-INF/MANIFEST.MF",
+                    bounded_zip::MAX_MANIFEST_BYTES,
+                )
+                .is_some_and(|manifest| {
+                    manifest
+                        .lines()
+                        .any(|line| line.starts_with("FMLCorePlugin:"))
+                })
+        }
+        Loader::NeoForge => {
+            transformation_service
+                || has(
+                    archive,
+                    "META-INF/services/net.neoforged.neoforgespi.locating.IModFileCandidateLocator",
+                )
+                || has(
+                    archive,
+                    "META-INF/services/net.neoforged.neoforgespi.locating.IModLocator",
+                )
+                || has(
+                    archive,
+                    "META-INF/services/net.neoforged.neoforgespi.transformation.ClassProcessorProvider",
+                )
+        }
+        _ => false,
+    }
 }
 
 fn discover_bootstrap_bridge<R: Read + Seek>(
@@ -3122,7 +3507,9 @@ mod compatibility_bridge_tests {
                     options,
                 )
                 .unwrap();
-            writer.write_all(b"org.sinytra.Service\n").unwrap();
+            writer
+                .write_all(b"org.sinytra.connector.service.ConnectorLoaderService\n")
+                .unwrap();
             writer
                 .start_file(
                     "META-INF/services/net.neoforged.neoforgespi.locating.IModFileCandidateLocator",
@@ -3139,6 +3526,48 @@ mod compatibility_bridge_tests {
         assert_eq!(bridge.id, "connector");
         assert_eq!(bridge.version, "2.0.0");
         assert_eq!(bridge.loader, Loader::NeoForge);
+    }
+
+    #[test]
+    fn recognizes_forge_1_20_connector_locator_contract() {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            let options = SimpleFileOptions::default();
+            writer.start_file("META-INF/MANIFEST.MF", options).unwrap();
+            writer
+                .write_all(
+                    b"Manifest-Version: 1.0\nSpecification-Title: Connector\nImplementation-Version: 1.0.0-beta.47+1.20.1\n",
+                )
+                .unwrap();
+            for (service, provider) in [
+                (
+                    "cpw.mods.modlauncher.api.ITransformationService",
+                    "org.sinytra.connector.service.ConnectorLoaderService\n",
+                ),
+                (
+                    "net.minecraftforge.forgespi.locating.IModLocator",
+                    "org.sinytra.connector.locator.ConnectorEarlyLocator\n",
+                ),
+                (
+                    "net.minecraftforge.forgespi.locating.IDependencyLocator",
+                    "org.sinytra.connector.locator.ConnectorLocator\n",
+                ),
+            ] {
+                writer
+                    .start_file(format!("META-INF/services/{service}"), options)
+                    .unwrap();
+                writer.write_all(provider.as_bytes()).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        cursor.set_position(0);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+        let bridge = discover_bootstrap_bridge(&mut archive, Some(Loader::Forge))
+            .expect("Forge bootstrap bridge");
+        assert_eq!(bridge.id, "connector");
+        assert_eq!(bridge.version, "1.0.0-beta.47+1.20.1");
+        assert_eq!(bridge.loader, Loader::Forge);
     }
 }
 
@@ -3174,6 +3603,127 @@ mod version_tests {
         assert!(!version_ambiguous("4.0.0+build.7"));
         assert!(!version_ambiguous("1.0.0-alpha")); // alpha is not a second version
         assert!(!version_ambiguous("1.2.3-1")); // valid numeric SemVer prerelease
+    }
+}
+
+#[cfg(test)]
+mod fabric_dependency_override_tests {
+    use super::{parse_fabric, parse_fabric_dependency_overrides};
+
+    fn override_file(contents: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "imd-fabric-overrides-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fabric_loader_dependencies.json");
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn remove_operation_changes_effective_breaks_without_touching_other_kinds() {
+        let path = override_file(
+            r#"{
+                "version": 1,
+                "overrides": {
+                    "supplementaries": {
+                        "-breaks": { "particular": "*" }
+                    }
+                }
+            }"#,
+        );
+        let overrides = parse_fabric_dependency_overrides(&path).unwrap();
+        let mut artifact = parse_fabric(
+            r#"{
+                "schemaVersion": 1,
+                "id": "supplementaries",
+                "version": "3.1.43",
+                "depends": { "fabric-api": "*" },
+                "breaks": {
+                    "particular": "<=1.1.1",
+                    "another_mod": "*"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let applied = overrides.apply(&mut artifact);
+        assert!(applied.affected);
+        assert!(
+            artifact
+                .deps
+                .iter()
+                .any(|dep| dep.relation == "depends" && dep.id == "fabric-api")
+        );
+        assert!(
+            artifact
+                .deps
+                .iter()
+                .any(|dep| dep.relation == "breaks" && dep.id == "another_mod")
+        );
+        assert!(
+            !artifact
+                .deps
+                .iter()
+                .any(|dep| dep.relation == "breaks" && dep.id == "particular")
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn replace_suppresses_add_and_remove_for_the_same_dependency_kind() {
+        let path = override_file(
+            r#"{
+                "version": 1,
+                "overrides": {
+                    "consumer": {
+                        "+depends": { "ignored_add": "*" },
+                        "-depends": { "old": "*" },
+                        "depends": { "replacement": [">=1.0.0", "2.x"] }
+                    }
+                }
+            }"#,
+        );
+        let overrides = parse_fabric_dependency_overrides(&path).unwrap();
+        let mut artifact = parse_fabric(
+            r#"{
+                "schemaVersion": 1,
+                "id": "consumer",
+                "version": "1.0.0",
+                "depends": { "old": "*" }
+            }"#,
+        )
+        .unwrap();
+
+        let applied = overrides.apply(&mut artifact);
+        assert!(applied.affected);
+        assert_eq!(artifact.deps.len(), 1);
+        assert_eq!(artifact.deps[0].id, "replacement");
+        assert_eq!(artifact.deps[0].range, ">=1.0.0 || 2.x");
+        assert!(
+            applied
+                .added
+                .contains(&("depends".to_string(), "replacement".to_string()))
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn malformed_override_range_is_rejected_instead_of_weakening_truth() {
+        let path = override_file(
+            r#"{
+                "version": 1,
+                "overrides": { "consumer": { "depends": { "api": 3 } } }
+            }"#,
+        );
+        let error = parse_fabric_dependency_overrides(&path).unwrap_err();
+        assert!(error.contains("must be a string or string array"));
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }
 
@@ -3293,6 +3843,44 @@ mod jar_version_tests {
             .artifacts;
         assert_eq!(unknown_artifacts[0].id, "forge_mod");
         std::fs::remove_dir_all(jar.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn foreign_descriptor_with_target_loader_service_is_not_a_hard_mismatch() {
+        let jar = write_jar(&[
+            (
+                "fabric.mod.json",
+                "{\"schemaVersion\":1,\"id\":\"universal_bootstrap\",\"version\":\"1.0.0\",\"depends\":{\"fabricloader\":\"*\"}}",
+            ),
+            (
+                "META-INF/services/cpw.mods.modlauncher.api.ITransformationService",
+                "example.UniversalTransformationService\n",
+            ),
+        ]);
+
+        let parsed = parse_jar(&jar, MetadataLevel::Basic, Some(Loader::Forge))
+            .expect("universal bootstrap");
+        assert_eq!(parsed.artifacts[0].id, "universal_bootstrap");
+        assert_eq!(parsed.identity_certainty, "self-loader-bootstrap");
+        assert!(
+            parsed
+                .descriptor_candidates
+                .iter()
+                .any(|candidate| candidate.contains("target-loader-bootstrap"))
+        );
+
+        let plain = write_jar(&[(
+            "fabric.mod.json",
+            "{\"schemaVersion\":1,\"id\":\"fabric_only\",\"version\":\"1.0.0\"}",
+        )]);
+        assert_eq!(
+            parse_jar(&plain, MetadataLevel::Basic, Some(Loader::Forge))
+                .expect("foreign descriptor")
+                .identity_certainty,
+            "cross-loader-unresolved"
+        );
+        std::fs::remove_dir_all(jar.parent().unwrap()).ok();
+        std::fs::remove_dir_all(plain.parent().unwrap()).ok();
     }
 
     #[test]

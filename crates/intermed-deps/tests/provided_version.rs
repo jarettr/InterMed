@@ -5,7 +5,7 @@
 use std::sync::LazyLock;
 
 use intermed_deps::DependencyRule;
-use intermed_doctor_core::evidence::Severity;
+use intermed_doctor_core::evidence::{Impact, Severity};
 use intermed_doctor_core::facts::{FactStore, kind};
 use intermed_doctor_core::{Rule, RuleCtx, Target, TargetKind};
 
@@ -63,6 +63,44 @@ fn provider_with_out_of_range_version_is_flagged() {
             .iter()
             .any(|f| f.id.starts_with("missing-dependency:"))
     );
+}
+
+#[test]
+fn optional_out_of_range_provider_is_not_described_as_startup_blocking() {
+    let mut store = FactStore::new();
+    store
+        .fact("meta", kind::MOD)
+        .subject("consumer")
+        .attr("version", "1.0.0")
+        .emit();
+    store
+        .fact("meta", kind::DEPENDENCY)
+        .subject("consumer")
+        .attr("dep", "optional-api")
+        .attr("range", ">=5.8.0")
+        .attr("mandatory", false)
+        .attr("relation", "suggests")
+        .emit();
+    store
+        .fact("meta", kind::PROVIDED_DEPENDENCY)
+        .subject("compatibility-mod")
+        .attr("provides", "optional-api")
+        .attr("version", "4.6.1")
+        .emit();
+
+    let findings = DependencyRule.evaluate(&ctx_from(&store)).unwrap();
+    let finding = findings
+        .iter()
+        .find(|finding| finding.id == "provided-version-mismatch:consumer->optional-api")
+        .expect("optional version mismatch should remain reviewable");
+    assert_eq!(finding.severity, Severity::Warn);
+    assert_eq!(finding.proposed_impact, Impact::CompatibilityRisk);
+    assert!(
+        finding
+            .explanation
+            .contains("does not prevent the pack from starting")
+    );
+    assert!(!finding.explanation.contains("consumer requires"));
 }
 
 /// Provider supplies an in-range version → requirement satisfied, stays silent.

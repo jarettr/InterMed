@@ -650,6 +650,33 @@ pub fn pairwise_findings(ctx: &RuleCtx<'_>, rule_id: &str) -> Vec<Finding> {
             RangeStatus::Absent => match provider {
                 ProviderStatus::Satisfied => {}
                 ProviderStatus::Unsatisfied(provider_fact, scope) => {
+                    let (impact, title, explanation, fix) = if mandatory {
+                        (
+                            Impact::StartupBlocking,
+                            format!("Provided {dep_id} does not satisfy {range}"),
+                            format!(
+                                "{modid} requires {dep_id} {range}. {dep_id} is not installed \
+                                 directly; a {scope} provider exists but its version does \
+                                 not satisfy the range."
+                            ),
+                            format!(
+                                "Install {dep_id} at a version matching {range}; the bundled copy is too old/new."
+                            ),
+                        )
+                    } else {
+                        (
+                            Impact::CompatibilityRisk,
+                            format!("Optional {dep_id} integration may not match {range}"),
+                            format!(
+                                "{modid} optionally integrates with {dep_id} {range}. {dep_id} is not \
+                                 installed directly; a {scope} provider exists but its version does not \
+                                 satisfy the optional range. This does not prevent the pack from starting."
+                            ),
+                            format!(
+                                "If this optional integration is needed, install {dep_id} at a version matching {range}."
+                            ),
+                        )
+                    };
                     out.push(
                         Finding::builder(
                             rule_id,
@@ -661,23 +688,21 @@ pub fn pairwise_findings(ctx: &RuleCtx<'_>, rule_id: &str) -> Vec<Finding> {
                         .coverage_requirement(CoverageRequirement::CompleteProviderUniverse)
                         .coverage_requirement(CoverageRequirement::ActiveDescriptor)
                         .proof_kind(ProofKind::DeterministicDerivation)
-                        .impact(Impact::StartupBlocking)
+                        .impact(impact)
                         .evidence_origin(EvidenceOrigin::StaticExact)
-                        .severity(if mandatory { Severity::Error } else { Severity::Warn })
+                        .severity(if mandatory {
+                            Severity::Error
+                        } else {
+                            Severity::Warn
+                        })
                         .category(Category::Dependency)
-                        .title(format!("Provided {dep_id} does not satisfy {range}"))
-                        .explanation(format!(
-                            "{modid} requires {dep_id} {range}. {dep_id} is not installed \
-                             directly; a {scope} provider exists but its version does \
-                             not satisfy the range."
-                        ))
+                        .title(title)
+                        .explanation(explanation)
                         .evidence(EvidenceEdge::subject(dep.id))
                         .evidence(EvidenceEdge::supports(provider_fact))
                         .affects(modid)
                         .affects(dep_id)
-                        .fix(FixCandidate::advice(format!(
-                            "Install {dep_id} at a version matching {range}; the bundled copy is too old/new."
-                        )))
+                        .fix(FixCandidate::advice(fix))
                         .tag("dependency")
                         .tag("version-mismatch")
                         .tag("provided")

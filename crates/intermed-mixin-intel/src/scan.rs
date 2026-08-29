@@ -25,7 +25,7 @@ use crate::refmap::{MappingContext, Namespace, Refmap, TinyMappings, dotted_name
 
 const EXTRACTOR: &str = "mixin-analyzer";
 /// Bump trailing revision when parse / analysis logic changes within a release.
-const CACHE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-r34");
+const CACHE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-r36");
 
 /// Stable collector / fact extractor id (`mixin-analyzer`).
 pub fn extractor_id() -> &'static str {
@@ -98,6 +98,33 @@ pub fn scan_mods_dir_filtered_with_environment(
     minecraft_mappings: Option<&Path>,
     target_minecraft_version: Option<&str>,
 ) -> Result<MixinScan, MixinScanError> {
+    scan_mods_dir_filtered_with_target_environment(
+        dir,
+        cache,
+        scan,
+        mixin,
+        minecraft_jar,
+        minecraft_mappings,
+        target_minecraft_version,
+        None,
+        false,
+    )
+}
+
+/// Environment-aware scan with an authoritative loader family. Loader identity
+/// selects the active descriptor in hybrid JARs and is part of the cache key.
+#[allow(clippy::too_many_arguments)]
+pub fn scan_mods_dir_filtered_with_target_environment(
+    dir: &Path,
+    cache: Option<&JarCache>,
+    scan: &intermed_doctor_core::ScanSettings,
+    mixin: MixinSettings,
+    minecraft_jar: Option<&Path>,
+    minecraft_mappings: Option<&Path>,
+    target_minecraft_version: Option<&str>,
+    target_loader: Option<intermed_doctor_core::Loader>,
+    allow_foreign_configs: bool,
+) -> Result<MixinScan, MixinScanError> {
     if !dir.is_dir() {
         return Err(MixinScanError(format!(
             "mods directory does not exist: {}",
@@ -108,13 +135,20 @@ pub fn scan_mods_dir_filtered_with_environment(
     let jars = intermed_doctor_core::list_jar_archives(dir, scan)
         .map_err(|e| MixinScanError(format!("read {}: {e}", dir.display())))?;
 
+    let cache_version = format!(
+        "{CACHE_VERSION}-loader-{}-foreign-{}",
+        target_loader.map_or("unknown", |loader| loader.as_str()),
+        allow_foreign_configs
+    );
     let results: Vec<_> = jars
         .par_iter()
         .map(|jar| {
             let archive = archive_name(jar);
             let cached = match cache {
-                Some(c) => c.get_or_scan(EXTRACTOR, CACHE_VERSION, jar, || scan_jar_cached(jar)),
-                None => scan_jar_cached(jar),
+                Some(c) => c.get_or_scan(EXTRACTOR, &cache_version, jar, || {
+                    scan_jar_cached(jar, target_loader, allow_foreign_configs)
+                }),
+                None => scan_jar_cached(jar, target_loader, allow_foreign_configs),
             };
             (archive, cached)
         })
@@ -428,8 +462,12 @@ enum CachedMixinJar {
     Err { archive: String, reason: String },
 }
 
-fn scan_jar_cached(jar: &Path) -> CachedMixinJar {
-    match scan_jar(jar) {
+fn scan_jar_cached(
+    jar: &Path,
+    target_loader: Option<intermed_doctor_core::Loader>,
+    allow_foreign_configs: bool,
+) -> CachedMixinJar {
+    match scan_jar(jar, target_loader, allow_foreign_configs) {
         Ok(partial) => CachedMixinJar::Ok(partial),
         Err(e) => CachedMixinJar::Err {
             archive: e.archive,
@@ -443,7 +481,11 @@ struct JarScanError {
     reason: String,
 }
 
-fn scan_jar(jar: &Path) -> Result<JarScanPartial, JarScanError> {
+fn scan_jar(
+    jar: &Path,
+    target_loader: Option<intermed_doctor_core::Loader>,
+    allow_foreign_configs: bool,
+) -> Result<JarScanPartial, JarScanError> {
     let archive_label = archive_name(jar);
     let file = std::fs::File::open(jar).map_err(|e| JarScanError {
         archive: archive_label.clone(),
@@ -453,11 +495,20 @@ fn scan_jar(jar: &Path) -> Result<JarScanPartial, JarScanError> {
         archive: archive_label.clone(),
         reason: format!("zip {}: {e}", jar.display()),
     })?;
-    let mod_id = detect_mod_id(&mut archive).unwrap_or_else(|| archive_stem(&archive_label));
-    let config_paths = discover_mixin_configs(&mut archive);
+    let mod_id =
+        detect_mod_id(&mut archive, target_loader).unwrap_or_else(|| archive_stem(&archive_label));
+    let config_paths = discover_mixin_configs(&mut archive, target_loader, allow_foreign_configs);
     let configs_discovered = config_paths.len();
     let tiny = discover_tiny_mappings(&mut archive);
-    let runtime_namespace = detect_runtime_namespace(&mut archive);
+    let runtime_namespace = match target_loader {
+        Some(intermed_doctor_core::Loader::Fabric | intermed_doctor_core::Loader::Quilt) => {
+            Namespace::Intermediary
+        }
+        Some(intermed_doctor_core::Loader::Forge | intermed_doctor_core::Loader::NeoForge) => {
+            Namespace::Named
+        }
+        _ => detect_runtime_namespace(&mut archive),
+    };
 
     let mut hierarchy = HierarchyIndex::new();
     let mut target_index = crate::apply_failure::TargetClassIndex::new();
@@ -677,7 +728,11 @@ fn discover_tiny_mappings(archive: &mut zip::ZipArchive<std::fs::File>) -> Optio
 /// only a fallback for descriptor-less legacy/coremod jars: when authoritative
 /// loader metadata exists and declares no configs, a leftover `*.mixins.json` is
 /// inactive and must not create facts or incomplete-scan warnings.
-fn discover_mixin_configs(archive: &mut zip::ZipArchive<std::fs::File>) -> Vec<String> {
+fn discover_mixin_configs(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+    target_loader: Option<intermed_doctor_core::Loader>,
+    allow_foreign_configs: bool,
+) -> Vec<String> {
     let mut out = std::collections::BTreeSet::new();
     let fabric = read_zip_text(archive, "fabric.mod.json");
     let quilt = read_zip_text(archive, "quilt.mod.json");
@@ -690,21 +745,74 @@ fn discover_mixin_configs(archive: &mut zip::ZipArchive<std::fs::File>) -> Vec<S
     let neoforge_is_concrete = neoforge.as_deref().is_some_and(toml_descriptor_is_concrete);
     let has_loader_descriptor =
         fabric_is_concrete || quilt_is_concrete || forge_is_concrete || neoforge_is_concrete;
-    if fabric_is_concrete && let Some(text) = fabric {
-        out.extend(mixin_paths_from_json(&text, &["mixins"]));
-    }
-    if quilt_is_concrete && let Some(text) = quilt {
-        out.extend(mixin_paths_from_json(&text, &["quilt_loader", "mixins"]));
-        out.extend(mixin_paths_from_json(&text, &["mixins"]));
-    }
-    if let Some(text) = manifest {
-        out.extend(mixin_paths_from_manifest(&text));
-    }
-    if forge_is_concrete && let Some(text) = forge {
-        out.extend(mixin_paths_from_mods_toml(&text));
-    }
-    if neoforge_is_concrete && let Some(text) = neoforge {
-        out.extend(mixin_paths_from_mods_toml(&text));
+    let compatible_descriptor = match target_loader {
+        Some(intermed_doctor_core::Loader::Fabric) => fabric_is_concrete,
+        Some(intermed_doctor_core::Loader::Quilt) => quilt_is_concrete || fabric_is_concrete,
+        Some(intermed_doctor_core::Loader::Forge) => forge_is_concrete,
+        Some(intermed_doctor_core::Loader::NeoForge) => neoforge_is_concrete || forge_is_concrete,
+        _ => false,
+    };
+
+    if compatible_descriptor {
+        match target_loader {
+            Some(intermed_doctor_core::Loader::Fabric) => {
+                if let Some(text) = fabric {
+                    out.extend(mixin_paths_from_json(&text, &["mixins"]));
+                }
+            }
+            Some(intermed_doctor_core::Loader::Quilt) if quilt_is_concrete => {
+                if let Some(text) = quilt {
+                    out.extend(mixin_paths_from_json(&text, &["quilt_loader", "mixins"]));
+                    out.extend(mixin_paths_from_json(&text, &["mixins"]));
+                }
+            }
+            Some(intermed_doctor_core::Loader::Quilt) => {
+                if let Some(text) = fabric {
+                    out.extend(mixin_paths_from_json(&text, &["mixins"]));
+                }
+            }
+            Some(intermed_doctor_core::Loader::Forge) => {
+                if let Some(text) = manifest {
+                    out.extend(mixin_paths_from_manifest(&text));
+                }
+                if let Some(text) = forge {
+                    out.extend(mixin_paths_from_mods_toml(&text));
+                }
+            }
+            Some(intermed_doctor_core::Loader::NeoForge) => {
+                if let Some(text) = manifest {
+                    out.extend(mixin_paths_from_manifest(&text));
+                }
+                if neoforge_is_concrete {
+                    if let Some(text) = neoforge {
+                        out.extend(mixin_paths_from_mods_toml(&text));
+                    }
+                } else if let Some(text) = forge {
+                    out.extend(mixin_paths_from_mods_toml(&text));
+                }
+            }
+            _ => {}
+        }
+    } else if target_loader.is_some() && has_loader_descriptor && !allow_foreign_configs {
+        // A concrete foreign descriptor is inactive on the authoritative target
+        // loader unless a classloading bridge says it may participate.
+    } else {
+        if fabric_is_concrete && let Some(text) = fabric {
+            out.extend(mixin_paths_from_json(&text, &["mixins"]));
+        }
+        if quilt_is_concrete && let Some(text) = quilt {
+            out.extend(mixin_paths_from_json(&text, &["quilt_loader", "mixins"]));
+            out.extend(mixin_paths_from_json(&text, &["mixins"]));
+        }
+        if let Some(text) = manifest {
+            out.extend(mixin_paths_from_manifest(&text));
+        }
+        if forge_is_concrete && let Some(text) = forge {
+            out.extend(mixin_paths_from_mods_toml(&text));
+        }
+        if neoforge_is_concrete && let Some(text) = neoforge {
+            out.extend(mixin_paths_from_mods_toml(&text));
+        }
     }
     if out.is_empty() && !has_loader_descriptor {
         out.extend(glob_mixin_configs(archive));
@@ -1084,25 +1192,59 @@ fn is_safe_path(path: &str) -> bool {
             .any(|part| part.is_empty() || part == "." || part == "..")
 }
 
-fn detect_mod_id(archive: &mut zip::ZipArchive<std::fs::File>) -> Option<String> {
-    read_zip_text(archive, "fabric.mod.json")
-        .and_then(|text| {
+fn detect_mod_id(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+    target_loader: Option<intermed_doctor_core::Loader>,
+) -> Option<String> {
+    let fabric = |archive: &mut zip::ZipArchive<std::fs::File>| {
+        read_zip_text(archive, "fabric.mod.json").and_then(|text| {
             intermed_doctor_core::fabric_json::parse_value(&text)
                 .ok()
                 .and_then(|v| v.get("id").and_then(|x| x.as_str()).map(str::to_string))
         })
-        .or_else(|| {
-            read_zip_text(archive, "quilt.mod.json").and_then(|text| {
-                intermed_doctor_core::fabric_json::parse_value(&text)
-                    .ok()
-                    .and_then(|v| {
-                        v.get("quilt_loader")
-                            .and_then(|q| q.get("id"))
-                            .and_then(|x| x.as_str())
-                            .map(str::to_string)
-                    })
-            })
+    };
+    let quilt = |archive: &mut zip::ZipArchive<std::fs::File>| {
+        read_zip_text(archive, "quilt.mod.json").and_then(|text| {
+            intermed_doctor_core::fabric_json::parse_value(&text)
+                .ok()
+                .and_then(|v| {
+                    v.get("quilt_loader")
+                        .and_then(|q| q.get("id"))
+                        .and_then(|x| x.as_str())
+                        .map(str::to_string)
+                })
         })
+    };
+    let neoforge = |archive: &mut zip::ZipArchive<std::fs::File>| {
+        read_zip_text(archive, "META-INF/neoforge.mods.toml")
+            .and_then(|text| intermed_resource_identity::mod_id_from_mods_toml(&text))
+    };
+    let forge = |archive: &mut zip::ZipArchive<std::fs::File>| {
+        read_zip_text(archive, "META-INF/mods.toml")
+            .and_then(|text| intermed_resource_identity::mod_id_from_mods_toml(&text))
+    };
+    let legacy = |archive: &mut zip::ZipArchive<std::fs::File>| {
+        read_zip_text(archive, "mcmod.info").and_then(|text| {
+            intermed_doctor_core::legacy_forge::parse_mcmod_info(&text)
+                .ok()
+                .and_then(|mods| mods.into_iter().next().map(|metadata| metadata.mod_id))
+        })
+    };
+    match target_loader {
+        Some(intermed_doctor_core::Loader::Fabric) => fabric(archive).or_else(|| quilt(archive)),
+        Some(intermed_doctor_core::Loader::Quilt) => quilt(archive).or_else(|| fabric(archive)),
+        Some(intermed_doctor_core::Loader::NeoForge) => neoforge(archive)
+            .or_else(|| forge(archive))
+            .or_else(|| legacy(archive)),
+        Some(intermed_doctor_core::Loader::Forge) => forge(archive)
+            .or_else(|| legacy(archive))
+            .or_else(|| neoforge(archive)),
+        _ => fabric(archive)
+            .or_else(|| quilt(archive))
+            .or_else(|| neoforge(archive))
+            .or_else(|| forge(archive))
+            .or_else(|| legacy(archive)),
+    }
 }
 
 /// Bounded manifest/config/refmap text read — the per-entry cap is picked from
@@ -1163,7 +1305,7 @@ mod discovery_tests {
         ]);
         let file = std::fs::File::open(&path).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();
-        assert!(discover_mixin_configs(&mut archive).is_empty());
+        assert!(discover_mixin_configs(&mut archive, None, false).is_empty());
         std::fs::remove_file(path).unwrap();
     }
 
@@ -1176,8 +1318,33 @@ mod discovery_tests {
         let file = std::fs::File::open(&path).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();
         assert_eq!(
-            discover_mixin_configs(&mut archive),
+            discover_mixin_configs(&mut archive, None, false),
             vec!["legacy.mixins.json"]
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn mixin_owner_uses_authoritative_forge_descriptor_not_archive_stem() {
+        let path = discovery_jar(&[
+            (
+                "META-INF/mods.toml",
+                b"modLoader=\"javafml\"\n[[mods]]\nmodId=\"real_forge_id\"\nversion=\"1.0\"\n",
+            ),
+            (
+                "META-INF/neoforge.mods.toml",
+                b"modLoader=\"javafml\"\n[[mods]]\nmodId=\"other_frontend\"\nversion=\"1.0\"\n",
+            ),
+        ]);
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert_eq!(
+            detect_mod_id(&mut archive, Some(intermed_doctor_core::Loader::Forge)).as_deref(),
+            Some("real_forge_id")
+        );
+        assert_eq!(
+            detect_mod_id(&mut archive, Some(intermed_doctor_core::Loader::NeoForge)).as_deref(),
+            Some("other_frontend")
         );
         std::fs::remove_file(path).unwrap();
     }
@@ -1207,7 +1374,11 @@ config="${mod_id}.mixins.json"
         let file = std::fs::File::open(&path).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();
         assert_eq!(
-            discover_mixin_configs(&mut archive),
+            discover_mixin_configs(
+                &mut archive,
+                Some(intermed_doctor_core::Loader::Fabric),
+                false,
+            ),
             vec!["configurable.mixins.json"]
         );
         assert_eq!(
@@ -1240,8 +1411,75 @@ version="1"
         let file = std::fs::File::open(&path).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();
         assert_eq!(
-            discover_mixin_configs(&mut archive),
+            discover_mixin_configs(&mut archive, None, false),
             vec!["local.mixins.json"]
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn authoritative_loader_selects_only_its_descriptor_configs() {
+        let path = discovery_jar(&[
+            (
+                "fabric.mod.json",
+                br#"{"id":"puzzle","mixins":["fabric.mixins.json"]}"#,
+            ),
+            (
+                "META-INF/neoforge.mods.toml",
+                br#"modLoader="javafml"
+[[mods]]
+modId="puzzle"
+version="1"
+[[mixins]]
+config="neoforge.mixins.json"
+"#,
+            ),
+            ("fabric.mixins.json", br#"{"package":"fabric","mixins":[]}"#),
+            (
+                "neoforge.mixins.json",
+                br#"{"package":"neoforge","mixins":["Missing"]}"#,
+            ),
+        ]);
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+
+        assert_eq!(
+            discover_mixin_configs(
+                &mut archive,
+                Some(intermed_doctor_core::Loader::Fabric),
+                false,
+            ),
+            vec!["fabric.mixins.json"]
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn foreign_descriptor_configs_require_a_runtime_bridge() {
+        let path = discovery_jar(&[
+            (
+                "fabric.mod.json",
+                br#"{"id":"bridged","mixins":["fabric.mixins.json"]}"#,
+            ),
+            ("fabric.mixins.json", br#"{"package":"fabric","mixins":[]}"#),
+        ]);
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(
+            discover_mixin_configs(
+                &mut archive,
+                Some(intermed_doctor_core::Loader::NeoForge),
+                false,
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            discover_mixin_configs(
+                &mut archive,
+                Some(intermed_doctor_core::Loader::NeoForge),
+                true,
+            ),
+            vec!["fabric.mixins.json"]
         );
         std::fs::remove_file(path).unwrap();
     }

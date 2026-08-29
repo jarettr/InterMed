@@ -19,15 +19,19 @@ pub fn assess_findings(
         let prior_assessment = finding.assessment.clone();
         let proposed = finding.severity;
         let proof_kind = finding.proof_kind.unwrap_or(ProofKind::Heuristic);
-        let impact = if finding.proposed_impact == Impact::Informational {
-            if prior_assessment.impact != Impact::Informational {
-                prior_assessment.impact
+        let impact =
+            if finding.conclusion_kind == intermed_evidence::ConclusionKind::AnalysisIncomplete {
+                finding.channel = intermed_evidence::FindingChannel::Informational;
+                Impact::Informational
+            } else if finding.proposed_impact == Impact::Informational {
+                if prior_assessment.impact != Impact::Informational {
+                    prior_assessment.impact
+                } else {
+                    default_impact(finding)
+                }
             } else {
-                default_impact(finding)
-            }
-        } else {
-            finding.proposed_impact
-        };
+                finding.proposed_impact
+            };
         let mut assessment = FindingAssessment {
             disposition: AssessmentDisposition::Asserted,
             impact,
@@ -46,11 +50,13 @@ pub fn assess_findings(
             assessment.disposition = AssessmentDisposition::Downgraded;
         }
 
-        if finding.evidence.iter().any(|edge| {
-            store
-                .get(edge.fact)
-                .is_some_and(|fact| fact.kind == kind::SCAN_TRUNCATED)
-        }) {
+        if finding.conclusion_kind != intermed_evidence::ConclusionKind::AnalysisIncomplete
+            && finding.evidence.iter().any(|edge| {
+                store
+                    .get(edge.fact)
+                    .is_some_and(|fact| fact.kind == kind::SCAN_TRUNCATED)
+            })
+        {
             assessment.blockers.push(PrerequisiteFailure {
                 code: "collector-reported-incomplete".to_string(),
                 requirement: CoverageRequirement::LocalArtifact,

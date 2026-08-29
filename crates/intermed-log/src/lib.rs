@@ -41,6 +41,7 @@ pub mod signal {
     pub const NO_CLASS_DEF_FOUND: &str = "NoClassDefFound";
     pub const MOD_LOADING_FAILURE: &str = "ModLoadingFailure";
     pub const MISSING_DEPENDENCY: &str = "MissingDependency";
+    pub const WRONG_GAME_VERSION: &str = "WrongGameVersion";
     pub const OUT_OF_MEMORY: &str = "OutOfMemory";
     pub const STACK_OVERFLOW: &str = "StackOverflow";
     pub const JVM_CRASH: &str = "JvmCrash";
@@ -86,6 +87,12 @@ fn patterns() -> &'static [Pattern] {
             severity: Severity::Error,
             regex: r"ClassNotFoundException",
             title: "Class not found (ClassNotFoundException)",
+        },
+        Pattern {
+            signal: signal::WRONG_GAME_VERSION,
+            severity: Severity::Error,
+            regex: r"(?is)requires minecraft .{0,300}\bCurrently, minecraft is",
+            title: "A mod targets a different Minecraft version",
         },
         Pattern {
             signal: signal::MISSING_DEPENDENCY,
@@ -487,6 +494,7 @@ fn emit_runtime_events(
             .attr("thread", event.thread.clone().unwrap_or_default())
             .attr("level", level)
             .attr("logger", event.logger.clone().unwrap_or_default())
+            .attr("mod_id", event.subject_mod.clone().unwrap_or_default())
             .attr("message", truncate(&event.message, 1000))
             .attr("continuation_count", event.continuation_lines.len() as i64)
             .attr("normalized_fragment", i64::from(event.source_fragment))
@@ -1127,6 +1135,12 @@ impl intermed_doctor_core::Rule for LogSignalRule {
     }
     fn evaluate(&self, ctx: &RuleCtx<'_>) -> Result<Vec<Finding>, intermed_doctor_core::RuleError> {
         let mut out = incident_findings(ctx);
+        // Once a terminal incident has been synthesized, individual regex/log
+        // signals are supporting detail rather than independent conclusions.
+        // Keep them in the machine-readable report and explain view, but do not
+        // let unrelated background events from the same supplied log set inflate
+        // the default "incomplete analysis" or "needs review" surface.
+        let has_primary_incident = !out.is_empty();
         for fact in ctx.store.by_kind(kind::LOG_SIGNAL) {
             let sig = fact.subject.as_str();
             let line = fact
@@ -1175,7 +1189,7 @@ impl intermed_doctor_core::Rule for LogSignalRule {
                     .impact(Impact::RuntimeFailure)
                     .evidence_origin(EvidenceOrigin::ObservedRuntime);
             }
-            if represented_by_incident {
+            if represented_by_incident || has_primary_incident {
                 b = b
                     .visibility(FindingVisibility::ExplainOnly)
                     .tag("incident-detail");
@@ -1298,6 +1312,9 @@ fn incident_findings(ctx: &RuleCtx<'_>) -> Vec<Finding> {
             .tag("exception-chain");
         if let Some(event) = event {
             finding = finding.evidence(EvidenceEdge::supports(event.id));
+            if let Some(mod_id) = event.attr("mod_id").filter(|mod_id| !mod_id.is_empty()) {
+                finding = finding.affects(mod_id);
+            }
         }
         for frame in frames.iter().take(12) {
             finding = finding.evidence(EvidenceEdge::supports(frame.id));
@@ -1445,9 +1462,9 @@ fn crash_blame_findings(ctx: &RuleCtx<'_>) -> Vec<Finding> {
 }
 
 /// Correlate crash-trace mod mentions (`log_mentions_mod`) with the installed mod
-/// set (Layer B `mod` facts). A mod named in a stack trace that is *also*
-/// installed is a strong triage lead ("look at this mod first"); a name with no
-/// matching install is a weaker note (often a missing dependency).
+/// set (Layer B `mod` facts). A mention is context, not attribution: exact frame
+/// ownership and a causal path are handled separately by `crash_blame_findings`
+/// and incident synthesis.
 fn mod_mention_findings(ctx: &RuleCtx<'_>) -> Vec<Finding> {
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -1473,20 +1490,18 @@ fn mod_mention_findings(ctx: &RuleCtx<'_>) -> Vec<Finding> {
         let exception_list = exceptions.into_iter().collect::<Vec<_>>().join(", ");
         let mut b = Finding::builder("log-signal", format!("log-mentions-mod:{mod_id}"))
             .category(Category::Log)
-            .severity(if is_installed {
-                Severity::Warn
-            } else {
-                Severity::Note
-            })
+            .severity(Severity::Note)
+            .confidence(0.45)
             .title(if is_installed {
-                format!("Crash trace implicates installed mod `{mod_id}`")
+                format!("Crash context references installed mod `{mod_id}`")
             } else {
                 format!("Crash trace references mod `{mod_id}`")
             })
             .explanation(if is_installed {
                 format!(
                     "`{mod_id}` is installed and appears in {} crash stack trace(s) ({exception_list}). \
-                     Mods named directly in a trace are the most likely culprits — check this one first.",
+                     This establishes runtime context only; a name without an exact owned causal \
+                     frame does not identify the failing mod.",
                     mentions.len()
                 )
             } else {
@@ -1497,7 +1512,8 @@ fn mod_mention_findings(ctx: &RuleCtx<'_>) -> Vec<Finding> {
             })
             .affects(mod_id.to_string())
             .tag("log")
-            .tag("mod-mention");
+            .tag("mod-mention")
+            .tag("context-only");
         for f in &mentions {
             b = b.evidence(EvidenceEdge::subject(f.id));
         }
@@ -1517,6 +1533,9 @@ fn fix_for(sig: &str) -> Option<FixCandidate> {
         ),
         signal::MIXIN_APPLY_ERROR => FixCandidate::advice(
             "A mixin target changed or two mods conflict; check the named mod's compatibility.",
+        ),
+        signal::WRONG_GAME_VERSION => FixCandidate::advice(
+            "Install the mod build made for the target Minecraft version, or use the Minecraft version required by the mod.",
         ),
         signal::MISSING_DEPENDENCY | signal::MOD_LOADING_FAILURE | signal::NEOFORGE_LOAD_ERROR => {
             FixCandidate::advice("Install the missing/required dependency at a compatible version.")
@@ -1821,6 +1840,78 @@ mod tests {
         assert!(incident.explanation.contains("create"));
         assert!(incident.explanation.contains("createdieselgenerators"));
         assert!(incident.confidence >= 0.98);
+        assert!(
+            findings
+                .iter()
+                .filter(|finding| finding.id.starts_with("log:"))
+                .all(|finding| finding.visibility == FindingVisibility::ExplainOnly),
+            "an incident conclusion must own the default surface; raw log signals are drill-down detail"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn forge_mod_loading_report_names_each_rejected_mod() {
+        use intermed_doctor_core::facts::FactStore;
+        use intermed_doctor_core::{CollectCtx, Collector, Rule, RuleCtx, default_settings};
+
+        let dir = std::env::temp_dir().join(format!("imd-forge-load-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let crash = dir.join("crash-forge.txt");
+        std::fs::write(
+            &crash,
+            "---- Minecraft Crash Report ----\n\
+             java.lang.Exception: Mod Loading has failed\n\
+             \tat net.minecraftforge.logging.CrashReportExtender.dumpModLoadingCrashReport(CrashReportExtender.java:60)\n\n\
+             -- MOD car --\n\
+             Details:\n\
+             \tFailure message: Mod car requires minecraft 1.18.2\n\
+             \t\tCurrently, minecraft is 1.20.1\n\
+             \tMod Version: 1.0.0\n\n\
+             -- MOD framework --\n\
+             Details:\n\
+             \tFailure message: Mod framework requires minecraft below 1.19\n\
+             \t\tCurrently, minecraft is 1.20.1\n",
+        )
+        .unwrap();
+        let target = Target::with_kind(&crash, TargetKind::LogFile);
+        let mut store = FactStore::new();
+        let mut collect = CollectCtx {
+            target: &target,
+            store: &mut store,
+            jar_cache: None,
+            settings: default_settings(),
+        };
+        LogCollector.collect(&mut collect);
+        let findings = LogSignalRule
+            .evaluate(&RuleCtx::for_test(&store, &target))
+            .unwrap();
+        let incidents = findings
+            .iter()
+            .filter(|finding| finding.id.starts_with("incident:"))
+            .collect::<Vec<_>>();
+        assert_eq!(incidents.len(), 2);
+        assert!(incidents.iter().all(|finding| {
+            finding
+                .title
+                .contains("net.minecraftforge.fml.ModLoadingException")
+        }));
+        assert!(
+            incidents
+                .iter()
+                .any(|finding| finding.affected_components == ["car"])
+        );
+        assert!(
+            incidents
+                .iter()
+                .any(|finding| finding.affected_components == ["framework"])
+        );
+        assert!(findings.iter().any(|finding| {
+            finding
+                .machine_tags
+                .iter()
+                .any(|tag| tag == signal::WRONG_GAME_VERSION)
+        }));
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -1909,7 +2000,7 @@ mod tests {
     }
 
     #[test]
-    fn installed_mod_mention_is_warn_uninstalled_is_note() {
+    fn mod_mentions_are_context_not_culprit_attribution() {
         use intermed_doctor_core::RuleCtx;
         use intermed_doctor_core::facts::FactStore;
 
@@ -1947,7 +2038,9 @@ mod tests {
             .iter()
             .find(|f| f.id == "log-mentions-mod:installedmod")
             .expect("installed mention finding");
-        assert_eq!(installed.severity, Severity::Warn);
+        assert_eq!(installed.severity, Severity::Note);
+        assert!(installed.title.contains("context references"));
+        assert!(installed.explanation.contains("does not identify"));
         let ghost = findings
             .iter()
             .find(|f| f.id == "log-mentions-mod:ghostmod")

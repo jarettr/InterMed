@@ -75,6 +75,30 @@ file by content hash, side applicability, and download coordinates. The v1 lock
 reader remains available for coordinate-based legacy corpora; v2 is required for
 full `.mrpack` target verification.
 
+From 0.1.9, SBOM provenance can also consume the exact artifact SHA-256 values
+from `intermed-lab-materialization-v1`. This is an additive interpretation of an
+existing manifest: cached artifact metadata remains content-addressed, while the
+pack-specific provenance credit is recomputed for every target. Both corpus-lock
+v1 and v2 remain readable.
+
+Artifact materialization is atomic and no-clobber under concurrent workers. An
+existing destination is verified rather than opened for writing, so a losing
+worker cannot truncate a hard-linked content-store blob. This changes execution
+semantics but not the materialization schema.
+
+0.1.9 also tightens additive report semantics without changing the v2 shape:
+canonical finding identity includes the typed condition family, so different
+resource conclusions about the same entity cannot share a semantic ID. Runtime
+incident detail remains present but may move to `explain-only` visibility once a
+primary incident owns the default surface. Consumers must continue to use
+`semantic_id` for condition continuity and `occurrence_id` for one physical
+report occurrence rather than treating presentation title or severity as an ID.
+
+Cache budget enforcement now runs during writes and counts both payload and
+fingerprint files. This changes eviction timing, not cache schema; content hash,
+collector version, settings, fact schema, and mapping identity remain the
+validity boundary.
+
 ## Compatibility promise
 
 These formats remain alpha. InterMed preserves the explicitly documented legacy

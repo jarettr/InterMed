@@ -21,6 +21,7 @@ fn write_man_page(path: PathBuf, roff: Vec<u8>) {
 
 fn main() {
     println!("cargo:rerun-if-changed=src/command.rs");
+    println!("cargo:rerun-if-changed=src/command");
     println!("cargo:rerun-if-env-changed=INTERMED_GENERATE_CLI_DOCS");
 
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");

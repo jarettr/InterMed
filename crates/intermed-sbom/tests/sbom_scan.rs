@@ -299,6 +299,45 @@ fn content_cache_does_not_freeze_pack_specific_corpus_trust() {
 }
 
 #[test]
+fn materialization_hash_corroborates_descriptorless_jar_identity() {
+    use sha2::{Digest, Sha256};
+
+    let root = temp_dir("materialization-hash-context");
+    let first = root.join("first");
+    let second = root.join("second");
+    let first_mods = first.join("mods");
+    let second_mods = second.join("mods");
+    std::fs::create_dir_all(&first_mods).unwrap();
+    std::fs::create_dir_all(&second_mods).unwrap();
+    let original = first_mods.join("library.jar");
+    let file = std::fs::File::create(&original).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    zip.start_file("example/Library.class", SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(b"not-real-bytecode").unwrap();
+    zip.finish().unwrap();
+    std::fs::copy(&original, second_mods.join("library.jar")).unwrap();
+    let sha256 = format!("{:x}", Sha256::digest(std::fs::read(&original).unwrap()));
+    std::fs::write(
+        second.join("intermed-materialization.json"),
+        format!(
+            r#"{{"schema":"intermed-lab-materialization-v1","artifacts":[{{"sha256":"{sha256}"}}]}}"#
+        ),
+    )
+    .unwrap();
+    let cache = JarCache::new(true, Some(root.join("cache"))).unwrap();
+
+    let without_manifest = scan_mods_dir_with_cache(&first_mods, Some(&cache)).unwrap();
+    let with_manifest = scan_mods_dir_with_cache(&second_mods, Some(&cache)).unwrap();
+
+    assert!(!without_manifest.records[0].in_corpus_lock);
+    assert!(with_manifest.records[0].in_corpus_lock);
+    assert_eq!(with_manifest.records[0].trust_breakdown.corpus_lock, 7);
+    assert!(cache.stats().hits >= 1);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn scan_records_forge_mods_toml_identity() {
     let root = temp_dir("forge");
     let mods = root.join("mods");

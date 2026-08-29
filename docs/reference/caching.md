@@ -43,6 +43,14 @@ The cache prunes itself, by age and by size:
 | Prune interval | every 1 day | (config `cache.prune_interval_days`) |
 | Fingerprint hint age | 30 days | (config `cache.fingerprint_reverify_days`; content is still hashed on every lookup) |
 
+The size budget is enforced while payloads and fingerprint hints are written,
+not only when the cache is opened. If an existing cache is already over budget,
+a recent maintenance marker does not suppress size pruning. Eviction targets a
+small low-water margin so a protected or concurrently changing cache does not
+rescan the whole directory after every write. The configured limit covers the
+logical byte size of cache files; filesystem block usage can be higher when the
+cache contains many small files.
+
 Force maintenance by hand:
 
 ```bash

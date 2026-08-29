@@ -149,7 +149,6 @@ pub fn lock_modrinth_manifest(path: &Path, out: &Path) -> Result<CorpusLock, Lab
 
 fn read_override_files(path: &Path) -> Result<Vec<LockedPackFile>, LabError> {
     const MAX_ENTRIES: usize = 100_000;
-    const MAX_ENTRY_BYTES: u64 = 128 * 1024 * 1024;
     const MAX_TOTAL_BYTES: u64 = 4 * 1024 * 1024 * 1024;
     if path.extension().and_then(|value| value.to_str()) != Some("mrpack") {
         return Ok(Vec::new());
@@ -180,24 +179,16 @@ fn read_override_files(path: &Path) -> Result<Vec<LockedPackFile>, LabError> {
         let client_required = matches!(prefix, "client-overrides" | "overrides");
         let server_required = prefix == "overrides";
         validate_relative_path(relative)?;
-        if entry.size() > MAX_ENTRY_BYTES {
-            return Err(LabError::new(format!(
-                "mrpack override `{}` exceeds the per-entry budget",
-                entry.name()
-            )));
-        }
-        total = total
-            .checked_add(entry.size())
-            .ok_or_else(|| LabError::new("mrpack override byte count overflow"))?;
-        if total > MAX_TOTAL_BYTES {
-            return Err(LabError::new(
-                "mrpack overrides exceed the total byte budget",
-            ));
-        }
+        // Overrides may legitimately be large resource/audio packs. Hash them
+        // as a stream instead of conflating entry size with peak memory. The
+        // cumulative uncompressed budget still bounds total work. Some
+        // ecosystem ZIP writers put a stale size in the central directory
+        // while retaining a valid deflate stream and CRC, so entry.size()
+        // cannot be treated as content identity or as the authoritative
+        // budget counter. Charge bytes as the decoder actually produces them.
         let mut sha256 = Sha256::new();
         let mut sha512 = sha2::Sha512::new();
         let mut buffer = [0u8; 128 * 1024];
-        let mut read_total = 0u64;
         loop {
             let read = entry
                 .read(&mut buffer)
@@ -205,11 +196,13 @@ fn read_override_files(path: &Path) -> Result<Vec<LockedPackFile>, LabError> {
             if read == 0 {
                 break;
             }
-            read_total += read as u64;
-            if read_total > MAX_ENTRY_BYTES {
-                return Err(LabError::new(format!(
-                    "mrpack override `{relative}` exceeded its declared/bounded size"
-                )));
+            total = total
+                .checked_add(read as u64)
+                .ok_or_else(|| LabError::new("mrpack override byte count overflow"))?;
+            if total > MAX_TOTAL_BYTES {
+                return Err(LabError::new(
+                    "mrpack overrides exceed the total byte budget",
+                ));
             }
             sha256.update(&buffer[..read]);
             sha512.update(&buffer[..read]);
@@ -277,6 +270,7 @@ fn validate_relative_path(value: &str) -> Result<(), LabError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn rejects_parent_traversal() {
@@ -284,5 +278,100 @@ mod tests {
         assert!(validate_relative_path("./mods/good.jar").is_err());
         assert!(validate_relative_path("mods\\..\\escape.jar").is_err());
         assert!(validate_relative_path("mods/good.jar").is_ok());
+    }
+
+    #[test]
+    fn large_override_is_streamed_instead_of_rejected_by_entry_size() {
+        let path = std::env::temp_dir().join(format!(
+            "intermed-large-override-{}-{}.mrpack",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let file = std::fs::File::create(&path).expect("create mrpack");
+        let mut archive = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        archive
+            .start_file("modrinth.index.json", options)
+            .expect("start manifest");
+        archive
+            .write_all(
+                br#"{"formatVersion":1,"game":"minecraft","name":"large override","versionId":"1","dependencies":{"minecraft":"1.20.1","fabric-loader":"0.16.0"},"files":[]}"#,
+            )
+            .expect("write manifest");
+        archive
+            .start_file("overrides/resourcepacks/large.zip", options)
+            .expect("start override");
+        let zeroes = [0_u8; 128 * 1024];
+        // Exceeds the former 128 MiB per-entry cap while retaining a tiny
+        // compressed fixture and constant peak memory.
+        for _ in 0..=1024 {
+            archive.write_all(&zeroes).expect("write override chunk");
+        }
+        archive.finish().expect("finish mrpack");
+
+        let files = read_override_files(&path).expect("large override should be accepted");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "resourcepacks/large.zip");
+        assert!(files[0].sha256.is_some());
+        assert!(files[0].sha512.is_some());
+        std::fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn stale_central_directory_size_does_not_reject_valid_override_stream() {
+        let path = std::env::temp_dir().join(format!(
+            "intermed-stale-zip-size-{}-{}.mrpack",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let file = std::fs::File::create(&path).expect("create mrpack");
+        let mut archive = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        archive
+            .start_file("modrinth.index.json", options)
+            .expect("start manifest");
+        archive
+            .write_all(
+                br#"{"formatVersion":1,"game":"minecraft","name":"stale size","versionId":"1","dependencies":{"minecraft":"1.20.1","fabric-loader":"0.16.0"},"files":[]}"#,
+            )
+            .expect("write manifest");
+        archive
+            .start_file("overrides/mods/example.jar", options)
+            .expect("start override");
+        archive
+            .write_all(&vec![0x5a; 128 * 1024])
+            .expect("write override");
+        archive.finish().expect("finish mrpack");
+
+        // Reproduce a real Modrinth archive whose central-directory
+        // uncompressed size is stale while the local stream and CRC remain
+        // valid. The decoder can recover the complete entry.
+        let mut bytes = std::fs::read(&path).expect("read mrpack");
+        let signature = [0x50, 0x4b, 0x01, 0x02];
+        let mut patched = false;
+        for offset in 0..bytes.len().saturating_sub(46) {
+            if bytes[offset..offset + 4] != signature {
+                continue;
+            }
+            let name_len = u16::from_le_bytes([bytes[offset + 28], bytes[offset + 29]]) as usize;
+            let name_start = offset + 46;
+            let name_end = name_start + name_len;
+            if name_end <= bytes.len()
+                && &bytes[name_start..name_end] == b"overrides/mods/example.jar"
+            {
+                bytes[offset + 24..offset + 28].copy_from_slice(&1_u32.to_le_bytes());
+                patched = true;
+                break;
+            }
+        }
+        assert!(patched, "override central-directory entry must be found");
+        std::fs::write(&path, bytes).expect("patch mrpack");
+
+        let files = read_override_files(&path).expect("valid decoded stream should win");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "mods/example.jar");
+        std::fs::remove_file(path).expect("remove fixture");
     }
 }

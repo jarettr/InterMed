@@ -31,8 +31,30 @@ const EXTRACTOR: &str = "sbom-generator";
 /// Cache key version for this collector's payload. The crate version invalidates
 /// the cache automatically on every release; bump the trailing revision when the
 /// scan logic changes within a single release.
-const CACHE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-r11");
-const CORPUS_LOCK_SCHEMA: &str = "intermed-corpus-lock-v1";
+const CACHE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-r12");
+const CORPUS_LOCK_SCHEMA_V1: &str = "intermed-corpus-lock-v1";
+const CORPUS_LOCK_SCHEMA_V2: &str = "intermed-corpus-lock-v2";
+const MATERIALIZATION_SCHEMA_V1: &str = "intermed-lab-materialization-v1";
+
+#[derive(Debug, Default)]
+struct CorpusProvenance {
+    mod_ids: BTreeSet<String>,
+    artifact_sha256: BTreeSet<String>,
+}
+
+impl CorpusProvenance {
+    fn contains(&self, record: &JarSbomRecord) -> bool {
+        self.artifact_sha256.contains(&record.sha256)
+            || record
+                .mod_id
+                .as_ref()
+                .is_some_and(|id| self.mod_ids.contains(id))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.mod_ids.is_empty() && self.artifact_sha256.is_empty()
+    }
+}
 
 /// Implementation status for help text.
 pub const STATUS: &str = "active: Phase 6";
@@ -306,8 +328,13 @@ impl Collector for SbomCollector {
             .as_ref()
             .and_then(|p| p.parent())
             .or_else(|| ctx.target.path.parent());
-        let corpus_ids = load_corpus_mod_ids(instance_root);
-        match scan_mods_dir_inner(&dir, ctx.jar_cache, &ctx.settings.scan, corpus_ids.as_ref()) {
+        let corpus_provenance = load_corpus_provenance(instance_root);
+        match scan_mods_dir_inner(
+            &dir,
+            ctx.jar_cache,
+            &ctx.settings.scan,
+            corpus_provenance.as_ref(),
+        ) {
             Ok(scan) => {
                 let emitted = emit_scan(ctx, &scan);
                 let outcome = if scan.failures.is_empty() {
@@ -701,12 +728,12 @@ pub fn scan_mods_dir_with_cache(
     dir: &Path,
     cache: Option<&JarCache>,
 ) -> Result<SbomScan, SbomScanError> {
-    let corpus_ids = load_corpus_mod_ids(dir.parent());
+    let corpus_provenance = load_corpus_provenance(dir.parent());
     scan_mods_dir_inner(
         dir,
         cache,
         &intermed_doctor_core::ScanSettings::default(),
-        corpus_ids.as_ref(),
+        corpus_provenance.as_ref(),
     )
 }
 
@@ -716,15 +743,15 @@ pub fn scan_mods_dir_filtered(
     cache: Option<&JarCache>,
     scan: &intermed_doctor_core::ScanSettings,
 ) -> Result<SbomScan, SbomScanError> {
-    let corpus_ids = load_corpus_mod_ids(dir.parent());
-    scan_mods_dir_inner(dir, cache, scan, corpus_ids.as_ref())
+    let corpus_provenance = load_corpus_provenance(dir.parent());
+    scan_mods_dir_inner(dir, cache, scan, corpus_provenance.as_ref())
 }
 
 fn scan_mods_dir_inner(
     dir: &Path,
     cache: Option<&JarCache>,
     scan: &intermed_doctor_core::ScanSettings,
-    corpus_mod_ids: Option<&BTreeSet<String>>,
+    corpus_provenance: Option<&CorpusProvenance>,
 ) -> Result<SbomScan, SbomScanError> {
     if !dir.is_dir() {
         return Err(SbomScanError(format!(
@@ -758,10 +785,7 @@ fn scan_mods_dir_inner(
                 // The payload is shared by content hash; the locator is specific
                 // to the current pack and must not leak from the first cache fill.
                 record.archive = archive;
-                record.in_corpus_lock = record
-                    .mod_id
-                    .as_ref()
-                    .is_some_and(|id| corpus_mod_ids.is_some_and(|set| set.contains(id)));
+                record.in_corpus_lock = corpus_provenance.is_some_and(|p| p.contains(&record));
                 record.trust_breakdown.corpus_lock = if record.in_corpus_lock { 7 } else { 0 };
                 record.trust_score = record.trust_breakdown.total();
                 records.push(record);
@@ -784,7 +808,7 @@ enum CachedSbomJar {
 }
 
 fn scan_jar_cached(jar: &Path) -> CachedSbomJar {
-    match scan_jar(jar, None) {
+    match scan_jar(jar) {
         Ok(record) => CachedSbomJar::Ok(record),
         Err(e) => CachedSbomJar::Err(e.to_string()),
     }
@@ -797,10 +821,7 @@ fn file_name_of(path: &Path) -> String {
         .to_string()
 }
 
-fn scan_jar(
-    jar: &Path,
-    corpus_mod_ids: Option<&BTreeSet<String>>,
-) -> Result<JarSbomRecord, SbomScanError> {
+fn scan_jar(jar: &Path) -> Result<JarSbomRecord, SbomScanError> {
     let archive = file_name_of(jar);
 
     let sha256 = sha256_file(jar)?;
@@ -814,10 +835,9 @@ fn scan_jar(
     let signature_strength = jar_signature_strength(&mut zip);
     let (signature_verification, signature_detail) = verify_jar_signature(jar, signature_strength);
     let signed = signature_verification == SignatureVerification::Verified;
-    let in_corpus_lock = identity
-        .mod_id
-        .as_ref()
-        .is_some_and(|id| corpus_mod_ids.is_some_and(|set| set.contains(id)));
+    // Corpus/materialization provenance is pack-specific and therefore applied
+    // after the content-addressed cache lookup in `scan_mods_dir_inner`.
+    let in_corpus_lock = false;
     let source_class = SourceClass::of(&identity);
     let trust_breakdown = compute_trust_score(&identity, signature_verification, in_corpus_lock);
     let trust_score = trust_breakdown.total();
@@ -1316,25 +1336,62 @@ fn platform_from_json(v: &serde_json::Value) -> Option<DistributionPlatform> {
     None
 }
 
-/// Load mod project ids pinned by a sibling `corpus.lock` (lab popular-pack list).
-fn load_corpus_mod_ids(instance_root: Option<&Path>) -> Option<BTreeSet<String>> {
+/// Load pack-specific identity evidence.  A project id from either corpus-lock
+/// schema can corroborate a descriptor identity, while a materialization hash
+/// can corroborate even descriptorless embedded/library jars exactly.  This
+/// context is deliberately kept outside the content-addressed SBOM cache.
+fn load_corpus_provenance(instance_root: Option<&Path>) -> Option<CorpusProvenance> {
     let root = instance_root?;
-    let lock_path = root.join("corpus.lock");
-    let text = std::fs::read_to_string(&lock_path).ok()?;
+    let mut provenance = CorpusProvenance::default();
+
     #[derive(Deserialize)]
     struct LockFile {
         schema: String,
+        #[serde(default)]
         mods: Vec<LockedModEntry>,
     }
     #[derive(Deserialize)]
     struct LockedModEntry {
         project_id: String,
     }
-    let lock: LockFile = serde_json::from_str(&text).ok()?;
-    if lock.schema != CORPUS_LOCK_SCHEMA {
-        return None;
+
+    if let Ok(text) = std::fs::read_to_string(root.join("corpus.lock"))
+        && let Ok(lock) = serde_json::from_str::<LockFile>(&text)
+        && matches!(
+            lock.schema.as_str(),
+            CORPUS_LOCK_SCHEMA_V1 | CORPUS_LOCK_SCHEMA_V2
+        )
+    {
+        provenance
+            .mod_ids
+            .extend(lock.mods.into_iter().map(|m| m.project_id));
     }
-    Some(lock.mods.into_iter().map(|m| m.project_id).collect())
+
+    #[derive(Deserialize)]
+    struct Materialization {
+        schema: String,
+        #[serde(default)]
+        artifacts: Vec<MaterializedArtifact>,
+    }
+    #[derive(Deserialize)]
+    struct MaterializedArtifact {
+        sha256: String,
+    }
+
+    if let Ok(text) = std::fs::read_to_string(root.join("intermed-materialization.json"))
+        && let Ok(materialization) = serde_json::from_str::<Materialization>(&text)
+        && materialization.schema == MATERIALIZATION_SCHEMA_V1
+    {
+        provenance.artifact_sha256.extend(
+            materialization
+                .artifacts
+                .into_iter()
+                .map(|a| a.sha256.to_ascii_lowercase())
+                .filter(|hash| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())),
+        );
+    }
+
+    (!provenance.is_empty()).then_some(provenance)
 }
 
 /// Heuristic identifiability score in `0..=100`, **not** a safety or malware
@@ -1353,7 +1410,7 @@ fn load_corpus_mod_ids(instance_root: Option<&Path>) -> Option<BTreeSet<String>>
 /// | `loader` declared              |     10 | Confirms the ecosystem (fabric/forge/…).    |
 /// | Platform listed (Modrinth/CF)  |      8 | explicit distribution metadata.               |
 /// | Contact / homepage present     |      5 | author-linked provenance.                   |
-/// | In sibling `corpus.lock`       |      7 | pinned by a popular-pack lab corpus.        |
+/// | Verified pack materialization  |      7 | pinned by corpus identity or exact hash.    |
 /// | Cryptographically verified JAR |     10 | signature and signed entry digests verified.|
 ///
 /// So a fully-described, platform-listed, verified mod can reach `100`; a bare

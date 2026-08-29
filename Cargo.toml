@@ -13,7 +13,7 @@ members = [
     "crates/intermed-rules",
     "crates/intermed-cli",
     # ── Domain and execution layers ────────────────────────────────────────
-    "crates/intermed-resource-identity",# Canonical resource identity (Layer E + M)
+    "crates/intermed-resource-identity", # Canonical resource identity (Layer E + M)
     "crates/intermed-vfs",              # Layer E  — virtual resource filesystem
     "crates/intermed-resource-ast",     # Layer M  — resource/data semantics (AST)
     "crates/intermed-packops",          # Layer E  — transactional pack operations
@@ -29,7 +29,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.8-alpha"
+version = "0.1.9-alpha"
 edition = "2024"
 rust-version = "1.94"
 license = "MIT"

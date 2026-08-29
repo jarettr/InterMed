@@ -123,6 +123,7 @@ Flags: `--mixin-level`, `--mixin-handler-effects`, `--mixin-recommendations`.
 |-----|---------|---------|
 | `level` | `semantic` | `basic`, `semantic`, or `full`. |
 | `max_json_bytes` | 1048576 | Largest JSON resource parsed (1 MiB). |
+| `max_lang_json_bytes` | 4194304 | Largest language JSON catalog parsed (4 MiB). |
 | `max_ast_facts_per_resource` | 256 | Cap on facts emitted per resource. |
 
 Flag: `--resource-level`.

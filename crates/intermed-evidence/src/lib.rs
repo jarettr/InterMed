@@ -217,6 +217,10 @@ pub enum ConclusionKind {
     DependencyUnused,
     StaticResourceState,
     RuntimeIncident,
+    /// Exact observation that an analyzer scope was truncated or unavailable.
+    /// This conclusion remains asserted; it gates conclusions that depend on
+    /// the missing coverage rather than abstaining from its own observation.
+    AnalysisIncomplete,
     #[default]
     Generic,
 }

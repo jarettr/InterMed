@@ -194,7 +194,29 @@ impl Collector for MixinCollector {
             .store
             .by_kind(intermed_doctor_core::facts::kind::ENVIRONMENT)
             .find_map(|fact| fact.attr("mc_version"));
-        match scan::scan_mods_dir_filtered_with_environment(
+        let target_loader = ctx
+            .store
+            .by_kind(intermed_doctor_core::facts::kind::ENVIRONMENT)
+            .find_map(|fact| fact.attr("loader"))
+            .and_then(intermed_doctor_core::Loader::parse);
+        let allow_foreign_configs = ctx
+            .store
+            .by_kind(intermed_doctor_core::facts::kind::COMPATIBILITY_BRIDGE)
+            .any(|bridge| {
+                bridge.attr("scope") == Some("mod-runtime")
+                    && target_loader.is_some_and(|loader| {
+                        bridge.attr("to_loader").is_some_and(|target| {
+                            target == loader.as_str()
+                                || (target == "forge-family"
+                                    && matches!(
+                                        loader,
+                                        intermed_doctor_core::Loader::Forge
+                                            | intermed_doctor_core::Loader::NeoForge
+                                    ))
+                        })
+                    })
+            });
+        match scan::scan_mods_dir_filtered_with_target_environment(
             &dir,
             ctx.jar_cache,
             &ctx.settings.scan,
@@ -202,6 +224,8 @@ impl Collector for MixinCollector {
             ctx.settings.minecraft_jar.as_deref(),
             ctx.settings.minecraft_mappings.as_deref(),
             target_minecraft_version,
+            target_loader,
+            allow_foreign_configs,
         ) {
             Ok(scan) => {
                 let emitted = emit_scan(ctx, &scan);

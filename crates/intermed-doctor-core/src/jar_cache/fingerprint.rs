@@ -84,11 +84,14 @@ impl<'a> FingerprintManager<'a> {
         mtime_nanos: u32,
         size_bytes: u64,
         sha256: &str,
-    ) -> io::Result<()> {
+    ) -> io::Result<(u64, u64)> {
         let _guard = self.write_locks[shard_index(sha256)]
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let path = self.path(collector_id, jar);
+        let old_size = fs::metadata(&path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
 
         // Skip the write when the on-disk fingerprint already matches: a clean
         // fast-hit run must not rewrite an unchanged sidecar every time.
@@ -98,7 +101,7 @@ impl<'a> FingerprintManager<'a> {
             && existing.size_bytes == size_bytes
             && existing.sha256 == sha256
         {
-            return Ok(());
+            return Ok((old_size, old_size));
         }
 
         if let Some(parent) = path.parent() {
@@ -115,7 +118,7 @@ impl<'a> FingerprintManager<'a> {
         };
         let text = serde_json::to_string(&record)?;
         write_atomic(&path, text.as_bytes())?;
-        Ok(())
+        Ok((text.len() as u64, old_size))
     }
 
     /// Resolve the current content SHA-256, returning `(sha256, hint_matched)`.

@@ -148,6 +148,9 @@ pub struct ResourceSettings {
     pub level: ResourceAstLevel,
     /// Skip resources whose raw bytes exceed this (DoS guard on JSON parsing).
     pub max_json_bytes: u64,
+    /// Language catalogs are legitimately larger than most structured game
+    /// data; keep a separate bounded cap rather than weakening every domain.
+    pub max_lang_json_bytes: u64,
     /// Cap on facts emitted per resource (references are truncated past this).
     pub max_ast_facts_per_resource: usize,
 }
@@ -157,6 +160,7 @@ impl Default for ResourceSettings {
         Self {
             level: ResourceAstLevel::default(),
             max_json_bytes: 1_048_576,
+            max_lang_json_bytes: 4 * 1_048_576,
             max_ast_facts_per_resource: 256,
         }
     }

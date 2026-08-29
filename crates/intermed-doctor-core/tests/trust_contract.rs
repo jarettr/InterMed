@@ -1,8 +1,8 @@
 use intermed_doctor_core::TargetCapabilities;
 use intermed_doctor_core::assessment::assess_findings;
 use intermed_doctor_core::evidence::{
-    AssessmentDisposition, Category, CoverageGap, CoverageRequirement, CoverageState, EvidenceEdge,
-    Finding, ProofKind, Severity,
+    AssessmentDisposition, Category, ConclusionKind, CoverageGap, CoverageRequirement,
+    CoverageState, EvidenceEdge, Finding, FindingChannel, Impact, ProofKind, Severity,
 };
 use intermed_doctor_core::facts::{FactStore, kind};
 
@@ -15,6 +15,7 @@ fn complete_capabilities() -> TargetCapabilities {
         mod_classpath: CoverageState::Complete,
         minecraft_classpath: CoverageState::Complete,
         loader_classpath: CoverageState::Complete,
+        bridge_semantics: CoverageState::Complete,
         mappings: CoverageState::Complete,
         logs: CoverageState::Complete,
         configs: CoverageState::Complete,
@@ -196,4 +197,32 @@ fn fatal_without_terminal_runtime_is_capped_to_error() {
             .iter()
             .any(|adjustment| adjustment.code == "fatal-requires-terminal-runtime")
     );
+}
+
+#[test]
+fn incomplete_scan_observation_is_asserted_while_gating_dependants() {
+    let mut store = FactStore::new();
+    let truncation = store
+        .fact("trust-corpus", kind::SCAN_TRUNCATED)
+        .subject("example.jar")
+        .attr("layer", "mixin")
+        .attr("reason", "class budget exhausted")
+        .emit();
+    let finding = Finding::builder("scan-incomplete", "scan-incomplete:mixin:example.jar")
+        .severity(Severity::Warn)
+        .category(Category::Runtime)
+        .conclusion_kind(ConclusionKind::AnalysisIncomplete)
+        .proof_kind(ProofKind::Observation)
+        .coverage_requirement(CoverageRequirement::LocalArtifact)
+        .evidence(EvidenceEdge::subject(truncation))
+        .build();
+    let mut findings = vec![finding];
+    assess_findings(&store, &complete_capabilities(), &mut findings, false);
+    assert_eq!(
+        findings[0].assessment.disposition,
+        AssessmentDisposition::Asserted
+    );
+    assert_eq!(findings[0].assessment.impact, Impact::Informational);
+    assert_eq!(findings[0].channel, FindingChannel::Informational);
+    assert!(findings[0].assessment.blockers.is_empty());
 }

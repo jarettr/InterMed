@@ -6,14 +6,16 @@
 //! [`JarCache`](intermed_doctor_core::JarCache) by the collector:
 //!
 //! ```ignore
-//! cache.get_or_scan(EXTRACTOR, &cache_version(level), jar, || scan_jar(jar, level, max));
+//! cache.get_or_scan(EXTRACTOR, &cache_version(level, max, max_lang), jar, || {
+//!     scan_jar(jar, level, max, max_lang)
+//! });
 //! ```
 //!
 //! [`JarAstScan`] is the serialisable payload the shared cache stores; the cache
 //! *key version* ([`cache_version`]) folds the crate version, the combined
-//! [`parser_version`](crate::parser_version), and the resource level, so any
-//! parser or level change invalidates entries without touching unrelated jars and
-//! a `full` scan never reuses a `semantic` entry.
+//! [`parser_version`](crate::parser_version), resource level, and byte bounds,
+//! so parser/settings changes invalidate entries without touching unrelated jars
+//! and a `full` scan never reuses a `semantic` entry.
 //!
 //! The payload is the **compact** AST summary set — never raw JSON. Backpressure
 //! (Stage 3): bytes are read, parsed, summarised, then dropped; only summaries
@@ -67,9 +69,13 @@ pub const EXTRACTOR: &str = crate::semantic::facts::EXTRACTOR;
 /// of that it folds the combined [`parser_version`] and the resource level, since
 /// both change *what* is parsed and so must invalidate the cached payload.
 #[must_use]
-pub fn cache_version(level: ResourceLevel) -> String {
+pub fn cache_version(
+    level: ResourceLevel,
+    max_json_bytes: u64,
+    max_lang_json_bytes: u64,
+) -> String {
     format!(
-        "{}|{}|{}|{}",
+        "{}|{}|{}|{}|json={max_json_bytes}|lang={max_lang_json_bytes}",
         env!("CARGO_PKG_VERSION"),
         RESOURCE_AST_CACHE_SCHEMA,
         parser_version(),
@@ -80,7 +86,12 @@ pub fn cache_version(level: ResourceLevel) -> String {
 /// Scan one jar into its compact AST payload. Never panics: a bad jar becomes
 /// [`JarAstScan::Err`], a bad resource becomes an `Invalid` AST.
 #[must_use]
-pub fn scan_jar(jar: &Path, level: ResourceLevel, max_json_bytes: u64) -> JarAstScan {
+pub fn scan_jar(
+    jar: &Path,
+    level: ResourceLevel,
+    max_json_bytes: u64,
+    max_lang_json_bytes: u64,
+) -> JarAstScan {
     let file = match std::fs::File::open(jar) {
         Ok(f) => f,
         Err(e) => return JarAstScan::Err(format!("open {}: {e}", jar.display())),
@@ -132,9 +143,19 @@ pub fn scan_jar(jar: &Path, level: ResourceLevel, max_json_bytes: u64) -> JarAst
         if !domain.parsed_at(level) {
             continue;
         }
-        if entry.size() > max_json_bytes {
+        let entry_cap = if domain == crate::model::ResourceDomain::Lang {
+            max_lang_json_bytes
+        } else {
+            max_json_bytes
+        };
+        if entry.size() > entry_cap {
             truncations.push(format!(
-                "{path}: {} bytes exceeds {max_json_bytes} byte JSON cap, skipped",
+                "{path}: {} bytes exceeds {entry_cap} byte {} cap, skipped",
+                if domain == crate::model::ResourceDomain::Lang {
+                    "language JSON"
+                } else {
+                    "JSON"
+                },
                 entry.size()
             ));
             continue;
@@ -147,16 +168,23 @@ pub fn scan_jar(jar: &Path, level: ResourceLevel, max_json_bytes: u64) -> JarAst
         }
 
         let mut bytes = Vec::new();
-        let read_cap = max_json_bytes.saturating_add(1);
+        let remaining_total = MAX_TOTAL_PARSED_BYTES - total_parsed;
+        let read_cap = entry_cap.min(remaining_total).saturating_add(1);
         if let Err(e) = Read::take(&mut entry, read_cap).read_to_end(&mut bytes) {
             truncations.push(format!("{path}: read error: {e}"));
             continue;
         }
-        if bytes.len() as u64 > max_json_bytes {
+        if bytes.len() as u64 > entry_cap {
             truncations.push(format!(
-                "{path}: decompressed past {max_json_bytes} byte cap, skipped"
+                "{path}: decompressed past {entry_cap} byte cap, skipped"
             ));
             continue;
+        }
+        if bytes.len() as u64 > remaining_total {
+            truncations.push(format!(
+                "{path}: would exceed {MAX_TOTAL_PARSED_BYTES} byte total parse cap; remaining resources skipped"
+            ));
+            break;
         }
         total_parsed = total_parsed.saturating_add(bytes.len() as u64);
 
@@ -242,7 +270,9 @@ fn read_zip_text(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Op
 
 #[cfg(test)]
 mod writer_identity_tests {
-    use super::descriptor_writer_id;
+    use super::{JarAstScan, cache_version, descriptor_writer_id, scan_jar};
+    use crate::model::ResourceLevel;
+    use std::io::Write;
 
     #[test]
     fn fabric_gson_control_characters_do_not_split_layer_identity() {
@@ -260,5 +290,48 @@ mod writer_identity_tests {
             descriptor_writer_id(metadata, true).as_deref(),
             Some("quilt_mod")
         );
+    }
+
+    #[test]
+    fn legitimate_large_language_catalog_uses_its_separate_bound() {
+        let path = std::env::temp_dir().join(format!(
+            "intermed-large-lang-{}-{}.jar",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let file = std::fs::File::create(&path).expect("create jar");
+        let mut archive = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        archive
+            .start_file("assets/example/lang/en_us.json", options)
+            .expect("start language catalog");
+        let value = "x".repeat(2 * 1024 * 1024);
+        write!(archive, "{{\"example.key\":\"{value}\"}}").expect("write language catalog");
+        archive.finish().expect("finish jar");
+
+        let JarAstScan::Ok(accepted) =
+            scan_jar(&path, ResourceLevel::Semantic, 1024 * 1024, 4 * 1024 * 1024)
+        else {
+            panic!("fixture jar should be readable");
+        };
+        assert_eq!(accepted.asts.len(), 1);
+        assert!(accepted.truncations.is_empty());
+
+        let JarAstScan::Ok(truncated) =
+            scan_jar(&path, ResourceLevel::Semantic, 1024 * 1024, 1024 * 1024)
+        else {
+            panic!("fixture jar should be readable");
+        };
+        assert!(truncated.asts.is_empty());
+        assert_eq!(truncated.truncations.len(), 1);
+        std::fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn resource_cache_identity_includes_every_parse_bound() {
+        let baseline = cache_version(ResourceLevel::Semantic, 1024, 4096);
+        assert_ne!(baseline, cache_version(ResourceLevel::Semantic, 2048, 4096));
+        assert_ne!(baseline, cache_version(ResourceLevel::Semantic, 1024, 8192));
     }
 }

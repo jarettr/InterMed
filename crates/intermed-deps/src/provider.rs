@@ -49,6 +49,12 @@ pub fn build_provider(graph: &ModpackGraph) -> Result<ModpackProvider, ProviderE
             .insert(parsed, package.version.clone());
     }
 
+    let unknown_provider_ids = graph
+        .provides
+        .iter()
+        .filter(|alias| alias.provider_version.is_none())
+        .map(|alias| alias.alias_id.clone())
+        .collect::<HashSet<_>>();
     for alias in &graph.provides {
         // A real installed package owns its id. Otherwise retain *every*
         // provider candidate: the first bundled copy may be out of range while
@@ -56,18 +62,22 @@ pub fn build_provider(graph: &ModpackGraph) -> Result<ModpackProvider, ProviderE
         if installed_ids.contains(alias.alias_id.as_str()) {
             continue;
         }
-        let Some(parsed) = parse_mod_version(&alias.provider_version) else {
+        let Some(raw_version) = alias.provider_version.as_deref() else {
+            continue;
+        };
+        let Some(parsed) = parse_mod_version(raw_version) else {
             continue;
         };
         versions_by_id
             .entry(alias.alias_id.clone())
             .or_default()
-            .insert(parsed, alias.provider_version.clone());
+            .insert(parsed, raw_version.to_string());
     }
 
     for (package_id, versions) in &versions_by_id {
         for parsed_version in versions.keys() {
-            let deps = dependency_constraints(graph, package_id, &versions_by_id);
+            let deps =
+                dependency_constraints(graph, package_id, &versions_by_id, &unknown_provider_ids);
             provider.add_dependencies(package_id.clone(), parsed_version.clone(), deps);
         }
     }
@@ -90,6 +100,7 @@ fn dependency_constraints(
     graph: &ModpackGraph,
     from_id: &str,
     versions_by_id: &HashMap<String, BTreeMap<SmallVersion, String>>,
+    unknown_provider_ids: &HashSet<String>,
 ) -> Vec<(String, ModRange)> {
     let mut merged: HashMap<String, ModRange> = HashMap::new();
     for edge in &graph.edges {
@@ -98,6 +109,13 @@ fn dependency_constraints(
             || edge.relation != "depends"
             || is_platform_dep(&edge.to)
         {
+            continue;
+        }
+        // An observed provider with an unresolved version may satisfy the edge.
+        // Omitting this one constraint is the conservative PubGrub equivalent
+        // of pairwise ProviderStatus::Unknown; treating it as absent would create
+        // a false global UNSAT.
+        if unknown_provider_ids.contains(&edge.to) {
             continue;
         }
         let Some(range) = catalog_constraint(edge, versions_by_id.get(&edge.to)) else {
@@ -160,5 +178,47 @@ mod tests {
         let graph = build_graph(&store);
         let provider = build_provider(&graph).expect("provider");
         assert!(provider.versions(&"alpha".to_string()).is_some());
+    }
+
+    #[test]
+    fn unknown_provider_version_suppresses_false_global_unsat_constraint() {
+        let mut store = FactStore::new();
+        store
+            .fact("meta", kind::MOD)
+            .subject("consumer")
+            .attr("version", "1.0.0")
+            .attr("loader", "fabric")
+            .emit();
+        store
+            .fact("meta", kind::DEPENDENCY)
+            .subject("consumer")
+            .attr("dep", "runtime-module")
+            .attr("range", ">=0.5.0")
+            .attr("mandatory", true)
+            .attr("relation", "depends")
+            .attr("version_dialect", "fabric-extended-semver")
+            .emit();
+        store
+            .fact("environment", kind::PROVIDED_DEPENDENCY)
+            .subject("fabricloader")
+            .attr("provides", "runtime-module")
+            .attr("scope", "loader-runtime")
+            .emit();
+        let graph = build_graph(&store);
+        assert_eq!(graph.provides[0].provider_version, None);
+        let versions = HashMap::from([(
+            "consumer".to_string(),
+            BTreeMap::from([(
+                parse_mod_version("1.0.0").expect("version"),
+                "1.0.0".to_string(),
+            )]),
+        )]);
+        let constraints = dependency_constraints(
+            &graph,
+            "consumer",
+            &versions,
+            &HashSet::from(["runtime-module".to_string()]),
+        );
+        assert!(constraints.is_empty());
     }
 }
